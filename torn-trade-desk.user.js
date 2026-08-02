@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.11.3
+// @version      1.12.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -75,6 +75,8 @@
     try { if (typeof GM_setClipboard === "function") { GM_setClipboard(t, "text"); return; } } catch (e) { }
     try { if (navigator.clipboard) navigator.clipboard.writeText(t); } catch (e) { }
   }
+  function mkTradeLine(nm, q, p) { return (nm + " ×" + q + " @ $" + p.toLocaleString() + "/ea = $" + (p * q).toLocaleString()).slice(0, 155); } // trade description cap is 155
+  function stashTrade(nm, q, p, uid) { try { GM_setValue("pending_trade", { line: mkTradeLine(nm, q, p), uid: uid || 0, at: Date.now() }); } catch (e) { } }
   const ago = function (secs) {
     if (secs == null) return "?";
     const m = Math.floor(secs / 60);
@@ -252,6 +254,8 @@
     .tdk-brow .bt{color:#8fe6b3;font-size:11px;font-weight:700;font-family:ui-monospace,monospace;margin-top:1px}
     .tdk-cp{background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:5px 8px;cursor:pointer;font-size:12px;white-space:nowrap}
     .tdk-cp:hover{background:#332a15}
+    .tdk-filldesc{display:block;margin:6px 0;background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:8px 11px;font-weight:700;cursor:pointer;font-size:12px;max-width:100%;text-align:left;white-space:normal;line-height:1.35}
+    .tdk-filldesc:hover{background:#332a15}
     .tdk-set .sl{font-size:12px;color:#c3bda9;margin:8px 0 4px}
     .tdk-set .sl small{color:#928b78}
     .tdk-set .sl a.prof{color:#d9b441;text-decoration:none;border-bottom:1px dotted #4a4536}
@@ -394,7 +398,7 @@
         traders.find(function (t) { return status[t.player_id] === "Idle"; });
       const head = '<div class="tdk-bh"><div class="tt">Buyers · ' + name + '<small> — ' + (j.total_count || traders.length) + ' buying' + (tkey ? ' · online first' : '') + '</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>';
       const banner = bestOn
-        ? '<a class="tdk-bestonline" href="' + tradeUrl(bestOn.player_id) + '" target="_blank" rel="noopener">⚡ Trade best ' + (status[bestOn.player_id] === "Online" ? "online" : "idle") + ': <b>' + bestOn.player_name + '</b> @ $' + bestOn.price.toLocaleString() + ' ' + dot(status[bestOn.player_id]) + '</a>'
+        ? '<a class="tdk-bestonline" href="' + tradeUrl(bestOn.player_id) + '" target="_blank" rel="noopener" data-uid="' + bestOn.player_id + '" data-price="' + bestOn.price + '">⚡ Trade best ' + (status[bestOn.player_id] === "Online" ? "online" : "idle") + ': <b>' + bestOn.player_name + '</b> @ $' + bestOn.price.toLocaleString() + ' ' + dot(status[bestOn.player_id]) + '</a>'
         : '<div class="tdk-sub" style="padding:6px 2px">' + (tkey ? 'None of the top buyers are online right now.' : 'Add your Torn API key to flag who’s online.') + '</div>';
       const rank = function (t) { const s = status[t.player_id]; return s === "Online" ? 0 : s === "Idle" ? 1 : s === "Offline" ? 3 : 2; };
       const sorted = traders.map(function (t, i) { return { t: t, i: i }; })
@@ -412,7 +416,7 @@
           '<div class="br">' + r.upvotes + '↑ ' + r.downvotes + '↓ · <a class="prof" href="https://www.torn.com/profiles.php?XID=' + t.player_id + '" target="_blank" rel="noopener">profile</a></div></div>' +
           '<div class="bp">$' + t.price.toLocaleString() + '<span class="ea"> /ea</span><div class="bt" data-price="' + t.price + '">= $' + (t.price * q0).toLocaleString() + '</div></div>' +
           '<button class="tdk-cp" data-price="' + t.price + '" title="Copy trade line">📋</button>' +
-          '<a class="tdk-trade" href="' + tradeUrl(t.player_id) + '" target="_blank" rel="noopener">⇄ Trade</a></div>';
+          '<a class="tdk-trade" href="' + tradeUrl(t.player_id) + '" target="_blank" rel="noopener" data-uid="' + t.player_id + '" data-price="' + t.price + '">⇄ Trade</a></div>';
       }).join("");
       bx.innerHTML = head + banner + (list ? calcBar + list : '<div class="br">No traders listed for this item.</div>');
       bindClose(bx);
@@ -428,9 +432,16 @@
       bx.querySelectorAll(".tdk-cp").forEach(function (btn) {
         btn.addEventListener("click", function () {
           const p = +this.getAttribute("data-price"), q = getQ();
-          copyText(name + " ×" + q + " @ $" + p.toLocaleString() + "/ea = $" + (p * q).toLocaleString());
+          copyText(mkTradeLine(name, q, p));
           const self = this, old = this.textContent; this.textContent = "✓";
           setTimeout(function () { self.textContent = old; }, 1200);
+        });
+      });
+      // Stash the trade line when a ⇄ Trade / ⚡ link is clicked, so trade.php can offer to fill the description.
+      bx.querySelectorAll("a.tdk-trade, a.tdk-bestonline").forEach(function (a) {
+        a.addEventListener("click", function () {
+          const p = +this.getAttribute("data-price"), uid = +this.getAttribute("data-uid");
+          if (p) stashTrade(name, getQ(), p, uid);
         });
       });
     } catch (e) {
@@ -582,6 +593,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.12.0", d: "Aug 2, 2026", c: ["Trade-description autofill: click ⇄ Trade (or ⚡) on a buyer, then on the trade page a '📋 Fill description' button drops the exact trade line into Torn's required description box. Text-only + you press Initiate Trade — no item/money automation"] },
     { v: "1.11.3", d: "Aug 2, 2026", c: ["Buyers/changelog window now floats over the page at near-full height instead of being clipped short by the panel (especially when opened via ⚡ before refreshing) — drag any edge to resize"] },
     { v: "1.11.2", d: "Aug 2, 2026", c: ["Fixed the item.php ⚡ only showing on the last row — moved it next to the item name (the action cell was too cramped and it clipped)", "Changelog / buyers window is taller and you can drag its bottom edge to resize it"] },
     { v: "1.11.1", d: "Aug 2, 2026", c: ["Hover tooltips on the board's ★ (affordable & in stock) and 💰 (best funded play) row markers so it's clear what they mean"] },
@@ -853,9 +865,36 @@
       }).observe(document.body, { childList: true, subtree: true });
     }).catch(function () { });
   }
+  // On trade.php: offer to fill the (required) description with the line you stashed by clicking ⇄ Trade.
+  // Text-only + user-initiated; we NEVER add items, set money, or press Initiate Trade.
+  const TRADE_PAGE = /\/trade\.php/;
+  function tradeDescHelper() {
+    if (!TRADE_PAGE.test(location.pathname)) return;
+    const run = function () {
+      const ta = document.querySelector("textarea#description");
+      if (!ta || document.querySelector("#tdk-filldesc")) return;
+      const pend = GM_getValue("pending_trade", null);
+      if (!pend || !pend.line || (Date.now() - pend.at > 15 * 60 * 1000)) return; // expire after 15 min
+      const btn = document.createElement("button");
+      btn.id = "tdk-filldesc"; btn.type = "button"; btn.className = "tdk-filldesc";
+      btn.textContent = "📋 Fill description: " + pend.line;
+      btn.title = "Drops this into the description. You still add the items and press Initiate Trade.";
+      btn.addEventListener("click", function (e) {
+        e.preventDefault();
+        ta.value = pend.line;
+        ta.dispatchEvent(new Event("input", { bubbles: true })); // let Torn's form register the text
+        btn.textContent = "✓ Filled — add items, then Initiate Trade";
+      });
+      ta.parentNode.insertBefore(btn, ta.nextSibling);
+    };
+    run();
+    let pending = false;
+    new MutationObserver(function () { if (pending) return; pending = true; requestAnimationFrame(function () { pending = false; run(); }); }).observe(document.body, { childList: true, subtree: true });
+  }
 
   build();
   annotateItemsPage();
+  tradeDescHelper();
   setTimeout(checkInvStatus, 8000);              // first check shortly after load
   setInterval(checkInvStatus, 15 * 60 * 1000);   // then quietly every 15 min — lights the Bag when Torn restores inventory
 })();
