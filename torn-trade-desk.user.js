@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.16.1
+// @version      1.17.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -77,8 +77,14 @@
     try { if (typeof GM_setClipboard === "function") { GM_setClipboard(t, "text"); return; } } catch (e) { }
     try { if (navigator.clipboard) navigator.clipboard.writeText(t); } catch (e) { }
   }
-  function mkTradeLine(nm, q, p) { return (nm + " ×" + q + " @ $" + p.toLocaleString() + "/ea = $" + (p * q).toLocaleString()).slice(0, 155); } // trade description cap is 155
-  function stashTrade(nm, q, p, uid) { try { GM_setValue("pending_trade", { line: mkTradeLine(nm, q, p), uid: uid || 0, at: Date.now() }); } catch (e) { } }
+  function mkTradeLine(nm, q, p, net) { // trade description cap is 155
+    let s = nm + " ×" + q + " @ $" + p.toLocaleString() + "/ea = $" + (p * q).toLocaleString();
+    if (typeof net === "number") s += " · net " + (net >= 0 ? "+" : "−") + "$" + Math.abs(net).toLocaleString();
+    return s.slice(0, 155);
+  }
+  function stashTrade(nm, q, p, uid) { try { GM_setValue("pending_trade", { line: mkTradeLine(nm, q, p), uid: uid || 0, at: Date.now() }); } catch (e) { } } // stashed line stays net-free (it's what the buyer sees)
+  // Buy cost for net-profit math: the YATA foreign shop price from the current board, if this item is a known travel-trade good.
+  function buyCostOf(id) { const r = (state.rows || []).find(function (x) { return x.id == id; }); return r ? r.buy : null; }
   const ago = function (secs) {
     if (secs == null) return "?";
     const m = Math.floor(secs / 60);
@@ -260,6 +266,7 @@
     .tdk-brow .bp{text-align:right}
     .tdk-brow .bp .ea{color:#928b78;font-size:10px;font-weight:600}
     .tdk-brow .bt{color:#8fe6b3;font-size:11px;font-weight:700;font-family:ui-monospace,monospace;margin-top:1px}
+    .tdk-brow .bt .netp{color:#d9b441}.tdk-brow .bt .netp.neg{color:#e5615c}
     .tdk-cp{background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:5px 8px;cursor:pointer;font-size:12px;white-space:nowrap}
     .tdk-cp:hover{background:#332a15}
     .tdk-filldesc{display:block;margin:6px 0;background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:8px 11px;font-weight:700;cursor:pointer;font-size:12px;max-width:100%;text-align:left;white-space:normal;line-height:1.35}
@@ -445,14 +452,20 @@
       if (tkey) { try { const inv = await loadInv(tkey); if (inv.length) { const f = inv.find(function (it) { return (it.ID || it.id || it.item_id) == id; }); owned = f ? (f.quantity || 0) : 0; } } catch (e) { } }
       if (!owned) { const c = GM_getValue("inv_counts", null); if (c && c.map && c.map[id] != null) { owned = c.map[id]; ownedStale = true; } } // DOM-scraped fallback while API is down
       const q0 = owned > 0 ? owned : Math.max(1, state.cap || 1);
+      const buyCost = buyCostOf(id); // null unless this is a known travel-trade good on the current board
+      const btText = function (price, qty) { // running total + net (after buy cost) for one buyer
+        let s = "= $" + (price * qty).toLocaleString();
+        if (buyCost != null) { const net = (price - buyCost) * qty; s += ' · <span class="netp' + (net < 0 ? " neg" : "") + '">net ' + (net >= 0 ? "+" : "−") + "$" + Math.abs(net).toLocaleString() + "</span>"; }
+        return s;
+      };
       const calcBar = '<div class="tdk-calc">Qty <input id="tdk-qty" type="number" min="1" value="' + q0 + '">' +
         (owned > 0 ? '<button class="tdk-cp" id="tdk-qty-own" title="' + (ownedStale ? 'From your last Items-page visit (Torn inventory API is down) — click to use' : 'Set quantity to how many you own') + '">You have ' + owned + (ownedStale ? '*' : '') + '</button>' : '') +
-        '<span class="tdk-calc-hint">' + (ownedStale ? '*from your last Items-page visit · ' : '') + 'totals update live · 📋 copies the trade line</span></div>';
+        '<span class="tdk-calc-hint">' + (ownedStale ? '*from your last Items-page visit · ' : '') + 'totals update live · 📋 copies the trade line' + (buyCost != null ? ' · net = sell − $' + buyCost.toLocaleString() + ' buy/ea' : '') + '</span></div>';
       const list = sorted.map(function (t) {
         const r = t.rating || { upvotes: 0, downvotes: 0 };
         return '<div class="tdk-brow"><div><div class="bn">' + dot(status[t.player_id]) + ' ' + t.player_name + '</div>' +
           '<div class="br">' + r.upvotes + '↑ ' + r.downvotes + '↓ · <a class="prof" href="https://www.torn.com/profiles.php?XID=' + t.player_id + '" target="_blank" rel="noopener">profile</a></div></div>' +
-          '<div class="bp">$' + t.price.toLocaleString() + '<span class="ea"> /ea</span><div class="bt" data-price="' + t.price + '">= $' + (t.price * q0).toLocaleString() + '</div></div>' +
+          '<div class="bp">$' + t.price.toLocaleString() + '<span class="ea"> /ea</span><div class="bt" data-price="' + t.price + '">' + btText(t.price, q0) + '</div></div>' +
           '<button class="tdk-cp" data-price="' + t.price + '" title="Copy trade line">📋</button>' +
           '<a class="tdk-trade" href="' + tradeUrl(t.player_id) + '" target="_blank" rel="noopener" data-uid="' + t.player_id + '" data-price="' + t.price + '">⇄ Trade</a></div>';
       }).join("");
@@ -462,7 +475,7 @@
       const getQ = function () { return Math.max(1, parseInt(qtyEl && qtyEl.value, 10) || 1); };
       const recalc = function () {
         const q = getQ();
-        bx.querySelectorAll(".bt").forEach(function (el) { el.textContent = "= $" + (+el.getAttribute("data-price") * q).toLocaleString(); });
+        bx.querySelectorAll(".bt").forEach(function (el) { el.innerHTML = btText(+el.getAttribute("data-price"), q); });
       };
       if (qtyEl) qtyEl.addEventListener("input", recalc);
       const ownBtn = bx.querySelector("#tdk-qty-own");
@@ -470,7 +483,7 @@
       bx.querySelectorAll(".tdk-cp").forEach(function (btn) {
         btn.addEventListener("click", function () {
           const p = +this.getAttribute("data-price"), q = getQ();
-          copyText(mkTradeLine(name, q, p));
+          copyText(mkTradeLine(name, q, p, buyCost != null ? (p - buyCost) * q : undefined));
           const self = this, old = this.textContent; this.textContent = "✓";
           setTimeout(function () { self.textContent = old; }, 1200);
         });
@@ -631,6 +644,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.17.0", d: "Aug 2, 2026", c: ["Net-profit in the Buyers popover: for travel-trade goods each buyer's total now shows 'net +$X' (sell − your foreign buy cost × qty), updates live with quantity, and 📋 copies it into the trade line too", "⚡ Find-buyers now shows on EVERY priced item.php row, not just sell-ok ones — so you can price/trade a held-back item without unlocking it first (⚡ only opens buyers; it never sells)"] },
     { v: "1.16.1", d: "Aug 2, 2026", c: ["Gym-estimate energy box is now capped to your energy maximum (can't enter impossible values like 206)"] },
     { v: "1.16.0", d: "Aug 2, 2026", c: ["⏱ Round-trip time filter: a dropdown by the destination chips limits the board to destinations you can fly there-and-back within your window (≤1h … ≤10h) — e.g. only 2 hours → Mexico/Cayman/Canada. Each row now shows its round-trip time too"] },
     { v: "1.15.0", d: "Aug 2, 2026", c: ["Sortable board columns: click a header to sort. Click Stock → in-stock items first (then $/min) so you see what's actually buyable; $/min, Profit/ea, Buy, Resale, Load also sortable. The 'Best' card still uses profit order. Your choice is saved"] },
@@ -1008,7 +1022,7 @@
           tag.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); toggleOverride(id, sellable); repaintRow(li); });
         }
         nameWrap.appendChild(tag);
-        if (sellable && price > 0) { // ⚡ buyers + trade-best-online, by the name where there's room (not the packed action cell)
+        if (price > 0) { // ⚡ buyers + trade-best-online on EVERY priced row (not just sellable) — it only finds buyers, never sells
           const z = document.createElement("span");
           z.className = "tdk-inl tdk-zap"; z.textContent = "⚡"; z.title = "Find buyers · trade the best online offer"; z.style.cursor = "pointer";
           z.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); panel.classList.add("open"); openBuyers(id, name); });
