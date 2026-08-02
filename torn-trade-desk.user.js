@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.6.0
+// @version      1.6.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -39,16 +39,17 @@
   const state = { resale: null, resaleAt: 0, cash: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0 };
 
   /* ---------- helpers ---------- */
-  function gmGet(url) {
+  function gmGet(url, timeoutMs) {
     return new Promise(function (resolve, reject) {
+      function fail(kind, msg, status) { const err = new Error(msg); err.kind = kind; err.url = url; if (status) err.status = status; reject(err); }
       GM_xmlhttpRequest({
-        method: "GET", url: url, timeout: 20000,
+        method: "GET", url: url, timeout: timeoutMs || 20000,
         onload: function (r) {
-          if (r.status < 200 || r.status >= 300) return reject(new Error("HTTP " + r.status));
-          try { resolve(JSON.parse(r.responseText)); } catch (e) { reject(new Error("bad JSON from " + url)); }
+          if (r.status < 200 || r.status >= 300) return fail("http", "HTTP " + r.status, r.status);
+          try { resolve(JSON.parse(r.responseText)); } catch (e) { fail("json", "bad JSON from " + url); }
         },
-        onerror: function () { reject(new Error("network error: " + url)); },
-        ontimeout: function () { reject(new Error("timeout: " + url)); }
+        onerror: function () { fail("network", "network error: " + url); },
+        ontimeout: function () { fail("timeout", "timeout: " + url); }
       });
     });
   }
@@ -97,7 +98,7 @@
     if (!key) { setStatus("Need a Torn API key.", true); return; }
     try {
       const [yata, resale] = await Promise.all([
-        gmGet("https://yata.yt/api/v1/travel/export/"),
+        gmGet("https://yata.yt/api/v1/travel/export/", 30000),
         loadResale(key)
       ]);
       await loadCash(key);
@@ -122,7 +123,13 @@
       render();
       setStatus("Updated " + new Date().toLocaleTimeString());
     } catch (e) {
-      setStatus("Refresh failed — " + e.message, true);
+      const isYata = e.url && e.url.indexOf("yata.yt") !== -1;
+      const down = e.kind === "timeout" || e.kind === "network" || e.status >= 500;
+      if (isYata && down) {
+        setStatus("YATA is down (" + (e.status || e.kind) + ") — stock data unavailable, retry shortly.", true);
+      } else {
+        setStatus("Refresh failed — " + e.message, true);
+      }
     }
   }
 
@@ -339,6 +346,7 @@
     if (v === "inv") renderInv();
   }
   const CHANGELOG = [
+    { v: "1.6.1", d: "Aug 2, 2026", c: ["Clearer message when YATA is down (502/timeout) instead of raw error", "Longer 30s timeout for YATA's heavy export"] },
     { v: "1.6.0", d: "Aug 1, 2026", c: ["Bigger-text controls (A− / A+)", "Sellable-Junk inventory view (📦 Bag)", "Clickable version → this changelog"] },
     { v: "1.5.0", d: "Aug 1, 2026", c: ["weav3r trader prices — click a row for top buyers", "One-click ⇄ Trade + profile links"] },
     { v: "1.4.0", d: "Aug 1, 2026", c: ["Fly-here (✈) links per row", "Live mug-risk readout", "GitHub hosting + auto-update"] },
