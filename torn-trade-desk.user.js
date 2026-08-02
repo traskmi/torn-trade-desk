@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.17.0
+// @version      1.17.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -644,7 +644,8 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
-    { v: "1.17.0", d: "Aug 2, 2026", c: ["Net-profit in the Buyers popover: for travel-trade goods each buyer's total now shows 'net +$X' (sell − your foreign buy cost × qty), updates live with quantity, and 📋 copies it into the trade line too", "⚡ Find-buyers now shows on EVERY priced item.php row, not just sell-ok ones — so you can price/trade a held-back item without unlocking it first (⚡ only opens buyers; it never sells)"] },
+    { v: "1.17.1", d: "Aug 2, 2026", c: ["⚡ Find-buyers stays on sell-ok items only (default junk, or ones you've toggled to sell) — held-back items are lock-only, so there's no path to sell a use-item by mistake"] },
+    { v: "1.17.0", d: "Aug 2, 2026", c: ["Net-profit in the Buyers popover: for travel-trade goods each buyer's total now shows 'net +$X' (sell − your foreign buy cost × qty), updates live with quantity, and 📋 copies it into the trade line too"] },
     { v: "1.16.1", d: "Aug 2, 2026", c: ["Gym-estimate energy box is now capped to your energy maximum (can't enter impossible values like 206)"] },
     { v: "1.16.0", d: "Aug 2, 2026", c: ["⏱ Round-trip time filter: a dropdown by the destination chips limits the board to destinations you can fly there-and-back within your window (≤1h … ≤10h) — e.g. only 2 hours → Mexico/Cayman/Canada. Each row now shows its round-trip time too"] },
     { v: "1.15.0", d: "Aug 2, 2026", c: ["Sortable board columns: click a header to sort. Click Stock → in-stock items first (then $/min) so you see what's actually buyable; $/min, Profit/ea, Buy, Resale, Load also sortable. The 'Best' card still uses profit order. Your choice is saved"] },
@@ -1022,7 +1023,7 @@
           tag.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); toggleOverride(id, sellable); repaintRow(li); });
         }
         nameWrap.appendChild(tag);
-        if (price > 0) { // ⚡ buyers + trade-best-online on EVERY priced row (not just sellable) — it only finds buyers, never sells
+        if (sellable && price > 0) { // ⚡ only on sell-ok rows (default junk or toggled to sell) — keeps held-back items out of the sell flow entirely
           const z = document.createElement("span");
           z.className = "tdk-inl tdk-zap"; z.textContent = "⚡"; z.title = "Find buyers · trade the best online offer"; z.style.cursor = "pointer";
           z.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); panel.classList.add("open"); openBuyers(id, name); });
