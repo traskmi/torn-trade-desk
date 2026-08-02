@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.13.0
+// @version      1.13.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -607,6 +607,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.13.1", d: "Aug 2, 2026", c: ["Trade-description autofill now properly enables the Initiate Trade button — fires a full keydown/input/keyup/change burst so Torn's form registers the text (no more erase-a-digit-and-retype)"] },
     { v: "1.13.0", d: "Aug 2, 2026", c: ["😊 Happy Jump calculator: live 'happy resets in M:SS' timer (the :00/:15/:30/:45 reset), your current/base happy, your held candy/drug/eDVD boosters (auto-detected) with an Ecstasy ×2 toggle, and the max happy + optimal eat/take order (99,999 cap). All values verified from the Torn wiki"] },
     { v: "1.12.0", d: "Aug 2, 2026", c: ["Trade-description autofill: click ⇄ Trade (or ⚡) on a buyer, then on the trade page a '📋 Fill description' button drops the exact trade line into Torn's required description box. Text-only + you press Initiate Trade — no item/money automation"] },
     { v: "1.11.3", d: "Aug 2, 2026", c: ["Buyers/changelog window now floats over the page at near-full height instead of being clipped short by the panel (especially when opened via ⚡ before refreshing) — drag any edge to resize"] },
@@ -986,8 +987,15 @@
       btn.title = "Drops this into the description. You still add the items and press Initiate Trade.";
       btn.addEventListener("click", function (e) {
         e.preventDefault();
-        ta.value = pend.line;
-        ta.dispatchEvent(new Event("input", { bubbles: true })); // let Torn's form register the text
+        ta.focus();
+        // Set via the native setter (React-safe), then fire a real typing burst so Torn's validation
+        // re-reads the field and enables Initiate Trade (a plain value= + one input event wasn't enough).
+        try { const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(ta), "value"); if (d && d.set) d.set.call(ta, pend.line); else ta.value = pend.line; } catch (err) { ta.value = pend.line; }
+        ta.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: " " }));
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+        ta.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: " " }));
+        ta.dispatchEvent(new Event("change", { bubbles: true }));
+        ta.dispatchEvent(new Event("blur", { bubbles: true }));
         btn.textContent = "✓ Filled — add items, then Initiate Trade";
       });
       ta.parentNode.insertBefore(btn, ta.nextSibling);
