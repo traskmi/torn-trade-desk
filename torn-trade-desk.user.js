@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.9.2
+// @version      1.9.3
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -37,7 +37,7 @@
   };
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, ov: GM_getValue("ov", {}) };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, ov: GM_getValue("ov", {}) };
 
   /* ---------- helpers ---------- */
   function gmGet(url, timeoutMs) {
@@ -156,6 +156,8 @@
     .tdk-h .t small{color:#928b78;font-weight:600;letter-spacing:.14em;text-transform:uppercase;font-size:10px;display:block}
     .tdk-h .sp{flex:1}
     .tdk-btn2{background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:9px;padding:7px 11px;font-weight:700;cursor:pointer}
+    .tdk-btn2.ready{border-color:#4cc281;color:#8fe6b3;background:#16241c;animation:tdkpulse 1.8s ease-in-out infinite}
+    @keyframes tdkpulse{0%,100%{box-shadow:0 0 0 1px rgba(76,194,129,.25)}50%{box-shadow:0 0 0 4px rgba(76,194,129,.5)}}
     .tdk-btn2:hover{background:#332a15}
     .tdk-cap{width:56px;background:#201e17;border:1px solid #3a3729;color:#ece7d8;border-radius:8px;padding:6px 8px;
       font-family:ui-monospace,Consolas,monospace}
@@ -500,10 +502,32 @@
     const bd = host.querySelector("#tdk-board"), iv = host.querySelector("#tdk-inv");
     if (bd) bd.style.display = v === "inv" ? "none" : "";
     if (iv) iv.style.display = v === "inv" ? "" : "none";
-    const b = host.querySelector("#tdk-invbtn"); if (b) b.className = "tdk-btn2" + (v === "inv" ? " on" : "");
-    if (v === "inv") renderInv();
+    const b = host.querySelector("#tdk-invbtn"); if (b) b.classList.toggle("on", v === "inv"); // classList so the "ready" glow survives
+    const f = host.querySelector("#tdk-fund"); if (f) f.classList.toggle("on", v !== "inv" && state.fund); // Fund lit only while viewing the board
+    if (v === "inv") renderInv(); else render();
+  }
+  // Torn's inventory API is empty during their 2026 migration. Poll quietly; when it returns items again, glow the Bag.
+  function markBagReady(ready) {
+    const b = host && host.querySelector("#tdk-invbtn"); if (!b) return;
+    b.classList.toggle("ready", !!ready);
+    b.title = ready ? "Inventory API is back — open your 📦 Bag!" : "Your sellable-junk inventory (Torn's inventory API is down for migration)";
+  }
+  async function checkInvStatus() {
+    const key = GM_getValue("torn_key", ""); if (!key) return;
+    try {
+      const items = await loadInv(key);
+      const tv = state.travel, flying = tv && tv.timestamp && (tv.timestamp - Math.floor(Date.now() / 1000) > 0);
+      if (flying) return; // inventory is legitimately empty in transit — not a migration signal
+      const ready = items.length > 0, was = state.invReady;
+      state.invReady = ready;
+      markBagReady(ready);
+      if (ready && was === false && panel && panel.classList.contains("open")) {
+        setStatus("📦 Torn's inventory API is back — the Bag works now!");
+      }
+    } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.9.3", d: "Aug 2, 2026", c: ["📦 Bag auto-recheck: the tool quietly polls every 15 min and the Bag button glows green the moment Torn's inventory API comes back online", "Added a Test button for the W3B key in Settings too", "Really fixed Fund/Bag: only one lights at a time now (Fund lit only while viewing the board)"] },
     { v: "1.9.2", d: "Aug 2, 2026", c: ["Truth in messaging: the empty 📦 Bag is Torn's fault, not yours — Torn's inventory API is temporarily returning empty for everyone during their inventory-system migration. No key (even Full) can read it until Torn restores the endpoint. Settings/Bag now say so instead of blaming your key"] },
     { v: "1.9.1", d: "Aug 2, 2026", c: ["Moved the ✕ close to the top-right corner so it stops wrapping to a second line; tightened header buttons", "Fixed the Settings key-test advice: inventory needs a Full key (or a Custom key with Inventory ticked) — Limited isn't enough, and everything else works on Limited"] },
     { v: "1.9.0", d: "Aug 2, 2026", c: ["New ⚙ Settings: view/update your Torn + W3B keys and Test the Torn key — shows its access level and whether it can actually read your inventory (diagnoses the empty 📦 Bag)", "Fund now switches you out of the Bag view instead of leaving both buttons lit", "Buy / Resale / Load columns are readable — they were inheriting Torn's dark td color"] },
@@ -566,7 +590,7 @@
         '<div class="sl">Torn API key <small>— board · cash · inventory · online status</small></div>' +
         '<div class="srow"><input id="tdk-set-torn" type="text" spellcheck="false" placeholder="Torn API key" value="' + esc(GM_getValue("torn_key", "")) + '"><button class="tdk-btn2" id="tdk-set-test">Test</button></div>' +
         '<div class="sl">weav3r (W3B) key <small>— trader buy prices</small></div>' +
-        '<div class="srow"><input id="tdk-set-w3b" type="text" spellcheck="false" placeholder="W3B key" value="' + esc(GM_getValue("w3b_key", "")) + '"></div>' +
+        '<div class="srow"><input id="tdk-set-w3b" type="text" spellcheck="false" placeholder="W3B key" value="' + esc(GM_getValue("w3b_key", "")) + '"><button class="tdk-btn2" id="tdk-set-w3btest">Test</button></div>' +
         '<div class="srow"><button class="tdk-btn2" id="tdk-set-save">Save keys</button><span id="tdk-set-msg" class="ssub"></span></div>' +
         '<div id="tdk-set-out" class="ssub"></div>' +
         '<div class="sl" style="margin-top:14px">Need a key? <a class="prof" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Torn → Settings → API Keys</a>. Note: the 📦 Bag needs Torn’s inventory API, which is temporarily disabled during Torn’s inventory migration — no key fixes that until Torn restores it.</div>' +
@@ -592,6 +616,16 @@
           out.innerHTML = '✓ Access: <b>' + lvl + '</b><br>' + msg;
         });
       }).catch(function (e) { out.innerHTML = '<span class="serr">Test failed: ' + e.message + '</span>'; });
+    });
+    host.querySelector("#tdk-set-w3btest").addEventListener("click", function () {
+      const k = host.querySelector("#tdk-set-w3b").value.trim(), out = host.querySelector("#tdk-set-out");
+      if (!k) { out.textContent = "Enter a W3B key first."; return; }
+      out.textContent = "Testing W3B…";
+      gmGet("https://weav3r.dev/api/marketplace/206/traders?apiKey=" + encodeURIComponent(k)).then(function (j) {
+        if (j && j.error) { out.innerHTML = '<span class="serr">W3B error: ' + j.error + '</span>'; return; }
+        const n = j && (j.total_count != null ? j.total_count : (j.traders ? j.traders.length : null));
+        out.innerHTML = '✓ W3B key works — weav3r reachable' + (n != null ? ' (Xanax: <b>' + n + '</b> traders listed)' : '');
+      }).catch(function (e) { out.innerHTML = '<span class="serr">W3B test failed: ' + e.message + ' — check the key</span>'; });
     });
   }
   function openChangelog() {
@@ -648,7 +682,7 @@
       '<div id="tdk-buyers"></div>';
     host.appendChild(panel);
 
-    btn.addEventListener("click", function () { panel.classList.toggle("open"); if (panel.classList.contains("open") && !state.rows.length) refresh(); });
+    btn.addEventListener("click", function () { panel.classList.toggle("open"); if (panel.classList.contains("open")) { if (!state.rows.length) refresh(); checkInvStatus(); } });
     host.querySelector("#tdk-close").addEventListener("click", function () { panel.classList.remove("open"); });
     host.querySelector("#tdk-settings").addEventListener("click", openSettings);
     host.querySelector("#tdk-refresh").addEventListener("click", function () { if (state.view === "inv") { state.inv = null; renderInv(); } else refresh(); });
@@ -662,8 +696,7 @@
     });
     host.querySelector("#tdk-fund").addEventListener("click", function () {
       state.fund = !state.fund; GM_setValue("fund", state.fund);
-      if (state.view === "inv") setView("board"); // leave the Bag view so the toggle actually switches
-      render();
+      if (state.view === "inv") setView("board"); else render(); // setView already re-renders the board
     });
     host.querySelector("#tdk-body").addEventListener("click", function (e) {
       if (e.target.closest("a, button")) return;
@@ -739,4 +772,6 @@
 
   build();
   annotateItemsPage();
+  setTimeout(checkInvStatus, 8000);              // first check shortly after load
+  setInterval(checkInvStatus, 15 * 60 * 1000);   // then quietly every 15 min — lights the Bag when Torn restores inventory
 })();
