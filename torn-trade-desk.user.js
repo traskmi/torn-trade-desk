@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.14.0
+// @version      1.15.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -38,7 +38,7 @@
   };
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, ov: GM_getValue("ov", {}) };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), ov: GM_getValue("ov", {}) };
 
   /* ---------- helpers ---------- */
   function gmGet(url, timeoutMs) {
@@ -185,6 +185,10 @@
     table.tdk th{position:sticky;top:0;text-align:right;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#928b78;
       font-weight:700;padding:9px 14px;border-bottom:1px solid #3a3729;background:#201e17;white-space:nowrap}
     table.tdk th.l,table.tdk td.l{text-align:left}
+    table.tdk th.so{cursor:pointer;user-select:none}
+    table.tdk th.so:hover{color:#c3bda9}
+    table.tdk th.so.on{color:#d9b441}
+    table.tdk th.so.on::after{content:" ▾"}
     table.tdk td{padding:9px 14px;border-bottom:1px solid #211f18;text-align:right;white-space:nowrap;
       font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}
     table.tdk td.mv{color:#ded7c5}
@@ -360,7 +364,14 @@
     b.innerHTML = html;
 
     const body = host.querySelector("#tdk-body");
-    body.innerHTML = rows.map(function (x) {
+    // "Best" card above uses profit order (rows); the table can be re-sorted by any column header.
+    const sm = state.sort || "ppm";
+    const disp = rows.slice();
+    if (sm === "stock") disp.sort(function (a, b) { return ((a.stock > 0 ? 0 : 1) - (b.stock > 0 ? 0 : 1)) || (b.ppm - a.ppm); }); // available first, then $/min
+    else if (sm === "ppm") disp.sort(function (a, b) { return b.ppm - a.ppm; });
+    else disp.sort(function (a, b) { return (b[sm] || 0) - (a[sm] || 0); });
+    host.querySelectorAll("#tdk-board th.so").forEach(function (th) { th.classList.toggle("on", th.getAttribute("data-sort") === sm); });
+    body.innerHTML = disp.map(function (x) {
       const aff = cash == null || x.full <= cash;
       const fill = x.stock >= cap;
       const isTop = topOver && x === topOver;
@@ -613,6 +624,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.15.0", d: "Aug 2, 2026", c: ["Sortable board columns: click a header to sort. Click Stock → in-stock items first (then $/min) so you see what's actually buyable; $/min, Profit/ea, Buy, Resale, Load also sortable. The 'Best' card still uses profit order. Your choice is saved"] },
     { v: "1.14.0", d: "Aug 2, 2026", c: ["😊 Happy now includes a gym-gain ESTIMATE (Vladar formula): pick a stat, set energy, and it projects per-train + total gain at your jumped happy in your active gym — pulls your stats/gym live. Rough by design (Torn hides the real formula; excludes Steadfast/education perks; happy decays as you train)"] },
     { v: "1.13.1", d: "Aug 2, 2026", c: ["Trade-description autofill now properly enables the Initiate Trade button — fires a full keydown/input/keyup/change burst so Torn's form registers the text (no more erase-a-digit-and-retype)"] },
     { v: "1.13.0", d: "Aug 2, 2026", c: ["😊 Happy Jump calculator: live 'happy resets in M:SS' timer (the :00/:15/:30/:45 reset), your current/base happy, your held candy/drug/eDVD boosters (auto-detected) with an Ecstasy ×2 toggle, and the max happy + optimal eat/take order (99,999 cap). All values verified from the Torn wiki"] },
@@ -905,7 +917,7 @@
       '<div id="tdk-board">' +
         '<div class="tdk-filter" id="tdk-filter"></div>' +
         '<div class="tdk-best" id="tdk-best"><div class="l">Best play</div><div class="p">—</div></div>' +
-        '<table class="tdk"><thead><tr><th class="l">Item</th><th>Buy</th><th>Resale</th><th>Profit/ea</th><th>Stock</th><th>Load</th><th>$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
+        '<table class="tdk"><thead><tr><th class="l">Item</th><th class="so" data-sort="buy">Buy</th><th class="so" data-sort="sell">Resale</th><th class="so" data-sort="ppi">Profit/ea</th><th class="so" data-sort="stock">Stock</th><th class="so" data-sort="full">Load</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
         '<div class="tdk-mug" id="tdk-mug"></div>' +
       '</div>' +
       '<div id="tdk-inv" style="display:none"></div>';
@@ -937,6 +949,10 @@
       if (e.target.closest("a, button")) return;
       const tr = e.target.closest("tr"); if (!tr || !tr.dataset.id) return;
       openBuyers(+tr.dataset.id, tr.dataset.name);
+    });
+    host.querySelector("#tdk-board").addEventListener("click", function (e) {
+      const th = e.target.closest("th.so"); if (!th) return;
+      state.sort = th.getAttribute("data-sort"); GM_setValue("sort", state.sort); render();
     });
     host.querySelector("#tdk-ainc").addEventListener("click", function () { state.scale = Math.min(1.6, +(state.scale + 0.1).toFixed(2)); GM_setValue("scale", state.scale); applyScale(); });
     host.querySelector("#tdk-adec").addEventListener("click", function () { state.scale = Math.max(0.9, +(state.scale - 0.1).toFixed(2)); GM_setValue("scale", state.scale); applyScale(); });
