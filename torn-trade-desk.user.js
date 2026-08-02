@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.15.0
+// @version      1.16.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -38,7 +38,9 @@
   };
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), ov: GM_getValue("ov", {}) };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}) };
+  const fmtRt = function (min) { const h = Math.floor(min / 60), m = min % 60; return (h ? h + "h" : "") + (m ? m + "m" : "") || "0m"; };
+  const TIME_OPTS = [[0, "⏱ Any time"], [60, "≤ 1h"], [90, "≤ 1½h"], [120, "≤ 2h"], [180, "≤ 3h"], [240, "≤ 4h"], [360, "≤ 6h"], [480, "≤ 8h"], [600, "≤ 10h"]];
 
   /* ---------- helpers ---------- */
   function gmGet(url, timeoutMs) {
@@ -205,6 +207,8 @@
     .tdk-fc{font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;cursor:pointer;border:1px solid #3a3729;background:#1b1a14;color:#c3bda9}
     .tdk-fc:hover{background:#201e17}
     .tdk-fc.on{background:#2a2413;border-color:#d9b441;color:#d9b441}
+    .tdk-tsel{margin-left:auto;font-size:11px;font-weight:700;padding:4px 8px;border-radius:999px;cursor:pointer;border:1px solid #3a3729;background:#1b1a14;color:#c3bda9}
+    .tdk-tsel:focus{outline:none;border-color:#d9b441;color:#d9b441}
     .tdk-btn2.on{background:#d9b441;color:#14130f;border-color:#d9b441}
     .tdk-sm{padding:7px 9px;font-size:12px}
     .tdk-ver{cursor:pointer;border-bottom:1px dotted #928b78}
@@ -317,9 +321,11 @@
     const present = [];
     Object.keys(FLY).forEach(function (cc) { if (state.rows.some(function (x) { return x.cc === cc; })) present.push(cc); });
     const chips = [["all", "All"]].concat(present.map(function (cc) { return [cc, FLY[cc].name]; }));
+    const timeSel = '<select class="tdk-tsel" id="tdk-tsel" title="Only show destinations within this round-trip time">' +
+      TIME_OPTS.map(function (o) { return '<option value="' + o[0] + '"' + (state.maxTrip === o[0] ? " selected" : "") + '>' + o[1] + "</option>"; }).join("") + "</select>";
     host.querySelector("#tdk-filter").innerHTML = chips.map(function (c) {
       return '<span class="tdk-fc' + (state.filter === c[0] ? " on" : "") + '" data-cc="' + c[0] + '">' + c[1] + '</span>';
-    }).join("");
+    }).join("") + timeSel;
   }
   function render() {
     const cap = state.cap, cash = state.cash, fund = state.fund;
@@ -327,7 +333,8 @@
     if (state.filter !== "all" && !state.rows.some(function (x) { return x.cc === state.filter; })) state.filter = "all";
     renderChips();
     const fbtn = host.querySelector("#tdk-fund"); if (fbtn) fbtn.className = "tdk-btn2" + (fund ? " on" : "");
-    const rows = state.filter === "all" ? state.rows : state.rows.filter(function (x) { return x.cc === state.filter; });
+    let rows = state.filter === "all" ? state.rows : state.rows.filter(function (x) { return x.cc === state.filter; });
+    if (state.maxTrip) rows = rows.filter(function (x) { return FLY[x.cc] && FLY[x.cc].rt <= state.maxTrip; }); // round-trip time budget
     const best = rows.find(function (x) { return (cash == null || x.full <= cash) && x.stock >= cap; });
     const alt = best ? null : rows.find(function (x) { return x.stock > 0; }); // rows are sorted by ppm desc
     // Only surface a "funded" play you could ACTUALLY reach by liquidating stocks (cash + stock value).
@@ -382,7 +389,7 @@
       const cls = aff ? "" : (fund ? (isTop ? "fund" : "") : "dim");
       const mark = (aff && fill) ? '<span class="star" title="Affordable now & fully in stock — a clean pick">★</span>' : (isTop ? '<span class="star" title="Best funded play — over budget, but reachable by selling stocks (see the banner up top)">💰</span>' : '');
       return '<tr class="' + cls + '" data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '">' +
-        '<td class="l"><span class="nm">' + x.name + mark + '</span><div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + ago(x.freshS) + ' old</div></td>' +
+        '<td class="l"><span class="nm">' + x.name + mark + '</span><div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + (FLY[x.cc] ? fmtRt(FLY[x.cc].rt) + ' rt · ' : '') + ago(x.freshS) + ' old</div></td>' +
         '<td class="mv">' + full$(x.buy) + '</td><td class="mv">' + full$(x.sell) + '</td>' +
         '<td class="gd">' + full$(x.ppi) + '</td><td>' + sc + '</td>' +
         '<td class="mv">' + money(x.full) + shortB + '</td>' +
@@ -624,6 +631,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.16.0", d: "Aug 2, 2026", c: ["⏱ Round-trip time filter: a dropdown by the destination chips limits the board to destinations you can fly there-and-back within your window (≤1h … ≤10h) — e.g. only 2 hours → Mexico/Cayman/Canada. Each row now shows its round-trip time too"] },
     { v: "1.15.0", d: "Aug 2, 2026", c: ["Sortable board columns: click a header to sort. Click Stock → in-stock items first (then $/min) so you see what's actually buyable; $/min, Profit/ea, Buy, Resale, Load also sortable. The 'Best' card still uses profit order. Your choice is saved"] },
     { v: "1.14.0", d: "Aug 2, 2026", c: ["😊 Happy now includes a gym-gain ESTIMATE (Vladar formula): pick a stat, set energy, and it projects per-train + total gain at your jumped happy in your active gym — pulls your stats/gym live. Rough by design (Torn hides the real formula; excludes Steadfast/education perks; happy decays as you train)"] },
     { v: "1.13.1", d: "Aug 2, 2026", c: ["Trade-description autofill now properly enables the Initiate Trade button — fires a full keydown/input/keyup/change burst so Torn's form registers the text (no more erase-a-digit-and-retype)"] },
@@ -937,6 +945,10 @@
     host.querySelector("#tdk-filter").addEventListener("click", function (e) {
       const c = e.target.closest(".tdk-fc"); if (!c) return;
       state.filter = c.dataset.cc; render();
+    });
+    host.querySelector("#tdk-filter").addEventListener("change", function (e) {
+      if (e.target.id !== "tdk-tsel") return;
+      state.maxTrip = +e.target.value; GM_setValue("maxTrip", state.maxTrip); render();
     });
     host.querySelector("#tdk-fund").addEventListener("click", function () {
       // From the Bag, Fund means "show me the funded board" (turn it on) — don't toggle it off.
