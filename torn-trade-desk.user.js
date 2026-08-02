@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.7.3
+// @version      1.7.4
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -37,7 +37,7 @@
   };
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, ov: GM_getValue("ov", {}) };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, ov: GM_getValue("ov", {}) };
 
   /* ---------- helpers ---------- */
   function gmGet(url, timeoutMs) {
@@ -94,8 +94,9 @@
   }
   async function loadCash(key) {
     try {
-      const j = await gmGet("https://api.torn.com/user/?selections=money&key=" + encodeURIComponent(key));
+      const j = await gmGet("https://api.torn.com/user/?selections=money,networth&key=" + encodeURIComponent(key));
       if (j && typeof j.money_onhand === "number") state.cash = j.money_onhand;
+      if (j && j.networth && typeof j.networth.stockmarket === "number") state.stocks = j.networth.stockmarket;
     } catch (e) { /* non-fatal */ }
   }
   async function refresh() {
@@ -253,13 +254,15 @@
   }
   function render() {
     const cap = state.cap, cash = state.cash, fund = state.fund;
+    const stocks = state.stocks || 0, funds = cash == null ? null : cash + stocks;
     if (state.filter !== "all" && !state.rows.some(function (x) { return x.cc === state.filter; })) state.filter = "all";
     renderChips();
     const fbtn = host.querySelector("#tdk-fund"); if (fbtn) fbtn.className = "tdk-btn2" + (fund ? " on" : "");
     const rows = state.filter === "all" ? state.rows : state.rows.filter(function (x) { return x.cc === state.filter; });
     const best = rows.find(function (x) { return (cash == null || x.full <= cash) && x.stock >= cap; });
     const alt = best ? null : rows.find(function (x) { return x.stock > 0; }); // rows are sorted by ppm desc
-    const topOver = rows.find(function (x) { return x.stock >= cap && cash != null && x.full > cash && (!best || x.ppm > best.ppm); });
+    // Only surface a "funded" play you could ACTUALLY reach by liquidating stocks (cash + stock value).
+    const topOver = rows.find(function (x) { return x.stock >= cap && cash != null && x.full > cash && x.full <= funds && (!best || x.ppm > best.ppm); });
     const b = host.querySelector("#tdk-best");
     const loc = (state.filter === "all" ? "" : " · " + FLY[state.filter].name) + (cash != null ? " · " + money(cash) : "");
     let html;
@@ -268,11 +271,16 @@
         '<div class="p">' + best.name + ' <span>· ' + best.country + '</span></div>' +
         '<div class="k"><b>$' + best.ppm.toLocaleString() + '</b>/min · trip ' + money(best.ppi * cap - FLY[best.cc].fare) + ' · load ' + money(best.full) + ' · stock ' + best.stock.toLocaleString() + '</div>';
       if (topOver) {
-        html += '<div class="tdk-fund2">💰 Bigger play if funded: <b>' + topOver.name + '</b> (' + topOver.country + ') · <b>$' + topOver.ppm.toLocaleString() + '</b>/min — sell <b>' + money(topOver.full - cash) + '</b> in stocks before you fly to full-load it.</div>';
+        html += '<div class="tdk-fund2">💰 Bigger play if funded: <b>' + topOver.name + '</b> (' + topOver.country + ') · <b>$' + topOver.ppm.toLocaleString() + '</b>/min — sell <b>' + money(topOver.full - cash) + '</b> of your <b>' + money(stocks) + '</b> in stocks to full-load it.</div>';
       }
     } else if (alt) {
       const barriers = [];
-      if (cash != null && alt.full > cash) barriers.push('💵 sell <b>' + money(alt.full - cash) + '</b> in stocks to full-load');
+      if (cash != null && alt.full > cash) {
+        const need = alt.full - cash;
+        barriers.push(need <= stocks
+          ? '💵 sell <b>' + money(need) + '</b> of your <b>' + money(stocks) + '</b> in stocks to full-load'
+          : '💵 needs <b>' + money(need) + '</b> — beyond your cash + stocks (<b>' + money(funds) + '</b>); buy what you can afford');
+      }
       if (alt.stock < cap) barriers.push('📦 only <b>' + alt.stock.toLocaleString() + '</b> in stock (partial load)');
       html = '<div class="l">Best available' + loc + '</div>' +
         '<div class="p">' + alt.name + ' <span>· ' + alt.country + '</span></div>' +
@@ -460,6 +468,7 @@
     if (v === "inv") renderInv();
   }
   const CHANGELOG = [
+    { v: "1.7.4", d: "Aug 2, 2026", c: ["Fund advice is now stocks-aware: reads your actual stock value (networth) and only suggests a 'funded' play you can truly reach with cash+stocks — no more 'sell $229M in stocks' when you don't have it", "Inline tag moved inside the item name to stop rows wrapping to two lines"] },
     { v: "1.7.3", d: "Aug 2, 2026", c: ["Panel now anchors to the top and caps its height to the window (zoom-aware) — the header/Refresh are always reachable, no more overshooting the top of the page", "Dimmed (unaffordable) rows are readable again — bumped opacity so item + buy/resale text isn’t washed out when you’re low on cash"] },
     { v: "1.7.2", d: "Aug 2, 2026", c: ["Click any 🔒/💰 tag (on item.php or in the Bag) to toggle keep ⇄ sell-ok — saved permanently, so you curate your own safe list (equipped items always stay kept)", "Inline tag is now icon-only (value in tooltip) so it no longer wraps item rows to two lines", "Reset-overrides button in the changelog; Bag Sell links now use the current ItemMarket URL"] },
     { v: "1.7.1", d: "Aug 2, 2026", c: ["Supply Packs (e.g. Coin Purse) are now sellable — they carry no use, and unopened packs often beat their contents. Suitcases/Cassock stay held back (they're Enhancers/Tools)"] },
@@ -605,8 +614,9 @@
       const sellable = effSellable(id, m.type, m.hasUse, equipped);
       const ov = !!state.ov[id];
       const nameWrap = li.querySelector(".name-wrap");
-      if (nameWrap && nameWrap.parentNode && !nameWrap.parentNode.querySelector(".tdk-inl")) {
-        // Compact: icon only (value in tooltip) so we don't widen Torn's fixed-width title and wrap the row.
+      if (nameWrap && !nameWrap.querySelector(".tdk-inl")) {
+        // Icon only (value in tooltip), placed INSIDE .name-wrap so it rides the name's own line and can't
+        // widen Torn's title block into a second row.
         const tag = document.createElement("span");
         tag.className = "tdk-inl " + (sellable ? "sell" : "keep") + (ov ? " ovr" : "");
         tag.textContent = sellable ? "💰" : "🔒";
@@ -616,7 +626,7 @@
           tag.style.cursor = "pointer";
           tag.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); toggleOverride(id, sellable); repaintRow(li); });
         }
-        nameWrap.parentNode.insertBefore(tag, nameWrap.nextSibling);
+        nameWrap.appendChild(tag);
       }
       if (sellable && price > 0) {
         const actions = li.querySelector(".outside-actions");
