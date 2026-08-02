@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.8.0
+// @version      1.9.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -173,6 +173,7 @@
     table.tdk th.l,table.tdk td.l{text-align:left}
     table.tdk td{padding:9px 14px;border-bottom:1px solid #211f18;text-align:right;white-space:nowrap;
       font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}
+    table.tdk td.mv{color:#ded7c5}
     table.tdk td.l{font-family:system-ui,sans-serif}
     table.tdk tr.dim td{opacity:.82}
     table.tdk tr:hover td{background:#1b1a14}
@@ -231,6 +232,14 @@
     .tdk-bh .tt small{color:#928b78;font-weight:600;font-size:11px}
     .tdk-bx{margin-left:auto;cursor:pointer;color:#928b78;font-size:20px;background:none;border:none;line-height:1}
     .tdk-bx:hover{color:#e5615c}
+    .tdk-set .sl{font-size:12px;color:#c3bda9;margin:8px 0 4px}
+    .tdk-set .sl small{color:#928b78}
+    .tdk-set .sl a.prof{color:#d9b441;text-decoration:none;border-bottom:1px dotted #4a4536}
+    .tdk-set .srow{display:flex;gap:8px;align-items:center;margin-bottom:4px}
+    .tdk-set input{flex:1;min-width:0;background:#201e17;border:1px solid #3a3729;color:#ece7d8;border-radius:8px;padding:7px 9px;font-family:ui-monospace,monospace;font-size:12px}
+    .tdk-set .ssub{font-size:12px;color:#928b78;margin-top:6px;line-height:1.55}
+    .tdk-set .ssub b{color:#d9b441}
+    .tdk-set .serr{color:#e5615c}
     .tdk-x{border-color:#7a4a44 !important;color:#e7a49d !important}
     .tdk-x:hover{background:#3a201d !important}
     .tdk-bestonline{display:block;margin:8px 0 4px;padding:9px 12px;border:1px solid #4cc281;border-radius:9px;background:#16241c;color:#bfe9cf;text-decoration:none;font-size:13px}
@@ -312,9 +321,9 @@
       const mark = (aff && fill) ? '<span class="star">★</span>' : (isTop ? '<span class="star">💰</span>' : '');
       return '<tr class="' + cls + '" data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '">' +
         '<td class="l"><span class="nm">' + x.name + mark + '</span><div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + ago(x.freshS) + ' old</div></td>' +
-        '<td>' + full$(x.buy) + '</td><td>' + full$(x.sell) + '</td>' +
+        '<td class="mv">' + full$(x.buy) + '</td><td class="mv">' + full$(x.sell) + '</td>' +
         '<td class="gd">' + full$(x.ppi) + '</td><td>' + sc + '</td>' +
-        '<td>' + money(x.full) + shortB + '</td>' +
+        '<td class="mv">' + money(x.full) + shortB + '</td>' +
         '<td class="ppm">$' + x.ppm.toLocaleString() + '</td></tr>';
     }).join("");
 
@@ -495,6 +504,7 @@
     if (v === "inv") renderInv();
   }
   const CHANGELOG = [
+    { v: "1.9.0", d: "Aug 2, 2026", c: ["New ⚙ Settings: view/update your Torn + W3B keys and Test the Torn key — shows its access level and whether it can actually read your inventory (diagnoses the empty 📦 Bag)", "Fund now switches you out of the Bag view instead of leaving both buttons lit", "Buy / Resale / Load columns are readable — they were inheriting Torn's dark td color"] },
     { v: "1.8.0", d: "Aug 2, 2026", c: ["Click a board row → Buyers now shows each buyer's 🟢/🟡/⚫ online status (via Torn API) and a one-click ⚡ 'Trade best online' button for the best offer from someone actually around", "Added a ✕ close button to the panel header + raised the 💰 toggle above the panel (fixes not being able to close it)", "Readable board again: brighter item names, lifted dim opacity"] },
     { v: "1.7.4", d: "Aug 2, 2026", c: ["Fund advice is now stocks-aware: reads your actual stock value (networth) and only suggests a 'funded' play you can truly reach with cash+stocks — no more 'sell $229M in stocks' when you don't have it", "Inline tag moved inside the item name to stop rows wrapping to two lines"] },
     { v: "1.7.3", d: "Aug 2, 2026", c: ["Panel now anchors to the top and caps its height to the window (zoom-aware) — the header/Refresh are always reachable, no more overshooting the top of the page", "Dimmed (unaffordable) rows are readable again — bumped opacity so item + buy/resale text isn’t washed out when you’re low on cash"] },
@@ -544,6 +554,44 @@
       ontimeout: function () { s.textContent = "Update check timed out."; }
     });
   }
+  function openSettings() {
+    const bx = host.querySelector("#tdk-buyers");
+    bx.classList.add("open");
+    const esc = function (s) { return String(s || "").replace(/"/g, "&quot;"); };
+    bx.innerHTML =
+      '<div class="tdk-bh"><div class="tt">Settings</div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
+      '<div class="tdk-set">' +
+        '<div class="sl">Torn API key <small>— board · cash · inventory · online status</small></div>' +
+        '<div class="srow"><input id="tdk-set-torn" type="text" spellcheck="false" placeholder="Torn API key" value="' + esc(GM_getValue("torn_key", "")) + '"><button class="tdk-btn2" id="tdk-set-test">Test</button></div>' +
+        '<div class="sl">weav3r (W3B) key <small>— trader buy prices</small></div>' +
+        '<div class="srow"><input id="tdk-set-w3b" type="text" spellcheck="false" placeholder="W3B key" value="' + esc(GM_getValue("w3b_key", "")) + '"></div>' +
+        '<div class="srow"><button class="tdk-btn2" id="tdk-set-save">Save keys</button><span id="tdk-set-msg" class="ssub"></span></div>' +
+        '<div id="tdk-set-out" class="ssub"></div>' +
+        '<div class="sl" style="margin-top:14px">Need a key? <a class="prof" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Torn → Settings → API Keys</a> — inventory needs <b>Limited</b> access or higher.</div>' +
+      '</div>';
+    bindClose(bx);
+    host.querySelector("#tdk-set-save").addEventListener("click", function () {
+      GM_setValue("torn_key", host.querySelector("#tdk-set-torn").value.trim());
+      GM_setValue("w3b_key", host.querySelector("#tdk-set-w3b").value.trim());
+      state.inv = null; state.resale = null; state.itemMeta = null; state.cash = null; state.stocks = null;
+      host.querySelector("#tdk-set-msg").textContent = " Saved ✓ — caches cleared, hit Refresh";
+    });
+    host.querySelector("#tdk-set-test").addEventListener("click", function () {
+      const k = host.querySelector("#tdk-set-torn").value.trim(), out = host.querySelector("#tdk-set-out");
+      if (!k) { out.textContent = "Enter a Torn key first."; return; }
+      out.textContent = "Testing…";
+      gmGet("https://api.torn.com/key/?selections=info&key=" + encodeURIComponent(k)).then(function (j) {
+        if (j.error) { out.innerHTML = '<span class="serr">Key error: ' + j.error.error + '</span>'; return null; }
+        const lvl = (j.access_type || "?") + " (level " + (j.access_level != null ? j.access_level : "?") + ")";
+        return gmGet("https://api.torn.com/user/?selections=inventory&key=" + encodeURIComponent(k)).then(function (inv) {
+          let msg;
+          if (inv.error) msg = '<span class="serr">📦 inventory blocked: ' + inv.error.error + '</span>';
+          else { const raw = inv.inventory; const arr = Array.isArray(raw) ? raw : (raw && typeof raw === "object" ? Object.values(raw) : []); msg = '📦 inventory: <b>' + arr.length + '</b> item type' + (arr.length === 1 ? '' : 's') + ' readable' + (arr.length ? '' : ' — this key can’t see your inventory (needs Limited access or higher)'); }
+          out.innerHTML = '✓ Access: <b>' + lvl + '</b><br>' + msg;
+        });
+      }).catch(function (e) { out.innerHTML = '<span class="serr">Test failed: ' + e.message + '</span>'; });
+    });
+  }
   function openChangelog() {
     const bx = host.querySelector("#tdk-buyers");
     const ovCount = Object.keys(state.ov).length;
@@ -584,6 +632,7 @@
         '<button class="tdk-btn2" id="tdk-invbtn" title="Toggle your sellable-junk inventory">📦 Bag</button>' +
         '<button class="tdk-btn2" id="tdk-fund" title="Show top plays even if over budget — reminds you to free up cash first">💰 Fund</button>' +
         '<button class="tdk-btn2" id="tdk-refresh">↻ Refresh</button>' +
+        '<button class="tdk-btn2" id="tdk-settings" title="Settings — API keys &amp; options">⚙</button>' +
         '<button class="tdk-btn2 tdk-x" id="tdk-close" title="Close panel">✕</button>' +
       '</div>' +
       '<div class="tdk-status" id="tdk-status">Click Refresh to pull live data.</div>' +
@@ -599,6 +648,7 @@
 
     btn.addEventListener("click", function () { panel.classList.toggle("open"); if (panel.classList.contains("open") && !state.rows.length) refresh(); });
     host.querySelector("#tdk-close").addEventListener("click", function () { panel.classList.remove("open"); });
+    host.querySelector("#tdk-settings").addEventListener("click", openSettings);
     host.querySelector("#tdk-refresh").addEventListener("click", function () { if (state.view === "inv") { state.inv = null; renderInv(); } else refresh(); });
     host.querySelector("#tdk-cap").addEventListener("change", function (e) {
       state.cap = Math.max(1, parseInt(e.target.value, 10) || 23); GM_setValue("cap", state.cap);
@@ -609,7 +659,9 @@
       state.filter = c.dataset.cc; render();
     });
     host.querySelector("#tdk-fund").addEventListener("click", function () {
-      state.fund = !state.fund; GM_setValue("fund", state.fund); render();
+      state.fund = !state.fund; GM_setValue("fund", state.fund);
+      if (state.view === "inv") setView("board"); // leave the Bag view so the toggle actually switches
+      render();
     });
     host.querySelector("#tdk-body").addEventListener("click", function (e) {
       if (e.target.closest("a, button")) return;
