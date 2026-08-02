@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.6.2
+// @version      1.6.3
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -234,15 +234,31 @@
     const fbtn = host.querySelector("#tdk-fund"); if (fbtn) fbtn.className = "tdk-btn2" + (fund ? " on" : "");
     const rows = state.filter === "all" ? state.rows : state.rows.filter(function (x) { return x.cc === state.filter; });
     const best = rows.find(function (x) { return (cash == null || x.full <= cash) && x.stock >= cap; });
+    const alt = best ? null : rows.find(function (x) { return x.stock > 0; }); // rows are sorted by ppm desc
     const topOver = rows.find(function (x) { return x.stock >= cap && cash != null && x.full > cash && (!best || x.ppm > best.ppm); });
     const b = host.querySelector("#tdk-best");
-    let html = best
-      ? '<div class="l">Best now' + (state.filter === "all" ? "" : " · " + FLY[state.filter].name) + (cash != null ? " · " + money(cash) : "") + '</div>' +
+    const loc = (state.filter === "all" ? "" : " · " + FLY[state.filter].name) + (cash != null ? " · " + money(cash) : "");
+    let html;
+    if (best) {
+      html = '<div class="l">Best now' + loc + '</div>' +
         '<div class="p">' + best.name + ' <span>· ' + best.country + '</span></div>' +
-        '<div class="k"><b>$' + best.ppm.toLocaleString() + '</b>/min · trip ' + money(best.ppi * cap - FLY[best.cc].fare) + ' · load ' + money(best.full) + ' · stock ' + best.stock.toLocaleString() + '</div>'
-      : '<div class="l">Best now</div><div class="p">Nothing both affordable &amp; in stock here</div>';
-    if (topOver) {
-      html += '<div class="tdk-fund2">💰 Bigger play if funded: <b>' + topOver.name + '</b> (' + topOver.country + ') · <b>$' + topOver.ppm.toLocaleString() + '</b>/min — sell <b>' + money(topOver.full - cash) + '</b> in stocks before you fly to full-load it.</div>';
+        '<div class="k"><b>$' + best.ppm.toLocaleString() + '</b>/min · trip ' + money(best.ppi * cap - FLY[best.cc].fare) + ' · load ' + money(best.full) + ' · stock ' + best.stock.toLocaleString() + '</div>';
+      if (topOver) {
+        html += '<div class="tdk-fund2">💰 Bigger play if funded: <b>' + topOver.name + '</b> (' + topOver.country + ') · <b>$' + topOver.ppm.toLocaleString() + '</b>/min — sell <b>' + money(topOver.full - cash) + '</b> in stocks before you fly to full-load it.</div>';
+      }
+    } else if (alt) {
+      const barriers = [];
+      if (cash != null && alt.full > cash) barriers.push('💵 sell <b>' + money(alt.full - cash) + '</b> in stocks to full-load');
+      if (alt.stock < cap) barriers.push('📦 only <b>' + alt.stock.toLocaleString() + '</b> in stock (partial load)');
+      html = '<div class="l">Best available' + loc + '</div>' +
+        '<div class="p">' + alt.name + ' <span>· ' + alt.country + '</span></div>' +
+        '<div class="k"><b>$' + alt.ppm.toLocaleString() + '</b>/min · trip ' + money(alt.ppi * cap - FLY[alt.cc].fare) + ' · load ' + money(alt.full) + ' · stock ' + alt.stock.toLocaleString() + '</div>' +
+        (barriers.length ? '<div class="tdk-fund2">' + barriers.join(' · ') + '</div>' : '');
+    } else {
+      const msg = !state.rows.length ? 'No data yet — hit ↻ Refresh (YATA may be down).'
+        : !rows.length ? 'Nothing profitable in this filter — try All.'
+          : 'Everything’s out of stock here — check back after restocks.';
+      html = '<div class="l">Best now</div><div class="p">' + msg + '</div>';
     }
     b.innerHTML = html;
 
@@ -308,7 +324,9 @@
     const j = await gmGet("https://api.torn.com/user/?selections=inventory,travel&key=" + encodeURIComponent(key));
     if (j.error) throw new Error("Torn API: " + j.error.error);
     state.travel = j.travel || null;
-    state.inv = j.inventory || []; state.invAt = now;
+    const raw = j.inventory;
+    state.inv = Array.isArray(raw) ? raw : (raw && typeof raw === "object" ? Object.values(raw) : []);
+    state.invAt = now;
     return state.inv;
   }
   const JUNK_TYPES = { Plushie: 1, Flower: 1, Collectible: 1, Artifact: 1, Jewelry: 1 };
@@ -358,6 +376,7 @@
     if (v === "inv") renderInv();
   }
   const CHANGELOG = [
+    { v: "1.6.3", d: "Aug 2, 2026", c: ["Fixed 📦 Bag stuck on 'loading inventory…' (inventory now coerced to an array)", "Board no longer dead-ends: when nothing is affordable + full-stock it shows the Best available play + what's blocking it"] },
     { v: "1.6.2", d: "Aug 2, 2026", c: ["📦 Bag detects when you're flying (Torn hides inventory in transit) — shows arrival countdown instead of an empty list"] },
     { v: "1.6.1", d: "Aug 2, 2026", c: ["Clearer message when YATA is down (502/timeout) instead of raw error", "Longer 30s timeout for YATA's heavy export"] },
     { v: "1.6.0", d: "Aug 1, 2026", c: ["Bigger-text controls (A− / A+)", "Sellable-Junk inventory view (📦 Bag)", "Clickable version → this changelog"] },
