@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.17.1
+// @version      1.18.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -36,9 +36,12 @@
     uae: { name: "UAE", rt: 514, fare: 64000 },
     sou: { name: "South Africa", rt: 564, fare: 80000 }
   };
+  // Torn's status/travel destination strings → our country codes (so we can auto-filter to where you're standing).
+  const DEST_CC = { mexico: "mex", cayman: "cay", "cayman islands": "cay", canada: "can", hawaii: "haw", "united kingdom": "uni", uk: "uni", britain: "uni", argentina: "arg", switzerland: "swi", japan: "jap", china: "chi", uae: "uae", "united arab emirates": "uae", "south africa": "sou" };
+  function destCC(dest) { return dest ? (DEST_CC[String(dest).toLowerCase().trim()] || null) : null; }
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}) };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined };
   const fmtRt = function (min) { const h = Math.floor(min / 60), m = min % 60; return (h ? h + "h" : "") + (m ? m + "m" : "") || "0m"; };
   const TIME_OPTS = [[0, "⏱ Any time"], [60, "≤ 1h"], [90, "≤ 1½h"], [120, "≤ 2h"], [180, "≤ 3h"], [240, "≤ 4h"], [360, "≤ 6h"], [480, "≤ 8h"], [600, "≤ 10h"]];
 
@@ -109,10 +112,19 @@
   }
   async function loadCash(key) {
     try {
-      const j = await gmGet("https://api.torn.com/user/?selections=money,networth&key=" + encodeURIComponent(key));
+      const j = await gmGet("https://api.torn.com/user/?selections=money,networth,basic,travel&key=" + encodeURIComponent(key));
       if (j && typeof j.money_onhand === "number") state.cash = j.money_onhand;
       if (j && j.networth && typeof j.networth.stockmarket === "number") state.stocks = j.networth.stockmarket;
+      // Abroad = you can shop at that country's store. status.state is the authoritative signal ("Abroad"/"Traveling"/"Okay"…);
+      // travel.destination names the country. In flight or home → no location (board shows all).
+      state.loc = (j && j.status && j.status.state === "Abroad" && j.travel) ? destCC(j.travel.destination) : null;
     } catch (e) { /* non-fatal */ }
+  }
+  // When you land abroad, default the board to that country — but only re-apply when your location actually
+  // changes, so a chip you pick yourself sticks until you move (or fly home → back to All).
+  function applyLocationFilter() {
+    const loc = state.loc || null;
+    if (loc !== state.lastLoc) { state.lastLoc = loc; state.filter = loc || "all"; }
   }
   async function refresh() {
     setStatus("Refreshing…");
@@ -142,8 +154,9 @@
       });
       rows.sort(function (a, b) { return b.ppm - a.ppm; });
       state.rows = rows;
+      applyLocationFilter(); // auto-focus the board on the country you're standing in
       render();
-      setStatus("Updated " + new Date().toLocaleTimeString());
+      setStatus("Updated " + new Date().toLocaleTimeString() + (state.loc && FLY[state.loc] ? " · 📍 you're in " + FLY[state.loc].name : ""));
     } catch (e) {
       const msg = e.message || "";
       const isYata = e.url && e.url.indexOf("yata.yt") !== -1;
@@ -213,6 +226,8 @@
     .tdk-fc{font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;cursor:pointer;border:1px solid #3a3729;background:#1b1a14;color:#c3bda9}
     .tdk-fc:hover{background:#201e17}
     .tdk-fc.on{background:#2a2413;border-color:#d9b441;color:#d9b441}
+    .tdk-fc.here{border-color:#4cc281;color:#8fe6b3}
+    .tdk-fc.here.on{background:#16241c;border-color:#4cc281;color:#8fe6b3}
     .tdk-tsel{margin-left:auto;font-size:11px;font-weight:700;padding:4px 8px;border-radius:999px;cursor:pointer;border:1px solid #3a3729;background:#1b1a14;color:#c3bda9}
     .tdk-tsel:focus{outline:none;border-color:#d9b441;color:#d9b441}
     .tdk-btn2.on{background:#d9b441;color:#14130f;border-color:#d9b441}
@@ -331,7 +346,8 @@
     const timeSel = '<select class="tdk-tsel" id="tdk-tsel" title="Only show destinations within this round-trip time">' +
       TIME_OPTS.map(function (o) { return '<option value="' + o[0] + '"' + (state.maxTrip === o[0] ? " selected" : "") + '>' + o[1] + "</option>"; }).join("") + "</select>";
     host.querySelector("#tdk-filter").innerHTML = chips.map(function (c) {
-      return '<span class="tdk-fc' + (state.filter === c[0] ? " on" : "") + '" data-cc="' + c[0] + '">' + c[1] + '</span>';
+      const here = c[0] === state.loc; // the country you're currently standing in
+      return '<span class="tdk-fc' + (state.filter === c[0] ? " on" : "") + (here ? " here" : "") + '" data-cc="' + c[0] + '"' + (here ? ' title="You\'re here now"' : "") + '>' + (here ? "📍 " : "") + c[1] + '</span>';
     }).join("") + timeSel;
   }
   function render() {
@@ -644,6 +660,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.18.0", d: "Aug 2, 2026", c: ["📍 Abroad auto-focus: when you're standing in a foreign country the board defaults to that destination's items automatically (the chip shows 📍 and glows green), so you see what to buy right where you are. Pick another chip and it sticks until you move; fly home → back to All"] },
     { v: "1.17.1", d: "Aug 2, 2026", c: ["⚡ Find-buyers stays on sell-ok items only (default junk, or ones you've toggled to sell) — held-back items are lock-only, so there's no path to sell a use-item by mistake"] },
     { v: "1.17.0", d: "Aug 2, 2026", c: ["Net-profit in the Buyers popover: for travel-trade goods each buyer's total now shows 'net +$X' (sell − your foreign buy cost × qty), updates live with quantity, and 📋 copies it into the trade line too"] },
     { v: "1.16.1", d: "Aug 2, 2026", c: ["Gym-estimate energy box is now capped to your energy maximum (can't enter impossible values like 206)"] },
