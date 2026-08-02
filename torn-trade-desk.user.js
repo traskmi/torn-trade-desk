@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.12.0
+// @version      1.13.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -94,7 +94,7 @@
       const it = j.items[id];
       idx[+id] = it.market_value;
       const eff = (it.effect || "").trim(), req = (it.requirement || "").trim();
-      meta[+id] = { type: it.type || "", hasUse: !!(eff || req) };
+      meta[+id] = { type: it.type || "", hasUse: !!(eff || req), name: it.name || "" };
     });
     state.resale = idx; state.itemMeta = meta; state.resaleAt = now;
     return idx;
@@ -264,6 +264,20 @@
     .tdk-set .ssub{font-size:12px;color:#928b78;margin-top:6px;line-height:1.55}
     .tdk-set .ssub b{color:#d9b441}
     .tdk-set .serr{color:#e5615c}
+    .tdk-happy .hreset{font-size:14px;font-weight:700;color:#8fe6b3;background:#16241c;border:1px solid #2f5e46;border-radius:9px;padding:8px 11px;margin-bottom:8px}
+    .tdk-happy .hreset.soon{color:#f0b3ad;background:#2c1614;border-color:#7a4a44}
+    .tdk-happy .hsec{font-size:12px;color:#c3bda9;margin:8px 0 4px;font-weight:700}
+    .tdk-happy .hsec small{color:#928b78;font-weight:400}
+    .tdk-happy .hrow{display:flex;align-items:center;gap:8px;padding:3px 0}
+    .tdk-happy .hrow label{flex:1;font-size:13px;color:#ece7d8}
+    .tdk-happy .hv{color:#928b78;font-size:11px}
+    .tdk-happy .hqty{width:70px;background:#201e17;border:1px solid #3a3729;color:#ece7d8;border-radius:8px;padding:5px 7px;font-family:ui-monospace,monospace}
+    .tdk-happy .hsub{width:92px;text-align:right;color:#8fe6b3;font-size:11px;font-family:ui-monospace,monospace}
+    .tdk-happy .hchk label{cursor:pointer}
+    .tdk-happy .hresult{margin-top:10px;font-size:16px;font-weight:800;color:#ece7d8;border-top:1px dashed #3a3729;padding-top:8px}
+    .tdk-happy .hresult b{color:#d9b441}
+    .tdk-happy .hseq{margin-top:4px;font-size:12px;color:#e2933f;line-height:1.45}
+    .tdk-happy .hseq b{color:#d9b441}
     .tdk-x{position:absolute;top:11px;right:12px;border-color:#7a4a44 !important;color:#e7a49d !important}
     .tdk-x:hover{background:#3a201d !important}
     .tdk-bestonline{display:block;margin:8px 0 4px;padding:9px 12px;border:1px solid #4cc281;border-radius:9px;background:#16241c;color:#bfe9cf;text-decoration:none;font-size:13px}
@@ -593,6 +607,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.13.0", d: "Aug 2, 2026", c: ["😊 Happy Jump calculator: live 'happy resets in M:SS' timer (the :00/:15/:30/:45 reset), your current/base happy, your held candy/drug/eDVD boosters (auto-detected) with an Ecstasy ×2 toggle, and the max happy + optimal eat/take order (99,999 cap). All values verified from the Torn wiki"] },
     { v: "1.12.0", d: "Aug 2, 2026", c: ["Trade-description autofill: click ⇄ Trade (or ⚡) on a buyer, then on the trade page a '📋 Fill description' button drops the exact trade line into Torn's required description box. Text-only + you press Initiate Trade — no item/money automation"] },
     { v: "1.11.3", d: "Aug 2, 2026", c: ["Buyers/changelog window now floats over the page at near-full height instead of being clipped short by the panel (especially when opened via ⚡ before refreshing) — drag any edge to resize"] },
     { v: "1.11.2", d: "Aug 2, 2026", c: ["Fixed the item.php ⚡ only showing on the last row — moved it next to the item name (the action cell was too cramped and it clipped)", "Changelog / buyers window is taller and you can drag its bottom edge to resize it"] },
@@ -653,6 +668,94 @@
       onerror: function () { s.textContent = "Couldn't reach GitHub."; },
       ontimeout: function () { s.textContent = "Update check timed out."; }
     });
+  }
+  // Flat happy per item — verified from the Torn wiki (wiki.torn.com/wiki/Happy), Aug 2026.
+  const HAPPY_ITEMS = {
+    "Bag of Bon Bons": 25, "Bag of Chocolate Kisses": 25, "Box of Bon Bons": 25, "Box of Extra Strong Mints": 25, "Box of Sweet Hearts": 25, "Lollipop": 25, "Box of Chocolate Bars": 25,
+    "Big Box of Chocolate Bars": 35, "Bag of Candy Kisses": 50, "Chocolate Egg": 50, "Bag of Bloody Eyeballs": 75, "Bag of Tootsie Rolls": 75, "Bag of Chocolate Truffles": 100, "Bag of Reindeer Droppings": 100,
+    "Bag of Humbugs": 150, "Bag of Sherbet": 150, "Jawbreaker": 150, "Pixie Sticks": 150, "Birthday Cupcake": 250,
+    "Shrooms": 500, "PCP": 250, "Xanax": 75, "Vicodin": 75, "Speed": 50, "Erotic DVD": 2500, "Feathery Hotel Coupon": 500
+  };
+  const HAPPY_CAP = 99999;
+  function calcHappy(start, flat, ecstasy) {
+    if (!ecstasy) return Math.min(HAPPY_CAP, start + flat);
+    const beforeFlat = Math.min(flat, Math.max(0, Math.floor(HAPPY_CAP / 2) - start)); // fill toward cap/2, double, then add rest
+    const doubled = Math.min(HAPPY_CAP, (start + beforeFlat) * 2);
+    return Math.min(HAPPY_CAP, doubled + (flat - beforeFlat));
+  }
+  async function openHappy() {
+    const bx = host.querySelector("#tdk-buyers");
+    bx.classList.add("open");
+    bx.innerHTML = '<div class="tdk-bh"><div class="tt">Happy Jump<small> — loading…</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>';
+    bindClose(bx);
+    const key = GM_getValue("torn_key", "");
+    let cur = null, max = null;
+    if (key) {
+      try { const j = await gmGet("https://api.torn.com/user/?selections=bars&key=" + encodeURIComponent(key)); if (j && j.happy) { cur = j.happy.current; max = j.happy.maximum; } } catch (e) { }
+      if (!state.itemMeta) { try { await loadResale(key); } catch (e) { } }
+    }
+    const meta = state.itemMeta || {}, store = GM_getValue("inv_counts", null);
+    const held = {}; let hasEcstasy = false;
+    if (store && store.map) Object.keys(store.map).forEach(function (id) {
+      const nm = meta[id] && meta[id].name;
+      if (nm && HAPPY_ITEMS[nm] != null) held[nm] = store.map[id];
+      if (nm === "Ecstasy") hasEcstasy = true;
+    });
+    const heldNames = Object.keys(held).sort(function (a, b) { return HAPPY_ITEMS[b] - HAPPY_ITEMS[a]; });
+    const start = cur != null ? cur : (max != null ? max : 0);
+    const itemRows = heldNames.map(function (nm) {
+      return '<div class="hrow"><label>' + nm + ' <span class="hv">+' + HAPPY_ITEMS[nm] + '</span></label>' +
+        '<input class="hqty" type="number" min="0" data-per="' + HAPPY_ITEMS[nm] + '" value="' + held[nm] + '"><span class="hsub" data-sub></span></div>';
+    }).join("");
+    bx.innerHTML =
+      '<div class="tdk-bh"><div class="tt">Happy Jump' + (max != null ? '<small> — ' + start.toLocaleString() + ' / ' + max.toLocaleString() + ' base</small>' : '') + '</div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
+      '<div class="tdk-happy">' +
+        '<div class="hreset" id="tdk-hreset">…</div>' +
+        (key ? '' : '<div class="ssub serr">Add your Torn API key in ⚙ Settings to read live happy.</div>') +
+        (heldNames.length ? '<div class="hsec">Boosters you hold <small>(edit counts)</small></div>' + itemRows
+          : '<div class="ssub">No happy items detected yet — open your Items page (Candy / Drugs tabs) so the tool can see them, or just enter a total below.</div>') +
+        '<div class="hrow"><label>Other flat happy <span class="hv">manual</span></label><input class="hqty" id="tdk-hother" type="number" min="0" data-per="1" value="0"><span class="hsub" data-sub></span></div>' +
+        '<div class="hrow hchk"><label><input type="checkbox" id="tdk-hecs"' + (hasEcstasy ? ' checked' : '') + '> Ecstasy ×2 <span class="hv">doubles happy</span></label></div>' +
+        '<div class="hresult" id="tdk-hresult"></div>' +
+        '<div class="hseq" id="tdk-hseq"></div>' +
+        '<div class="ssub">Cap 99,999 · boosted happy lasts only until the reset. Values verified from the Torn wiki.</div>' +
+      '</div>';
+    bindClose(bx);
+    const recompute = function () {
+      let flat = 0;
+      bx.querySelectorAll(".hqty").forEach(function (inp) {
+        const per = +inp.getAttribute("data-per"), q = Math.max(0, parseInt(inp.value, 10) || 0);
+        const sub = inp.parentNode.querySelector("[data-sub]"); if (sub) sub.textContent = q ? "= +" + (per * q).toLocaleString() : "";
+        flat += per * q;
+      });
+      const ecs = bx.querySelector("#tdk-hecs").checked;
+      const final = calcHappy(start, flat, ecs);
+      bx.querySelector("#tdk-hresult").innerHTML = 'Max happy: <b>' + final.toLocaleString() + '</b>' + (final >= HAPPY_CAP ? ' <span class="hv">(cap)</span>' : '') +
+        ' <span class="hv">= ' + start.toLocaleString() + ' + ' + flat.toLocaleString() + ' flat' + (ecs ? ', ×2' : '') + '</span>';
+      const seq = bx.querySelector("#tdk-hseq");
+      if (!flat && !ecs) seq.textContent = "";
+      else if (!ecs) seq.innerHTML = 'Eat all boosters (+' + flat.toLocaleString() + ') → <b>' + final.toLocaleString() + '</b>';
+      else {
+        const beforeFlat = Math.min(flat, Math.max(0, Math.floor(HAPPY_CAP / 2) - start));
+        if (beforeFlat >= flat) seq.innerHTML = 'Eat all boosters (+' + flat.toLocaleString() + ' → ' + (start + flat).toLocaleString() + '), then <b>Ecstasy ×2</b> → <b>' + final.toLocaleString() + '</b>';
+        else seq.innerHTML = 'Eat +' + beforeFlat.toLocaleString() + ' → ' + (start + beforeFlat).toLocaleString() + ', <b>Ecstasy ×2</b> → ' + Math.min(HAPPY_CAP, (start + beforeFlat) * 2).toLocaleString() + ', then remaining +' + (flat - beforeFlat).toLocaleString() + ' → <b>' + final.toLocaleString() + '</b>';
+      }
+    };
+    bx.querySelectorAll(".hqty, #tdk-hecs").forEach(function (el) { el.addEventListener("input", recompute); el.addEventListener("change", recompute); });
+    const updateReset = function () {
+      const el = host.querySelector("#tdk-hreset"); if (!el) return;
+      const now = new Date(), m = now.getUTCMinutes(), s = now.getUTCSeconds();
+      const secs = 15 * 60 - ((m % 15) * 60 + s), nextQ = ((Math.floor(m / 15) + 1) * 15) % 60;
+      const mm = Math.floor(secs / 60), ss = secs % 60;
+      el.innerHTML = '⏰ Happy resets in <b>' + mm + ':' + (ss < 10 ? '0' : '') + ss + '</b> (at :' + (nextQ < 10 ? '0' + nextQ : nextQ) + ' TCT)';
+      el.className = 'hreset' + (secs <= 120 ? ' soon' : '');
+    };
+    updateReset(); recompute();
+    if (state._happyTimer) clearInterval(state._happyTimer);
+    state._happyTimer = setInterval(function () {
+      if (!host.querySelector("#tdk-hreset") || !bx.classList.contains("open")) { clearInterval(state._happyTimer); state._happyTimer = null; return; }
+      updateReset();
+    }, 1000);
   }
   function openSettings() {
     const bx = host.querySelector("#tdk-buyers");
@@ -741,6 +844,7 @@
         '<button class="tdk-btn2 tdk-sm" id="tdk-ainc" title="Bigger text">A+</button>' +
         '<button class="tdk-btn2" id="tdk-invbtn" title="Toggle your sellable-junk inventory">📦 Bag</button>' +
         '<button class="tdk-btn2" id="tdk-fund" title="Show top plays even if over budget — reminds you to free up cash first">💰 Fund</button>' +
+        '<button class="tdk-btn2" id="tdk-happy" title="Happy-jump calculator — max happy, best order &amp; reset timer">😊 Happy</button>' +
         '<button class="tdk-btn2" id="tdk-refresh">↻ Refresh</button>' +
         '<button class="tdk-btn2" id="tdk-settings" title="Settings — API keys &amp; options">⚙</button>' +
         '<button class="tdk-btn2 tdk-x" id="tdk-close" title="Close panel">✕</button>' +
@@ -760,6 +864,7 @@
     btn.addEventListener("click", function () { panel.classList.toggle("open"); if (panel.classList.contains("open")) { if (!state.rows.length) refresh(); checkInvStatus(); } });
     host.querySelector("#tdk-close").addEventListener("click", function () { panel.classList.remove("open"); });
     host.querySelector("#tdk-settings").addEventListener("click", openSettings);
+    host.querySelector("#tdk-happy").addEventListener("click", openHappy);
     host.querySelector("#tdk-refresh").addEventListener("click", function () { if (state.view === "inv") { state.inv = null; renderInv(); } else refresh(); });
     host.querySelector("#tdk-cap").addEventListener("change", function (e) {
       state.cap = Math.max(1, parseInt(e.target.value, 10) || 23); GM_setValue("cap", state.cap);
