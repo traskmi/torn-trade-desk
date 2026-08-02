@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.9.1
+// @version      1.9.2
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -475,7 +475,7 @@
       const n = items.length;
       box.innerHTML = '<div class="tdk-best"><div class="l">Bag</div>' +
         '<div class="p">' + (n ? 'Scanned ' + n + ' item' + (n === 1 ? '' : 's') + ' — none with a market value' : 'Inventory came back empty') + '</div>' +
-        '<div class="k">' + (n ? 'Nothing here is currently sellable on the market.' : 'Your Torn API key may lack inventory access, or Torn returned nothing.') + '</div></div>';
+        '<div class="k">' + (n ? 'Nothing here is currently sellable on the market.' : 'Torn’s inventory API is returning empty right now — it’s mid-migration on Torn’s side, not your key (⚙ → Test to confirm). The Bag will work once Torn restores it.') + '</div></div>';
       return;
     }
     const grand = sell.reduce(function (s, x) { return s + x.total; }, 0);
@@ -504,6 +504,7 @@
     if (v === "inv") renderInv();
   }
   const CHANGELOG = [
+    { v: "1.9.2", d: "Aug 2, 2026", c: ["Truth in messaging: the empty 📦 Bag is Torn's fault, not yours — Torn's inventory API is temporarily returning empty for everyone during their inventory-system migration. No key (even Full) can read it until Torn restores the endpoint. Settings/Bag now say so instead of blaming your key"] },
     { v: "1.9.1", d: "Aug 2, 2026", c: ["Moved the ✕ close to the top-right corner so it stops wrapping to a second line; tightened header buttons", "Fixed the Settings key-test advice: inventory needs a Full key (or a Custom key with Inventory ticked) — Limited isn't enough, and everything else works on Limited"] },
     { v: "1.9.0", d: "Aug 2, 2026", c: ["New ⚙ Settings: view/update your Torn + W3B keys and Test the Torn key — shows its access level and whether it can actually read your inventory (diagnoses the empty 📦 Bag)", "Fund now switches you out of the Bag view instead of leaving both buttons lit", "Buy / Resale / Load columns are readable — they were inheriting Torn's dark td color"] },
     { v: "1.8.0", d: "Aug 2, 2026", c: ["Click a board row → Buyers now shows each buyer's 🟢/🟡/⚫ online status (via Torn API) and a one-click ⚡ 'Trade best online' button for the best offer from someone actually around", "Added a ✕ close button to the panel header + raised the 💰 toggle above the panel (fixes not being able to close it)", "Readable board again: brighter item names, lifted dim opacity"] },
@@ -568,7 +569,7 @@
         '<div class="srow"><input id="tdk-set-w3b" type="text" spellcheck="false" placeholder="W3B key" value="' + esc(GM_getValue("w3b_key", "")) + '"></div>' +
         '<div class="srow"><button class="tdk-btn2" id="tdk-set-save">Save keys</button><span id="tdk-set-msg" class="ssub"></span></div>' +
         '<div id="tdk-set-out" class="ssub"></div>' +
-        '<div class="sl" style="margin-top:14px">Need a key? <a class="prof" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Torn → Settings → API Keys</a> — inventory needs <b>Limited</b> access or higher.</div>' +
+        '<div class="sl" style="margin-top:14px">Need a key? <a class="prof" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Torn → Settings → API Keys</a>. Note: the 📦 Bag needs Torn’s inventory API, which is temporarily disabled during Torn’s inventory migration — no key fixes that until Torn restores it.</div>' +
       '</div>';
     bindClose(bx);
     host.querySelector("#tdk-set-save").addEventListener("click", function () {
@@ -587,7 +588,7 @@
         return gmGet("https://api.torn.com/user/?selections=inventory&key=" + encodeURIComponent(k)).then(function (inv) {
           let msg;
           if (inv.error) msg = '<span class="serr">📦 inventory blocked: ' + inv.error.error + '</span>';
-          else { const raw = inv.inventory; const arr = Array.isArray(raw) ? raw : (raw && typeof raw === "object" ? Object.values(raw) : []); msg = '📦 inventory: <b>' + arr.length + '</b> item type' + (arr.length === 1 ? '' : 's') + ' readable' + (arr.length ? '' : ' — this key can’t read inventory. Use a <b>Full</b>-access key, or a <b>Custom</b> key with the <b>Inventory</b> box ticked. (Everything else — board, cash, online status — works on this Limited key.)'); }
+          else { const raw = inv.inventory; const arr = Array.isArray(raw) ? raw : (raw && typeof raw === "object" ? Object.values(raw) : []); msg = '📦 inventory: <b>' + arr.length + '</b> readable' + (arr.length ? '' : ' — <b>Torn’s inventory API is returning empty for everyone right now</b> (Torn is mid-migration on their inventory system, 2026). This is NOT your key — the 📦 Bag will start working once Torn restores the endpoint.'); }
           out.innerHTML = '✓ Access: <b>' + lvl + '</b><br>' + msg;
         });
       }).catch(function (e) { out.innerHTML = '<span class="serr">Test failed: ' + e.message + '</span>'; });
