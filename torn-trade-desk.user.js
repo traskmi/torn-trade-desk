@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.7.4
+// @version      1.8.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -144,7 +144,7 @@
   let host, panel;
   function css() {
     return `
-    #tdk-btn{position:fixed;right:18px;bottom:18px;z-index:2147483000;width:46px;height:46px;border-radius:50%;
+    #tdk-btn{position:fixed;right:18px;bottom:18px;z-index:2147483600;width:46px;height:46px;border-radius:50%;
       background:#14130f;border:1px solid #d9b441;color:#d9b441;font-size:20px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.5)}
     #tdk-btn:hover{background:#201e17}
     #tdk-panel{position:fixed;right:18px;top:12px;z-index:2147483000;width:min(760px,94vw);max-height:calc(100vh - 24px);overflow:auto;
@@ -174,9 +174,9 @@
     table.tdk td{padding:9px 14px;border-bottom:1px solid #211f18;text-align:right;white-space:nowrap;
       font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}
     table.tdk td.l{font-family:system-ui,sans-serif}
-    table.tdk tr.dim td{opacity:.66}
+    table.tdk tr.dim td{opacity:.82}
     table.tdk tr:hover td{background:#1b1a14}
-    .nm{font-weight:700}.cy{color:#928b78;font-size:11px}
+    .nm{font-weight:700;color:#f2eddf}.cy{color:#a49c88;font-size:11px}
     .ppm{color:#d9b441;font-weight:800}
     .gd{color:#4cc281;font-weight:700}
     .chip{font-family:system-ui,sans-serif;font-size:10px;font-weight:700;padding:2px 7px;border-radius:999px}
@@ -231,6 +231,11 @@
     .tdk-bh .tt small{color:#928b78;font-weight:600;font-size:11px}
     .tdk-bx{margin-left:auto;cursor:pointer;color:#928b78;font-size:20px;background:none;border:none;line-height:1}
     .tdk-bx:hover{color:#e5615c}
+    .tdk-x{border-color:#7a4a44 !important;color:#e7a49d !important}
+    .tdk-x:hover{background:#3a201d !important}
+    .tdk-bestonline{display:block;margin:8px 0 4px;padding:9px 12px;border:1px solid #4cc281;border-radius:9px;background:#16241c;color:#bfe9cf;text-decoration:none;font-size:13px}
+    .tdk-bestonline:hover{background:#1c2f24}
+    .tdk-bestonline b{color:#eafff2}
     .tdk-brow{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid #2c2a21}
     .tdk-brow:last-child{border-bottom:none}
     .tdk-brow .bn{font-weight:700}
@@ -326,6 +331,7 @@
     return k;
   }
   function bindClose(bx) { const c = host.querySelector("#tdk-bclose"); if (c) c.onclick = function () { bx.classList.remove("open"); }; }
+  const STATUS_DOT = { Online: "🟢", Idle: "🟡", Offline: "⚫" };
   async function openBuyers(id, name) {
     const bx = host.querySelector("#tdk-buyers");
     bx.classList.add("open");
@@ -336,14 +342,35 @@
     try {
       const j = await gmGet("https://weav3r.dev/api/marketplace/" + id + "/traders?apiKey=" + encodeURIComponent(key));
       const traders = (j.traders || []).slice(0, 6);
-      const list = traders.map(function (t) {
+      // Best-effort online lookup: each buyer's public last_action.status via the Torn API.
+      const tkey = GM_getValue("torn_key", ""), status = {};
+      if (tkey && traders.length) {
+        await Promise.all(traders.map(function (t) {
+          return gmGet("https://api.torn.com/user/" + t.player_id + "/?selections=profile&key=" + encodeURIComponent(tkey))
+            .then(function (p) { status[t.player_id] = (p && p.last_action && p.last_action.status) || "?"; })
+            .catch(function () { status[t.player_id] = "?"; });
+        }));
+      }
+      const dot = function (s) { return STATUS_DOT[s] || "❔"; };
+      const tradeUrl = function (pid) { return "https://www.torn.com/trade.php#step=start&userID=" + pid; };
+      // Traders arrive price-sorted, so the first online (else idle) is the best offer from someone around.
+      const bestOn = traders.find(function (t) { return status[t.player_id] === "Online"; }) ||
+        traders.find(function (t) { return status[t.player_id] === "Idle"; });
+      const head = '<div class="tdk-bh"><div class="tt">Buyers · ' + name + '<small> — ' + (j.total_count || traders.length) + ' buying' + (tkey ? ' · online first' : '') + '</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>';
+      const banner = bestOn
+        ? '<a class="tdk-bestonline" href="' + tradeUrl(bestOn.player_id) + '" target="_blank" rel="noopener">⚡ Trade best ' + (status[bestOn.player_id] === "Online" ? "online" : "idle") + ': <b>' + bestOn.player_name + '</b> @ $' + bestOn.price.toLocaleString() + ' ' + dot(status[bestOn.player_id]) + '</a>'
+        : '<div class="tdk-sub" style="padding:6px 2px">' + (tkey ? 'None of the top buyers are online right now.' : 'Add your Torn API key to flag who’s online.') + '</div>';
+      const rank = function (t) { const s = status[t.player_id]; return s === "Online" ? 0 : s === "Idle" ? 1 : s === "Offline" ? 3 : 2; };
+      const sorted = traders.map(function (t, i) { return { t: t, i: i }; })
+        .sort(function (a, b) { return (rank(a.t) - rank(b.t)) || (a.i - b.i); }).map(function (x) { return x.t; });
+      const list = sorted.map(function (t) {
         const r = t.rating || { upvotes: 0, downvotes: 0 };
-        return '<div class="tdk-brow"><div><div class="bn">' + t.player_name + '</div>' +
+        return '<div class="tdk-brow"><div><div class="bn">' + dot(status[t.player_id]) + ' ' + t.player_name + '</div>' +
           '<div class="br">' + r.upvotes + '↑ ' + r.downvotes + '↓ · <a class="prof" href="https://www.torn.com/profiles.php?XID=' + t.player_id + '" target="_blank" rel="noopener">profile</a></div></div>' +
           '<div class="bp">$' + t.price.toLocaleString() + '</div>' +
-          '<a class="tdk-trade" href="https://www.torn.com/trade.php#step=start&userID=' + t.player_id + '" target="_blank" rel="noopener">⇄ Trade</a></div>';
+          '<a class="tdk-trade" href="' + tradeUrl(t.player_id) + '" target="_blank" rel="noopener">⇄ Trade</a></div>';
       }).join("");
-      bx.innerHTML = '<div class="tdk-bh"><div class="tt">Buyers · ' + name + '<small> — ' + (j.total_count || traders.length) + ' buying, best prices</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' + (list || '<div class="br">No traders listed for this item.</div>');
+      bx.innerHTML = head + banner + (list || '<div class="br">No traders listed for this item.</div>');
       bindClose(bx);
     } catch (e) {
       bx.innerHTML = '<div class="tdk-bh"><div class="tt">Buyers · ' + name + '<small> — error</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div><div class="br">' + e.message + ' (check your W3B key in Tampermonkey storage)</div>';
@@ -468,6 +495,7 @@
     if (v === "inv") renderInv();
   }
   const CHANGELOG = [
+    { v: "1.8.0", d: "Aug 2, 2026", c: ["Click a board row → Buyers now shows each buyer's 🟢/🟡/⚫ online status (via Torn API) and a one-click ⚡ 'Trade best online' button for the best offer from someone actually around", "Added a ✕ close button to the panel header + raised the 💰 toggle above the panel (fixes not being able to close it)", "Readable board again: brighter item names, lifted dim opacity"] },
     { v: "1.7.4", d: "Aug 2, 2026", c: ["Fund advice is now stocks-aware: reads your actual stock value (networth) and only suggests a 'funded' play you can truly reach with cash+stocks — no more 'sell $229M in stocks' when you don't have it", "Inline tag moved inside the item name to stop rows wrapping to two lines"] },
     { v: "1.7.3", d: "Aug 2, 2026", c: ["Panel now anchors to the top and caps its height to the window (zoom-aware) — the header/Refresh are always reachable, no more overshooting the top of the page", "Dimmed (unaffordable) rows are readable again — bumped opacity so item + buy/resale text isn’t washed out when you’re low on cash"] },
     { v: "1.7.2", d: "Aug 2, 2026", c: ["Click any 🔒/💰 tag (on item.php or in the Bag) to toggle keep ⇄ sell-ok — saved permanently, so you curate your own safe list (equipped items always stay kept)", "Inline tag is now icon-only (value in tooltip) so it no longer wraps item rows to two lines", "Reset-overrides button in the changelog; Bag Sell links now use the current ItemMarket URL"] },
@@ -556,6 +584,7 @@
         '<button class="tdk-btn2" id="tdk-invbtn" title="Toggle your sellable-junk inventory">📦 Bag</button>' +
         '<button class="tdk-btn2" id="tdk-fund" title="Show top plays even if over budget — reminds you to free up cash first">💰 Fund</button>' +
         '<button class="tdk-btn2" id="tdk-refresh">↻ Refresh</button>' +
+        '<button class="tdk-btn2 tdk-x" id="tdk-close" title="Close panel">✕</button>' +
       '</div>' +
       '<div class="tdk-status" id="tdk-status">Click Refresh to pull live data.</div>' +
       '<div id="tdk-board">' +
@@ -569,6 +598,7 @@
     host.appendChild(panel);
 
     btn.addEventListener("click", function () { panel.classList.toggle("open"); if (panel.classList.contains("open") && !state.rows.length) refresh(); });
+    host.querySelector("#tdk-close").addEventListener("click", function () { panel.classList.remove("open"); });
     host.querySelector("#tdk-refresh").addEventListener("click", function () { if (state.view === "inv") { state.inv = null; renderInv(); } else refresh(); });
     host.querySelector("#tdk-cap").addEventListener("change", function (e) {
       state.cap = Math.max(1, parseInt(e.target.value, 10) || 23); GM_setValue("cap", state.cap);
