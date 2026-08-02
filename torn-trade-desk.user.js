@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.6.6
+// @version      1.7.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -209,6 +209,12 @@
     .tdk-keephdr{margin:12px 0 4px;font-size:12px;font-weight:700;color:#c9a94a;border-top:1px dashed #3a3729;padding-top:8px}
     .tdk-keephdr span{color:#928b78;font-weight:400}
     .tdk-sub{color:#928b78;font-size:12px;padding:6px 0}
+    .tdk-inl{font-size:11px;font-weight:700;padding-left:8px;vertical-align:top;position:relative;top:-2px;white-space:nowrap}
+    .tdk-inl.sell{color:#d9b441}
+    .tdk-inl.keep{color:#9a9488}
+    .tdk-mkt{display:inline-block;vertical-align:middle}
+    .tdk-mkt a{text-decoration:none;font-size:15px;margin-left:6px;cursor:pointer;filter:grayscale(.15)}
+    .tdk-mkt a:hover{filter:none}
     .fly{color:#c3bda9;text-decoration:none;border-bottom:1px dotted #4a4536}
     .fly:hover{color:#d9b441;border-bottom-color:#d9b441}
     .tdk-mug{margin:0;padding:11px 16px;border-top:1px solid #2c2a21;font-size:12px;color:#928b78;background:#181712;line-height:1.45}
@@ -420,6 +426,7 @@
     if (v === "inv") renderInv();
   }
   const CHANGELOG = [
+    { v: "1.7.0", d: "Aug 2, 2026", c: ["Inline tags on the Items page (item.php): every row shows 💰 market value on plain-junk (with a 🧺 Open-Market basket) or 🔒 on use-items — your don’t-sell-by-mistake guard, right in Torn’s own list"] },
     { v: "1.6.6", d: "Aug 2, 2026", c: ["📦 Bag safety overhaul: only plain-junk types (plushie/flower/collectible/artifact/jewelry) get a Sell link; Tools, Materials, Enhancers, Special/Temporary, gear, and anything with an effect/requirement are shown in a 🔒 Held-back group with NO Sell link — so pricey use-items (Large Suitcase, Cassock, etc.) can't be sold by mistake"] },
     { v: "1.6.5", d: "Aug 2, 2026", c: ["Fixed 📦 Bag false 'clean bags' — items are now priced from the Torn items catalog (market_value), not the inventory field that was always 0", "When nothing matches, shows how many items were scanned instead of a misleading all-clear"] },
     { v: "1.6.4", d: "Aug 2, 2026", c: ["🔄 Check-for-updates button in the changelog (click the version) — compares against GitHub and gives a one-click Install link when a newer version exists"] },
@@ -530,5 +537,60 @@
     applyScale();
   }
 
+  /* ---------- inline Items-page annotator (item.php) ---------- */
+  const ITEM_PAGE = /\/item\.php/;
+  function marketUrl(id, name, cat) {
+    return "https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=" + id +
+      "&itemName=" + String(name || "").trim().replace(/\s+/g, "_") +
+      "&itemType=" + (cat || "");
+  }
+  function annotateRows() {
+    const meta = state.itemMeta || {}, prices = state.resale || {};
+    document.querySelectorAll("li[data-item]:not([data-tdk])").forEach(function (li) {
+      li.setAttribute("data-tdk", "1");
+      const id = +li.getAttribute("data-item"); if (!id) return;
+      const m = meta[id] || {};
+      const equipped = li.getAttribute("data-equipped") === "true";
+      const cat = li.getAttribute("data-category") || m.type || "";
+      const price = prices[id] || 0;
+      const nameEl = li.querySelector(".name-wrap .name");
+      const name = nameEl ? nameEl.textContent.trim() : "";
+      // Same fail-safe model as the Bag: only decorative whitelist types with no use are "sellable".
+      const sellable = !equipped && !m.hasUse && !!SAFE_TYPES[m.type];
+      const nameWrap = li.querySelector(".name-wrap");
+      if (nameWrap && nameWrap.parentNode && !nameWrap.parentNode.querySelector(".tdk-inl")) {
+        const tag = document.createElement("span");
+        tag.className = "tdk-inl " + (sellable ? "sell" : "keep");
+        tag.textContent = (sellable ? "💰 " : "🔒 ") + (price ? money(price) : "—");
+        tag.title = sellable ? "Plain junk — safe to sell · market " + money(price)
+          : "Held back — has a use or isn’t plain junk (" + (m.type || cat || "?") + ")";
+        nameWrap.parentNode.insertBefore(tag, nameWrap.nextSibling);
+      }
+      if (sellable && price > 0) {
+        const actions = li.querySelector(".outside-actions");
+        if (actions && !actions.querySelector(".tdk-mkt")) {
+          const wrap = document.createElement("div"); wrap.className = "tdk-mkt";
+          const a = document.createElement("a");
+          a.href = marketUrl(id, name, cat); a.target = "_blank"; a.rel = "noopener";
+          a.title = "Open Item Market"; a.textContent = "🧺";
+          wrap.appendChild(a); actions.appendChild(wrap);
+        }
+      }
+    });
+  }
+  function annotateItemsPage() {
+    if (!ITEM_PAGE.test(location.pathname)) return;
+    const key = GM_getValue("torn_key", ""); if (!key) return; // silent — never prompt from the page
+    loadResale(key).then(function () {
+      annotateRows();
+      let pending = false;
+      new MutationObserver(function () {
+        if (pending) return; pending = true;
+        requestAnimationFrame(function () { pending = false; annotateRows(); });
+      }).observe(document.body, { childList: true, subtree: true });
+    }).catch(function () { });
+  }
+
   build();
+  annotateItemsPage();
 })();
