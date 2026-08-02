@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.11.2
+// @version      1.11.3
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -237,7 +237,7 @@
     .tdk-mug{margin:0;padding:11px 16px;border-top:1px solid #2c2a21;font-size:12px;color:#928b78;background:#181712;line-height:1.45}
     .tdk-mug b{color:#e5615c;font-family:ui-monospace,monospace}
     table.tdk tbody tr{cursor:pointer}
-    #tdk-buyers{position:absolute;top:92px;left:16px;right:26px;z-index:6;background:#1b1a14;border:1px solid #d9b441;border-radius:12px;box-shadow:0 16px 44px rgba(0,0,0,.65);padding:13px 15px;display:none;max-height:85vh;overflow:auto;resize:vertical}
+    #tdk-buyers{position:fixed;top:58px;right:22px;width:min(720px,92vw);z-index:2147483650;background:#1b1a14;border:1px solid #d9b441;border-radius:12px;box-shadow:0 16px 44px rgba(0,0,0,.65);padding:13px 15px;display:none;max-height:calc(100vh - 78px);overflow:auto;resize:both}
     #tdk-buyers.open{display:block}
     .tdk-bh{display:flex;align-items:center;gap:10px;margin-bottom:6px}
     .tdk-bh .tt{font-weight:800;font-size:14px}
@@ -582,6 +582,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.11.3", d: "Aug 2, 2026", c: ["Buyers/changelog window now floats over the page at near-full height instead of being clipped short by the panel (especially when opened via ⚡ before refreshing) — drag any edge to resize"] },
     { v: "1.11.2", d: "Aug 2, 2026", c: ["Fixed the item.php ⚡ only showing on the last row — moved it next to the item name (the action cell was too cramped and it clipped)", "Changelog / buyers window is taller and you can drag its bottom edge to resize it"] },
     { v: "1.11.1", d: "Aug 2, 2026", c: ["Hover tooltips on the board's ★ (affordable & in stock) and 💰 (best funded play) row markers so it's clear what they mean"] },
     { v: "1.11.0", d: "Aug 2, 2026", c: ["⚡ on each sellable item.php row (next to the 🧺 basket): click it right in Torn's own Items list to open that item's buyers + quantity calculator + trade-best-online — no more opening the board and hunting for the item"] },
@@ -739,9 +740,10 @@
         '<table class="tdk"><thead><tr><th class="l">Item</th><th>Buy</th><th>Resale</th><th>Profit/ea</th><th>Stock</th><th>Load</th><th>$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
         '<div class="tdk-mug" id="tdk-mug"></div>' +
       '</div>' +
-      '<div id="tdk-inv" style="display:none"></div>' +
-      '<div id="tdk-buyers"></div>';
+      '<div id="tdk-inv" style="display:none"></div>';
     host.appendChild(panel);
+    // Overlay lives on host (not the panel) so it floats over the page at full height, unclipped by the panel.
+    const buyers = document.createElement("div"); buyers.id = "tdk-buyers"; host.appendChild(buyers);
 
     btn.addEventListener("click", function () { panel.classList.toggle("open"); if (panel.classList.contains("open")) { if (!state.rows.length) refresh(); checkInvStatus(); } });
     host.querySelector("#tdk-close").addEventListener("click", function () { panel.classList.remove("open"); });
