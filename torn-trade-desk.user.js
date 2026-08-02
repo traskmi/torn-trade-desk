@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.7.0
+// @version      1.7.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -350,10 +350,11 @@
     state.invAt = now;
     return state.inv;
   }
-  // WHITELIST: only these purely-decorative types ever get a Sell link. Everything else (Tools, Materials,
-  // Enhancers, gear, drugs, supplies, anything with an effect/requirement) is held back by default — safer than
-  // trying to denylist every use-bearing type (some, like the Cassock, are worth millions).
-  const SAFE_TYPES = { Plushie: 1, Flower: 1, Collectible: 1, Artifact: 1, Jewelry: 1 };
+  // WHITELIST: only these no-use commodity types ever get a Sell link. Everything else (Tools, Materials,
+  // Enhancers, gear, drugs, anything with an effect/requirement) is held back by default — safer than trying
+  // to denylist every use-bearing type (some, like the Cassock, are worth millions). The hasUse guard still
+  // holds back any whitelisted item that turns out to carry an effect/requirement.
+  const SAFE_TYPES = { Plushie: 1, Flower: 1, Collectible: 1, Artifact: 1, Jewelry: 1, "Supply Pack": 1 };
   async function renderInv() {
     const box = host.querySelector("#tdk-inv");
     box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk</div><div class="p">loading inventory…</div></div>';
@@ -426,6 +427,7 @@
     if (v === "inv") renderInv();
   }
   const CHANGELOG = [
+    { v: "1.7.1", d: "Aug 2, 2026", c: ["Supply Packs (e.g. Coin Purse) are now sellable — they carry no use, and unopened packs often beat their contents. Suitcases/Cassock stay held back (they're Enhancers/Tools)"] },
     { v: "1.7.0", d: "Aug 2, 2026", c: ["Inline tags on the Items page (item.php): every row shows 💰 market value on plain-junk (with a 🧺 Open-Market basket) or 🔒 on use-items — your don’t-sell-by-mistake guard, right in Torn’s own list"] },
     { v: "1.6.6", d: "Aug 2, 2026", c: ["📦 Bag safety overhaul: only plain-junk types (plushie/flower/collectible/artifact/jewelry) get a Sell link; Tools, Materials, Enhancers, Special/Temporary, gear, and anything with an effect/requirement are shown in a 🔒 Held-back group with NO Sell link — so pricey use-items (Large Suitcase, Cassock, etc.) can't be sold by mistake"] },
     { v: "1.6.5", d: "Aug 2, 2026", c: ["Fixed 📦 Bag false 'clean bags' — items are now priced from the Torn items catalog (market_value), not the inventory field that was always 0", "When nothing matches, shows how many items were scanned instead of a misleading all-clear"] },
