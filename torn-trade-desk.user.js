@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.7.1
+// @version      1.7.2
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -37,7 +37,7 @@
   };
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, ov: GM_getValue("ov", {}) };
 
   /* ---------- helpers ---------- */
   function gmGet(url, timeoutMs) {
@@ -209,12 +209,15 @@
     .tdk-keephdr{margin:12px 0 4px;font-size:12px;font-weight:700;color:#c9a94a;border-top:1px dashed #3a3729;padding-top:8px}
     .tdk-keephdr span{color:#928b78;font-weight:400}
     .tdk-sub{color:#928b78;font-size:12px;padding:6px 0}
-    .tdk-inl{font-size:11px;font-weight:700;padding-left:8px;vertical-align:top;position:relative;top:-2px;white-space:nowrap}
-    .tdk-inl.sell{color:#d9b441}
-    .tdk-inl.keep{color:#9a9488}
+    .tdk-inl{font-size:13px;padding-left:6px;vertical-align:middle;position:relative;top:-1px;white-space:nowrap;line-height:1}
+    .tdk-inl.ovr{text-decoration:underline dotted;text-underline-offset:3px}
     .tdk-mkt{display:inline-block;vertical-align:middle}
     .tdk-mkt a{text-decoration:none;font-size:15px;margin-left:6px;cursor:pointer;filter:grayscale(.15)}
     .tdk-mkt a:hover{filter:none}
+    .tdk-tog{cursor:pointer;margin-left:6px;font-size:12px;opacity:.85}
+    .tdk-tog:hover{opacity:1}
+    .tdk-act{white-space:nowrap}
+    table.tdk tr.tdk-ovr td{background:rgba(217,180,65,.06)}
     .fly{color:#c3bda9;text-decoration:none;border-bottom:1px dotted #4a4536}
     .fly:hover{color:#d9b441;border-bottom-color:#d9b441}
     .tdk-mug{margin:0;padding:11px 16px;border-top:1px solid #2c2a21;font-size:12px;color:#928b78;background:#181712;line-height:1.45}
@@ -355,6 +358,22 @@
   // to denylist every use-bearing type (some, like the Cassock, are worth millions). The hasUse guard still
   // holds back any whitelisted item that turns out to carry an effect/requirement.
   const SAFE_TYPES = { Plushie: 1, Flower: 1, Collectible: 1, Artifact: 1, Jewelry: 1, "Supply Pack": 1 };
+  // Per-item user overrides win over the type default. Equipped is ALWAYS held back, no matter the override.
+  function effSellable(id, type, hasUse, equipped) {
+    if (equipped) return false;
+    const o = state.ov[id];
+    if (o === "sell") return true;
+    if (o === "keep") return false;
+    return !hasUse && !!SAFE_TYPES[type];
+  }
+  function toggleOverride(id, curEff) {
+    state.ov[id] = curEff ? "keep" : "sell";
+    GM_setValue("ov", state.ov);
+  }
+  function marketUrl(id, name, cat) {
+    return "https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=" + id +
+      "&itemName=" + String(name || "").trim().replace(/\s+/g, "_") + "&itemType=" + (cat || "");
+  }
   async function renderInv() {
     const box = host.querySelector("#tdk-inv");
     box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk</div><div class="p">loading inventory…</div></div>';
@@ -373,32 +392,40 @@
         '<div class="k">Torn hides your inventory while traveling — land first, then reopen 📦 Bag. Arriving in ~' + eta + '.</div></div>';
       return;
     }
-    let priceMap = state.resale, meta = state.itemMeta;
-    if (!priceMap || !meta) { try { await loadResale(key); priceMap = state.resale; meta = state.itemMeta; } catch (e) { priceMap = priceMap || {}; meta = meta || {}; } }
+    if (!state.resale || !state.itemMeta) { try { await loadResale(key); } catch (e) { /* paint with what we have */ } }
+    paintInv();
+  }
+  function paintInv() {
+    const box = host.querySelector("#tdk-inv"); if (!box) return;
+    const items = state.inv || [], priceMap = state.resale || {}, meta = state.itemMeta || {};
     const idOf = function (it) { return it.ID || it.id || it.item_id; };
     const priceOf = function (it) { return priceMap[idOf(it)] || it.market_price || 0; };
     const metaOf = function (it) { return meta[idOf(it)] || {}; };
     const typeOf = function (it) { return metaOf(it).type || it.type || "—"; };
-    // Fail-safe: sellable ONLY if a decorative whitelist type, not equipped, and Torn flags no effect/requirement.
-    const isSellable = function (it) { return !it.equipped && !metaOf(it).hasUse && !!SAFE_TYPES[typeOf(it)]; };
     const sell = [], keep = [];
     items.forEach(function (it) {
       const price = priceOf(it); if (price <= 0) return;
-      (isSellable(it) ? sell : keep).push({ name: it.name, type: typeOf(it), qty: it.quantity, unit: price, total: price * it.quantity });
+      const id = idOf(it), m = metaOf(it);
+      const s = effSellable(id, typeOf(it), m.hasUse, it.equipped);
+      (s ? sell : keep).push({ id: id, name: it.name, type: typeOf(it), qty: it.quantity, unit: price, total: price * it.quantity, ov: !!state.ov[id] });
     });
     sell.sort(function (a, b) { return b.total - a.total; });
     keep.sort(function (a, b) { return b.total - a.total; });
-    const rowsHtml = function (arr, withSell) {
+    const rowsHtml = function (arr, sellable) {
       return arr.map(function (x) {
-        return '<tr><td class="l"><span class="nm">' + x.name + (x.qty > 1 ? ' <span class="cy">×' + x.qty.toLocaleString() + '</span>' : '') + '</span></td>' +
+        const tog = '<span class="tdk-tog" data-id="' + x.id + '" data-eff="' + (sellable ? 1 : 0) + '" title="' + (sellable ? 'Mark as keep' : 'Allow selling this item') + (x.ov ? ' — override set' : '') + '">' + (sellable ? '🔒' : '🔓') + '</span>';
+        const action = sellable
+          ? '<a class="tdk-trade" href="' + marketUrl(x.id, x.name, x.type) + '" target="_blank" rel="noopener">Sell</a> ' + tog
+          : tog;
+        return '<tr' + (x.ov ? ' class="tdk-ovr"' : '') + '><td class="l"><span class="nm">' + x.name + (x.qty > 1 ? ' <span class="cy">×' + x.qty.toLocaleString() + '</span>' : '') + '</span></td>' +
           '<td class="l"><span class="cy">' + x.type + '</span></td>' +
           '<td class="num">' + full$(x.unit) + '</td>' +
           '<td class="num gd">' + full$(x.total) + '</td>' +
-          '<td>' + (withSell ? '<a class="tdk-trade" href="https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname=' + encodeURIComponent(x.name) + '" target="_blank" rel="noopener">Sell</a>' : '<span class="tdk-keep" title="Held back — not a plain-junk type. Sell manually on Torn only if you mean to.">🔒 keep</span>') + '</td></tr>';
+          '<td class="tdk-act">' + action + '</td></tr>';
       }).join("");
     };
-    const table = function (arr, withSell) {
-      return '<table class="tdk"><thead><tr><th class="l">Item</th><th class="l">Type</th><th>Unit</th><th>Total</th><th></th></tr></thead><tbody>' + rowsHtml(arr, withSell) + '</tbody></table>';
+    const table = function (arr, sellable) {
+      return '<table class="tdk"><thead><tr><th class="l">Item</th><th class="l">Type</th><th>Unit</th><th>Total</th><th></th></tr></thead><tbody>' + rowsHtml(arr, sellable) + '</tbody></table>';
     };
     if (!sell.length && !keep.length) {
       const n = items.length;
@@ -410,13 +437,19 @@
     const grand = sell.reduce(function (s, x) { return s + x.total; }, 0);
     let html = '<div class="tdk-best"><div class="l">Safe to sell · ' + sell.length + ' item' + (sell.length === 1 ? '' : 's') + '</div>' +
       '<div class="p">' + money(grand) + ' <span>you could dump for cash</span></div>' +
-      '<div class="k">Only plain-junk types (plushies · flowers · collectibles · artifacts · jewelry) get a Sell link. The link just opens Torn’s market — it never sells for you.</div></div>';
-    html += sell.length ? table(sell, true) : '<div class="tdk-sub">No plain-junk items to list right now.</div>';
+      '<div class="k">🔒 = held back, 🔓 = click to allow · your choices are saved. The Sell link only opens Torn’s market — it never sells for you.</div></div>';
+    html += sell.length ? table(sell, true) : '<div class="tdk-sub">Nothing marked sell-ok right now.</div>';
     if (keep.length) {
       const kept = keep.reduce(function (s, x) { return s + x.total; }, 0);
-      html += '<div class="tdk-keephdr">🔒 Held back · ' + keep.length + ' item' + (keep.length === 1 ? '' : 's') + ' · ' + money(kept) + ' <span>(no Sell link — has a use, or is a Tool/Material/Special/trade good)</span></div>' + table(keep, false);
+      html += '<div class="tdk-keephdr">🔒 Held back · ' + keep.length + ' item' + (keep.length === 1 ? '' : 's') + ' · ' + money(kept) + ' <span>(use-items, gear &amp; untrusted types — click 🔓 to allow one)</span></div>' + table(keep, false);
     }
     box.innerHTML = html;
+    box.querySelectorAll(".tdk-tog").forEach(function (el) {
+      el.addEventListener("click", function () {
+        toggleOverride(+this.getAttribute("data-id"), this.getAttribute("data-eff") === "1");
+        paintInv();
+      });
+    });
   }
   function setView(v) {
     state.view = v;
@@ -427,6 +460,7 @@
     if (v === "inv") renderInv();
   }
   const CHANGELOG = [
+    { v: "1.7.2", d: "Aug 2, 2026", c: ["Click any 🔒/💰 tag (on item.php or in the Bag) to toggle keep ⇄ sell-ok — saved permanently, so you curate your own safe list (equipped items always stay kept)", "Inline tag is now icon-only (value in tooltip) so it no longer wraps item rows to two lines", "Reset-overrides button in the changelog; Bag Sell links now use the current ItemMarket URL"] },
     { v: "1.7.1", d: "Aug 2, 2026", c: ["Supply Packs (e.g. Coin Purse) are now sellable — they carry no use, and unopened packs often beat their contents. Suitcases/Cassock stay held back (they're Enhancers/Tools)"] },
     { v: "1.7.0", d: "Aug 2, 2026", c: ["Inline tags on the Items page (item.php): every row shows 💰 market value on plain-junk (with a 🧺 Open-Market basket) or 🔒 on use-items — your don’t-sell-by-mistake guard, right in Torn’s own list"] },
     { v: "1.6.6", d: "Aug 2, 2026", c: ["📦 Bag safety overhaul: only plain-junk types (plushie/flower/collectible/artifact/jewelry) get a Sell link; Tools, Materials, Enhancers, Special/Temporary, gear, and anything with an effect/requirement are shown in a 🔒 Held-back group with NO Sell link — so pricey use-items (Large Suitcase, Cassock, etc.) can't be sold by mistake"] },
@@ -474,13 +508,23 @@
   }
   function openChangelog() {
     const bx = host.querySelector("#tdk-buyers");
+    const ovCount = Object.keys(state.ov).length;
     bx.classList.add("open");
     bx.innerHTML = '<div class="tdk-bh"><div class="tt">Changelog<small> — Torn Trade Desk</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
-      '<div class="tdk-upbar"><button class="tdk-btn2" id="tdk-updbtn" title="Check GitHub for a newer version">🔄 Check for updates</button><span class="tdk-upd" id="tdk-upd">v' + curVersion() + '</span></div>' +
+      '<div class="tdk-upbar"><button class="tdk-btn2" id="tdk-updbtn" title="Check GitHub for a newer version">🔄 Check for updates</button><span class="tdk-upd" id="tdk-upd">v' + curVersion() + '</span>' +
+        (ovCount ? '<button class="tdk-btn2" id="tdk-ovreset" title="Clear every keep/sell-ok override you\'ve set">↺ Reset ' + ovCount + ' override' + (ovCount > 1 ? 's' : '') + '</button>' : '') +
+      '</div>' +
       CHANGELOG.map(function (e) {
         return '<div class="tdk-clog"><div class="cv">v' + e.v + ' <span>· ' + e.d + '</span></div><ul>' + e.c.map(function (x) { return '<li>' + x + '</li>'; }).join("") + '</ul></div>';
       }).join("");
     const ub = bx.querySelector("#tdk-updbtn"); if (ub) ub.addEventListener("click", checkUpdate);
+    const rb = bx.querySelector("#tdk-ovreset");
+    if (rb) rb.addEventListener("click", function () {
+      state.ov = {}; GM_setValue("ov", state.ov);
+      if (state.view === "inv") paintInv();
+      if (ITEM_PAGE.test(location.pathname)) { document.querySelectorAll("li[data-item][data-tdk]").forEach(repaintRow); }
+      openChangelog();
+    });
     bindClose(bx);
   }
   function build() {
@@ -541,10 +585,10 @@
 
   /* ---------- inline Items-page annotator (item.php) ---------- */
   const ITEM_PAGE = /\/item\.php/;
-  function marketUrl(id, name, cat) {
-    return "https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=" + id +
-      "&itemName=" + String(name || "").trim().replace(/\s+/g, "_") +
-      "&itemType=" + (cat || "");
+  function repaintRow(li) {
+    li.querySelectorAll(".tdk-inl, .tdk-mkt").forEach(function (n) { n.remove(); });
+    li.removeAttribute("data-tdk");
+    annotateRows();
   }
   function annotateRows() {
     const meta = state.itemMeta || {}, prices = state.resale || {};
@@ -557,15 +601,20 @@
       const price = prices[id] || 0;
       const nameEl = li.querySelector(".name-wrap .name");
       const name = nameEl ? nameEl.textContent.trim() : "";
-      // Same fail-safe model as the Bag: only decorative whitelist types with no use are "sellable".
-      const sellable = !equipped && !m.hasUse && !!SAFE_TYPES[m.type];
+      const sellable = effSellable(id, m.type, m.hasUse, equipped);
+      const ov = !!state.ov[id];
       const nameWrap = li.querySelector(".name-wrap");
       if (nameWrap && nameWrap.parentNode && !nameWrap.parentNode.querySelector(".tdk-inl")) {
+        // Compact: icon only (value in tooltip) so we don't widen Torn's fixed-width title and wrap the row.
         const tag = document.createElement("span");
-        tag.className = "tdk-inl " + (sellable ? "sell" : "keep");
-        tag.textContent = (sellable ? "💰 " : "🔒 ") + (price ? money(price) : "—");
-        tag.title = sellable ? "Plain junk — safe to sell · market " + money(price)
-          : "Held back — has a use or isn’t plain junk (" + (m.type || cat || "?") + ")";
+        tag.className = "tdk-inl " + (sellable ? "sell" : "keep") + (ov ? " ovr" : "");
+        tag.textContent = sellable ? "💰" : "🔒";
+        tag.title = (sellable ? "Safe to sell" : "Held back") + " · market " + (price ? money(price) : "—") +
+          (equipped ? " · equipped (always kept)" : " · click to " + (sellable ? "mark keep" : "allow sell")) + (ov ? " · override set" : "");
+        if (!equipped) {
+          tag.style.cursor = "pointer";
+          tag.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); toggleOverride(id, sellable); repaintRow(li); });
+        }
         nameWrap.parentNode.insertBefore(tag, nameWrap.nextSibling);
       }
       if (sellable && price > 0) {
