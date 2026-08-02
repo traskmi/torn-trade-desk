@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.16.0
+// @version      1.16.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -631,6 +631,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.16.1", d: "Aug 2, 2026", c: ["Gym-estimate energy box is now capped to your energy maximum (can't enter impossible values like 206)"] },
     { v: "1.16.0", d: "Aug 2, 2026", c: ["⏱ Round-trip time filter: a dropdown by the destination chips limits the board to destinations you can fly there-and-back within your window (≤1h … ≤10h) — e.g. only 2 hours → Mexico/Cayman/Canada. Each row now shows its round-trip time too"] },
     { v: "1.15.0", d: "Aug 2, 2026", c: ["Sortable board columns: click a header to sort. Click Stock → in-stock items first (then $/min) so you see what's actually buyable; $/min, Profit/ea, Buy, Resale, Load also sortable. The 'Best' card still uses profit order. Your choice is saved"] },
     { v: "1.14.0", d: "Aug 2, 2026", c: ["😊 Happy now includes a gym-gain ESTIMATE (Vladar formula): pick a stat, set energy, and it projects per-train + total gain at your jumped happy in your active gym — pulls your stats/gym live. Rough by design (Torn hides the real formula; excludes Steadfast/education perks; happy decays as you train)"] },
@@ -717,12 +718,12 @@
     bx.innerHTML = '<div class="tdk-bh"><div class="tt">Happy Jump<small> — loading…</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>';
     bindClose(bx);
     const key = GM_getValue("torn_key", "");
-    let cur = null, max = null, stats = null, gymId = null, energyNow = null;
+    let cur = null, max = null, stats = null, gymId = null, energyNow = null, energyMax = 150;
     if (key) {
       try {
         const j = await gmGet("https://api.torn.com/user/?selections=bars,battlestats,gym&key=" + encodeURIComponent(key));
         if (j && j.happy) { cur = j.happy.current; max = j.happy.maximum; }
-        if (j && j.energy) energyNow = j.energy.current;
+        if (j && j.energy) { energyNow = j.energy.current; if (j.energy.maximum) energyMax = j.energy.maximum; }
         if (j && typeof j.strength === "number") stats = { Strength: j.strength, Speed: j.speed, Defense: j.defense, Dexterity: j.dexterity };
         if (j && j.active_gym) gymId = j.active_gym;
       } catch (e) { }
@@ -752,7 +753,7 @@
         const dots = (gym[STAT_KEYS[s]] || 0) / 10;
         return '<button class="hstat' + (s === defStat ? " on" : "") + '" data-stat="' + s + '" data-dots="' + dots + '" data-val="' + stats[s] + '"' + (dots <= 0 ? " disabled" : "") + '>' + s.slice(0, 3) + ' ' + (dots > 0 ? "(" + dots.toFixed(1) + ")" : "—") + '</button>';
       }).join("") + '</div>' +
-      '<div class="hrow"><label>Energy to spend</label><input class="hqty" id="tdk-hen" type="number" min="' + gym.energy + '" value="' + (energyNow || gym.energy) + '"><span class="hv">have ' + (energyNow != null ? energyNow : "?") + '</span></div>' +
+      '<div class="hrow"><label>Energy to spend</label><input class="hqty" id="tdk-hen" type="number" min="' + gym.energy + '" max="' + energyMax + '" value="' + Math.min(energyMax, (energyNow && energyNow > 0 ? energyNow : energyMax)) + '"><span class="hv">max ' + energyMax + '</span></div>' +
       '<div class="hgymres" id="tdk-hgymres"></div>' +
       '<div class="ssub">Estimate (Vladar formula, verified) · excludes Steadfast/education perks · happy decays as you train.</div>'
     ) : (key && stats ? '<div class="ssub">Gym estimate needs your active gym — train once, then reopen 😊 Happy.</div>' : '');
@@ -786,7 +787,7 @@
       const res = bx.querySelector("#tdk-hgymres"); if (!res || !gym) return;
       const sb = bx.querySelector(".hstat.on"); if (!sb) { res.textContent = ""; return; }
       const dots = +sb.getAttribute("data-dots"), statVal = +sb.getAttribute("data-val"), statName = sb.getAttribute("data-stat");
-      const enEl = bx.querySelector("#tdk-hen"), energy = Math.max(gym.energy, parseInt(enEl && enEl.value, 10) || gym.energy);
+      const enEl = bx.querySelector("#tdk-hen"), energy = Math.max(gym.energy, Math.min(energyMax, parseInt(enEl && enEl.value, 10) || energyMax));
       const est = estGym(dots, statVal, lastHappy, energy, gym.energy);
       res.innerHTML = '~<b>+' + fmtG(est.perStart) + '</b> ' + statName + '/train @ ' + lastHappy.toLocaleString() + ' happy · total <b>~+' + fmtG(est.total) + '</b> from ' + energy.toLocaleString() + 'E <span class="hv">(' + est.trains + ' trains, happy decaying)</span>';
     };
