@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.6.4
+// @version      1.6.5
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -354,10 +354,19 @@
         '<div class="k">Torn hides your inventory while traveling — land first, then reopen 📦 Bag. Arriving in ~' + eta + '.</div></div>';
       return;
     }
-    const junk = items.filter(function (it) { return JUNK_TYPES[it.type] && !it.equipped && (it.market_price || 0) > 0; })
-      .map(function (it) { const p = it.market_price || 0; return { name: it.name, type: it.type, qty: it.quantity, unit: p, total: p * it.quantity }; })
+    let priceMap = state.resale;
+    if (!priceMap) { try { priceMap = await loadResale(key); } catch (e) { priceMap = {}; } }
+    const priceOf = function (it) { return priceMap[it.ID || it.id || it.item_id] || it.market_price || 0; };
+    const junk = items.filter(function (it) { return JUNK_TYPES[it.type] && !it.equipped && priceOf(it) > 0; })
+      .map(function (it) { const p = priceOf(it); return { name: it.name, type: it.type, qty: it.quantity, unit: p, total: p * it.quantity }; })
       .sort(function (a, b) { return b.total - a.total; });
-    if (!junk.length) { box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk</div><div class="p">None found — bags are clean 🎉</div><div class="k">Scans plushies, flowers, collectibles, artifacts &amp; jewelry.</div></div>'; return; }
+    if (!junk.length) {
+      const n = items.length;
+      box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk</div>' +
+        '<div class="p">' + (n ? 'None matched — scanned ' + n + ' item' + (n === 1 ? '' : 's') : 'Inventory came back empty') + '</div>' +
+        '<div class="k">' + (n ? 'Bag flags plushies · flowers · collectibles · artifacts · jewelry with a market value. Travel goods (Camel, Ambergris, etc.) aren’t junk — ask to widen this.' : 'Your Torn API key may lack inventory access, or Torn returned nothing.') + '</div></div>';
+      return;
+    }
     const grand = junk.reduce(function (s, x) { return s + x.total; }, 0);
     box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk · ' + junk.length + ' items</div>' +
       '<div class="p">' + money(grand) + ' <span>you could dump for cash</span></div>' +
@@ -382,6 +391,7 @@
     if (v === "inv") renderInv();
   }
   const CHANGELOG = [
+    { v: "1.6.5", d: "Aug 2, 2026", c: ["Fixed 📦 Bag false 'clean bags' — items are now priced from the Torn items catalog (market_value), not the inventory field that was always 0", "When nothing matches, shows how many items were scanned instead of a misleading all-clear"] },
     { v: "1.6.4", d: "Aug 2, 2026", c: ["🔄 Check-for-updates button in the changelog (click the version) — compares against GitHub and gives a one-click Install link when a newer version exists"] },
     { v: "1.6.3", d: "Aug 2, 2026", c: ["Fixed 📦 Bag stuck on 'loading inventory…' (inventory now coerced to an array)", "Board no longer dead-ends: when nothing is affordable + full-stock it shows the Best available play + what's blocking it"] },
     { v: "1.6.2", d: "Aug 2, 2026", c: ["📦 Bag detects when you're flying (Torn hides inventory in transit) — shows arrival countdown instead of an empty list"] },
