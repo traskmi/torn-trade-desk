@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.11.0
+// @version      1.11.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -345,7 +345,7 @@
           : '<span class="chip c-ok">' + x.stock.toLocaleString() + '</span>';
       const shortB = (!aff && cash != null && fill) ? '<span class="chip short">free +' + money(x.full - cash) + '</span>' : '';
       const cls = aff ? "" : (fund ? (isTop ? "fund" : "") : "dim");
-      const mark = (aff && fill) ? '<span class="star">★</span>' : (isTop ? '<span class="star">💰</span>' : '');
+      const mark = (aff && fill) ? '<span class="star" title="Affordable now & fully in stock — a clean pick">★</span>' : (isTop ? '<span class="star" title="Best funded play — over budget, but reachable by selling stocks (see the banner up top)">💰</span>' : '');
       return '<tr class="' + cls + '" data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '">' +
         '<td class="l"><span class="nm">' + x.name + mark + '</span><div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + ago(x.freshS) + ' old</div></td>' +
         '<td class="mv">' + full$(x.buy) + '</td><td class="mv">' + full$(x.sell) + '</td>' +
@@ -582,6 +582,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.11.1", d: "Aug 2, 2026", c: ["Hover tooltips on the board's ★ (affordable & in stock) and 💰 (best funded play) row markers so it's clear what they mean"] },
     { v: "1.11.0", d: "Aug 2, 2026", c: ["⚡ on each sellable item.php row (next to the 🧺 basket): click it right in Torn's own Items list to open that item's buyers + quantity calculator + trade-best-online — no more opening the board and hunting for the item"] },
     { v: "1.10.0", d: "Aug 2, 2026", c: ["Buyers popover now has a quantity calculator: prices show /ea, every buyer shows a live running total, and 📋 copies a paste-ready trade line (e.g. 'Ambergris Lump ×23 @ $430,000/ea = $9,890,000')", "'You have N' item count — and since Torn's inventory API is down, it's scraped from your Items page (data-qty) as you browse it, so counts work anyway (marked * when from that snapshot)"] },
     { v: "1.9.5", d: "Aug 2, 2026", c: ["Fund from the Bag now switches straight to the funded board in one click (it used to toggle fund off and need a second click) — Bag/Fund behave like proper tabs now"] },
