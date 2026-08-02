@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.7.2
+// @version      1.7.3
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -146,7 +146,7 @@
     #tdk-btn{position:fixed;right:18px;bottom:18px;z-index:2147483000;width:46px;height:46px;border-radius:50%;
       background:#14130f;border:1px solid #d9b441;color:#d9b441;font-size:20px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.5)}
     #tdk-btn:hover{background:#201e17}
-    #tdk-panel{position:fixed;right:18px;bottom:74px;z-index:2147483000;width:min(760px,94vw);max-height:80vh;overflow:auto;
+    #tdk-panel{position:fixed;right:18px;top:12px;z-index:2147483000;width:min(760px,94vw);max-height:calc(100vh - 24px);overflow:auto;
       background:#14130f;color:#ece7d8;border:1px solid #2c2a21;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.6);
       font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:13px;display:none}
     #tdk-panel.open{display:block}
@@ -173,7 +173,7 @@
     table.tdk td{padding:9px 14px;border-bottom:1px solid #211f18;text-align:right;white-space:nowrap;
       font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}
     table.tdk td.l{font-family:system-ui,sans-serif}
-    table.tdk tr.dim td{opacity:.42}
+    table.tdk tr.dim td{opacity:.66}
     table.tdk tr:hover td{background:#1b1a14}
     .nm{font-weight:700}.cy{color:#928b78;font-size:11px}
     .ppm{color:#d9b441;font-weight:800}
@@ -311,7 +311,7 @@
       : '🩸 Only wallet cash is muggable (5–20%). Shelter your haul in stocks the moment you land.';
   }
 
-  function applyScale() { if (panel) panel.style.zoom = state.scale; }
+  function applyScale() { if (panel) { panel.style.zoom = state.scale; panel.style.maxHeight = "calc((100vh - 24px) / " + state.scale + ")"; } }
   function w3bKey() {
     let k = GM_getValue("w3b_key", "");
     if (!k) { k = (window.prompt("weav3r (W3B) API key — for live trader buy prices:") || "").trim(); if (k) GM_setValue("w3b_key", k); }
@@ -460,6 +460,7 @@
     if (v === "inv") renderInv();
   }
   const CHANGELOG = [
+    { v: "1.7.3", d: "Aug 2, 2026", c: ["Panel now anchors to the top and caps its height to the window (zoom-aware) — the header/Refresh are always reachable, no more overshooting the top of the page", "Dimmed (unaffordable) rows are readable again — bumped opacity so item + buy/resale text isn’t washed out when you’re low on cash"] },
     { v: "1.7.2", d: "Aug 2, 2026", c: ["Click any 🔒/💰 tag (on item.php or in the Bag) to toggle keep ⇄ sell-ok — saved permanently, so you curate your own safe list (equipped items always stay kept)", "Inline tag is now icon-only (value in tooltip) so it no longer wraps item rows to two lines", "Reset-overrides button in the changelog; Bag Sell links now use the current ItemMarket URL"] },
     { v: "1.7.1", d: "Aug 2, 2026", c: ["Supply Packs (e.g. Coin Purse) are now sellable — they carry no use, and unopened packs often beat their contents. Suitcases/Cassock stay held back (they're Enhancers/Tools)"] },
     { v: "1.7.0", d: "Aug 2, 2026", c: ["Inline tags on the Items page (item.php): every row shows 💰 market value on plain-junk (with a 🧺 Open-Market basket) or 🔒 on use-items — your don’t-sell-by-mistake guard, right in Torn’s own list"] },
