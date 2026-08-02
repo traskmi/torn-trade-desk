@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.18.0
+// @version      1.18.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -39,6 +39,16 @@
   // Torn's status/travel destination strings → our country codes (so we can auto-filter to where you're standing).
   const DEST_CC = { mexico: "mex", cayman: "cay", "cayman islands": "cay", canada: "can", hawaii: "haw", "united kingdom": "uni", uk: "uni", britain: "uni", argentina: "arg", switzerland: "swi", japan: "jap", china: "chi", uae: "uae", "united arab emirates": "uae", "south africa": "sou" };
   function destCC(dest) { return dest ? (DEST_CC[String(dest).toLowerCase().trim()] || null) : null; }
+  // Are you standing in a foreign store right now? travel.destination names the country even while hospitalized abroad
+  // (state "Hospital", dest "Canada", time_left 0). Rule out in-flight ("Traveling" / time_left>0) and home ("Okay").
+  // Verified live Aug 2 2026: Abroad-ok→state "Abroad"; Abroad-hospital→"Hospital"+"In a Canadian hospital"; both dest="Canada",time_left 0.
+  function detectLoc(j) {
+    if (!j || !j.status || !j.travel) return null;
+    const st = j.status.state;
+    if (st === "Traveling" || st === "Okay") return null; // in flight, or home & fine
+    if (j.travel.time_left > 0) return null;               // still in transit
+    return destCC(j.travel.destination);                   // Canada/Mexico/… → cc; Torn/empty → null (home)
+  }
 
   /* ---------- state ---------- */
   const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined };
@@ -115,9 +125,7 @@
       const j = await gmGet("https://api.torn.com/user/?selections=money,networth,basic,travel&key=" + encodeURIComponent(key));
       if (j && typeof j.money_onhand === "number") state.cash = j.money_onhand;
       if (j && j.networth && typeof j.networth.stockmarket === "number") state.stocks = j.networth.stockmarket;
-      // Abroad = you can shop at that country's store. status.state is the authoritative signal ("Abroad"/"Traveling"/"Okay"…);
-      // travel.destination names the country. In flight or home → no location (board shows all).
-      state.loc = (j && j.status && j.status.state === "Abroad" && j.travel) ? destCC(j.travel.destination) : null;
+      state.loc = detectLoc(j); // the foreign country you can shop in right now (works even while hospitalized abroad)
     } catch (e) { /* non-fatal */ }
   }
   // When you land abroad, default the board to that country — but only re-apply when your location actually
@@ -182,10 +190,12 @@
       background:#14130f;color:#ece7d8;border:1px solid #2c2a21;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.6);
       font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:13px;display:none}
     #tdk-panel.open{display:block}
-    .tdk-h{display:flex;align-items:center;gap:9px;padding:14px 52px 14px 16px;border-bottom:1px solid #2c2a21;position:sticky;top:0;background:#14130f;flex-wrap:wrap}
+    .tdk-hd{position:sticky;top:0;z-index:6;background:#14130f;border-bottom:1px solid #2c2a21}
+    .tdk-h{display:flex;align-items:center;gap:9px;padding:14px 52px 8px 16px;background:#14130f;flex-wrap:wrap}
+    .tdk-h2{display:flex;align-items:center;gap:9px;padding:0 16px 12px;flex-wrap:wrap}
     .tdk-h .t{font-weight:800;letter-spacing:.02em}
     .tdk-h .t small{color:#928b78;font-weight:600;letter-spacing:.14em;text-transform:uppercase;font-size:10px;display:block}
-    .tdk-h .sp{flex:1}
+    .tdk-h .sp,.tdk-h2 .sp{flex:1}
     .tdk-btn2{background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:9px;padding:7px 11px;font-weight:700;cursor:pointer}
     .tdk-btn2.ready{border-color:#4cc281;color:#8fe6b3;background:#16241c;animation:tdkpulse 1.8s ease-in-out infinite}
     @keyframes tdkpulse{0%,100%{box-shadow:0 0 0 1px rgba(76,194,129,.25)}50%{box-shadow:0 0 0 4px rgba(76,194,129,.5)}}
@@ -660,6 +670,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.18.1", d: "Aug 2, 2026", c: ["📍 Abroad auto-focus now works even when you're hospitalized abroad (or jailed) — it reads the country from your travel data, not just the 'Abroad' status, so a mugging that lands you in a foreign hospital no longer drops the board back to All", "Header fixed: ↻ Refresh and ⚙ now sit on their own stable row (Refresh + ⚙ pinned left; Cap / A− / A+ on the right) so they stop shuffling around as the font size or button widths change"] },
     { v: "1.18.0", d: "Aug 2, 2026", c: ["📍 Abroad auto-focus: when you're standing in a foreign country the board defaults to that destination's items automatically (the chip shows 📍 and glows green), so you see what to buy right where you are. Pick another chip and it sticks until you move; fly home → back to All"] },
     { v: "1.17.1", d: "Aug 2, 2026", c: ["⚡ Find-buyers stays on sell-ok items only (default junk, or ones you've toggled to sell) — held-back items are lock-only, so there's no path to sell a use-item by mistake"] },
     { v: "1.17.0", d: "Aug 2, 2026", c: ["Net-profit in the Buyers popover: for travel-trade goods each buyer's total now shows 'net +$X' (sell − your foreign buy cost × qty), updates live with quantity, and 📋 copies it into the trade line too"] },
@@ -942,17 +953,22 @@
 
     panel = document.createElement("div"); panel.id = "tdk-panel";
     panel.innerHTML =
-      '<div class="tdk-h">' +
-        '<div class="t">Trade Desk<small>Torn · $/min · <span class="tdk-ver" id="tdk-ver" title="View changelog">v' + (typeof GM_info !== "undefined" && GM_info.script ? GM_info.script.version : "") + '</span></small></div><div class="sp"></div>' +
-        'Cap <input class="tdk-cap" id="tdk-cap" type="number" min="1" max="60" value="' + state.cap + '">' +
-        '<button class="tdk-btn2 tdk-sm" id="tdk-adec" title="Smaller text">A−</button>' +
-        '<button class="tdk-btn2 tdk-sm" id="tdk-ainc" title="Bigger text">A+</button>' +
-        '<button class="tdk-btn2" id="tdk-invbtn" title="Toggle your sellable-junk inventory">📦 Bag</button>' +
-        '<button class="tdk-btn2" id="tdk-fund" title="Show top plays even if over budget — reminds you to free up cash first">💰 Fund</button>' +
-        '<button class="tdk-btn2" id="tdk-happy" title="Happy-jump calculator — max happy, best order &amp; reset timer">😊 Happy</button>' +
-        '<button class="tdk-btn2" id="tdk-refresh">↻ Refresh</button>' +
-        '<button class="tdk-btn2" id="tdk-settings" title="Settings — API keys &amp; options">⚙</button>' +
-        '<button class="tdk-btn2 tdk-x" id="tdk-close" title="Close panel">✕</button>' +
+      '<div class="tdk-hd">' +
+        '<div class="tdk-h">' +
+          '<div class="t">Trade Desk<small>Torn · $/min · <span class="tdk-ver" id="tdk-ver" title="View changelog">v' + (typeof GM_info !== "undefined" && GM_info.script ? GM_info.script.version : "") + '</span></small></div><div class="sp"></div>' +
+          '<button class="tdk-btn2" id="tdk-invbtn" title="Toggle your sellable-junk inventory">📦 Bag</button>' +
+          '<button class="tdk-btn2" id="tdk-fund" title="Show top plays even if over budget — reminds you to free up cash first">💰 Fund</button>' +
+          '<button class="tdk-btn2" id="tdk-happy" title="Happy-jump calculator — max happy, best order &amp; reset timer">😊 Happy</button>' +
+          '<button class="tdk-btn2 tdk-x" id="tdk-close" title="Close panel">✕</button>' +
+        '</div>' +
+        '<div class="tdk-h2">' +
+          '<button class="tdk-btn2" id="tdk-refresh">↻ Refresh</button>' +
+          '<button class="tdk-btn2" id="tdk-settings" title="Settings — API keys &amp; options">⚙</button>' +
+          '<div class="sp"></div>' +
+          'Cap <input class="tdk-cap" id="tdk-cap" type="number" min="1" max="60" value="' + state.cap + '">' +
+          '<button class="tdk-btn2 tdk-sm" id="tdk-adec" title="Smaller text">A−</button>' +
+          '<button class="tdk-btn2 tdk-sm" id="tdk-ainc" title="Bigger text">A+</button>' +
+        '</div>' +
       '</div>' +
       '<div class="tdk-status" id="tdk-status">Click Refresh to pull live data.</div>' +
       '<div id="tdk-board">' +
