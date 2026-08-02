@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.5.0
+// @version      1.6.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -36,7 +36,7 @@
   };
 
   /* ---------- state ---------- */
-  const state = { resale: null, resaleAt: 0, cash: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false) };
+  const state = { resale: null, resaleAt: 0, cash: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0 };
 
   /* ---------- helpers ---------- */
   function gmGet(url) {
@@ -173,6 +173,15 @@
     .tdk-fc:hover{background:#201e17}
     .tdk-fc.on{background:#2a2413;border-color:#d9b441;color:#d9b441}
     .tdk-btn2.on{background:#d9b441;color:#14130f;border-color:#d9b441}
+    .tdk-sm{padding:7px 9px;font-size:12px}
+    .tdk-ver{cursor:pointer;border-bottom:1px dotted #928b78}
+    .tdk-ver:hover{color:#d9b441;border-bottom-color:#d9b441}
+    .tdk-clog{padding:9px 0;border-bottom:1px solid #2c2a21}
+    .tdk-clog:last-child{border-bottom:none}
+    .tdk-clog .cv{font-weight:800;color:#d9b441}
+    .tdk-clog .cv span{color:#928b78;font-weight:600;font-size:11px}
+    .tdk-clog ul{margin:4px 0 0;padding-left:18px;color:#c3bda9;font-size:12.5px;line-height:1.5}
+    .tdk-clog li{margin:2px 0}
     .chip.short{color:#e2933f;background:#2c2114;margin-left:6px}
     table.tdk tr.fund td{opacity:1;background:#221d10}
     table.tdk tr.fund td.l{box-shadow:inset 3px 0 0 #d9b441}
@@ -255,6 +264,7 @@
       : '🩸 Only wallet cash is muggable (5–20%). Shelter your haul in stocks the moment you land.';
   }
 
+  function applyScale() { if (panel) panel.style.zoom = state.scale; }
   function w3bKey() {
     let k = GM_getValue("w3b_key", "");
     if (!k) { k = (window.prompt("weav3r (W3B) API key — for live trader buy prices:") || "").trim(); if (k) GM_setValue("w3b_key", k); }
@@ -285,6 +295,67 @@
       bindClose(bx);
     }
   }
+  async function loadInv(key) {
+    const now = Date.now();
+    if (state.inv && now - state.invAt < 120000) return state.inv;
+    const j = await gmGet("https://api.torn.com/user/?selections=inventory&key=" + encodeURIComponent(key));
+    if (j.error) throw new Error("Torn API: " + j.error.error);
+    state.inv = j.inventory || []; state.invAt = now;
+    return state.inv;
+  }
+  const JUNK_TYPES = { Plushie: 1, Flower: 1, Collectible: 1, Artifact: 1, Jewelry: 1 };
+  async function renderInv() {
+    const box = host.querySelector("#tdk-inv");
+    box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk</div><div class="p">loading inventory…</div></div>';
+    const key = tornKey();
+    if (!key) { box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk</div><div class="p">Need a Torn API key</div></div>'; return; }
+    let items;
+    try { items = await loadInv(key); } catch (e) { box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk</div><div class="p">Error: ' + e.message + '</div></div>'; return; }
+    const junk = items.filter(function (it) { return JUNK_TYPES[it.type] && !it.equipped && (it.market_price || 0) > 0; })
+      .map(function (it) { const p = it.market_price || 0; return { name: it.name, type: it.type, qty: it.quantity, unit: p, total: p * it.quantity }; })
+      .sort(function (a, b) { return b.total - a.total; });
+    if (!junk.length) { box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk</div><div class="p">None found — bags are clean 🎉</div><div class="k">Scans plushies, flowers, collectibles, artifacts &amp; jewelry.</div></div>'; return; }
+    const grand = junk.reduce(function (s, x) { return s + x.total; }, 0);
+    box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk · ' + junk.length + ' items</div>' +
+      '<div class="p">' + money(grand) + ' <span>you could dump for cash</span></div>' +
+      '<div class="k">plushies · flowers · collectibles · artifacts · jewelry — not your consumables or gear</div></div>' +
+      '<table class="tdk"><thead><tr><th class="l">Item</th><th class="l">Type</th><th>Qty</th><th>Unit</th><th>Total</th><th></th></tr></thead><tbody>' +
+      junk.map(function (x) {
+        return '<tr><td class="l"><span class="nm">' + x.name + '</span></td>' +
+          '<td class="l"><span class="cy">' + x.type + '</span></td>' +
+          '<td class="num">' + x.qty.toLocaleString() + '</td>' +
+          '<td class="num">' + full$(x.unit) + '</td>' +
+          '<td class="num gd">' + full$(x.total) + '</td>' +
+          '<td><a class="tdk-trade" href="https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname=' + encodeURIComponent(x.name) + '" target="_blank" rel="noopener">Sell</a></td></tr>';
+      }).join("") +
+      '</tbody></table>';
+  }
+  function setView(v) {
+    state.view = v;
+    const bd = host.querySelector("#tdk-board"), iv = host.querySelector("#tdk-inv");
+    if (bd) bd.style.display = v === "inv" ? "none" : "";
+    if (iv) iv.style.display = v === "inv" ? "" : "none";
+    const b = host.querySelector("#tdk-invbtn"); if (b) b.className = "tdk-btn2" + (v === "inv" ? " on" : "");
+    if (v === "inv") renderInv();
+  }
+  const CHANGELOG = [
+    { v: "1.6.0", d: "Aug 1, 2026", c: ["Bigger-text controls (A− / A+)", "Sellable-Junk inventory view (📦 Bag)", "Clickable version → this changelog"] },
+    { v: "1.5.0", d: "Aug 1, 2026", c: ["weav3r trader prices — click a row for top buyers", "One-click ⇄ Trade + profile links"] },
+    { v: "1.4.0", d: "Aug 1, 2026", c: ["Fly-here (✈) links per row", "Live mug-risk readout", "GitHub hosting + auto-update"] },
+    { v: "1.3.0", d: "Aug 1, 2026", c: ["Fund mode — surfaces the best plays even when over budget, with a 'sell $X in stocks' reminder + shortfall badges"] },
+    { v: "1.2.0", d: "Aug 1, 2026", c: ["CSP-safe styling + broader page matching (fixed the invisible panel)"] },
+    { v: "1.1.0", d: "Aug 1, 2026", c: ["Destination filter chips (All + per-country)"] },
+    { v: "1.0.0", d: "Aug 1, 2026", c: ["Initial release — live $/min board (YATA stock × Torn resale), affordability + best pick"] }
+  ];
+  function openChangelog() {
+    const bx = host.querySelector("#tdk-buyers");
+    bx.classList.add("open");
+    bx.innerHTML = '<div class="tdk-bh"><div class="tt">Changelog<small> — Torn Trade Desk</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
+      CHANGELOG.map(function (e) {
+        return '<div class="tdk-clog"><div class="cv">v' + e.v + ' <span>· ' + e.d + '</span></div><ul>' + e.c.map(function (x) { return '<li>' + x + '</li>'; }).join("") + '</ul></div>';
+      }).join("");
+    bindClose(bx);
+  }
   function build() {
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -297,21 +368,27 @@
     panel = document.createElement("div"); panel.id = "tdk-panel";
     panel.innerHTML =
       '<div class="tdk-h">' +
-        '<div class="t">Trade Desk<small>Torn · $/min · v' + (typeof GM_info !== "undefined" && GM_info.script ? GM_info.script.version : "") + '</small></div><div class="sp"></div>' +
+        '<div class="t">Trade Desk<small>Torn · $/min · <span class="tdk-ver" id="tdk-ver" title="View changelog">v' + (typeof GM_info !== "undefined" && GM_info.script ? GM_info.script.version : "") + '</span></small></div><div class="sp"></div>' +
         'Cap <input class="tdk-cap" id="tdk-cap" type="number" min="1" max="60" value="' + state.cap + '">' +
+        '<button class="tdk-btn2 tdk-sm" id="tdk-adec" title="Smaller text">A−</button>' +
+        '<button class="tdk-btn2 tdk-sm" id="tdk-ainc" title="Bigger text">A+</button>' +
+        '<button class="tdk-btn2" id="tdk-invbtn" title="Toggle your sellable-junk inventory">📦 Bag</button>' +
         '<button class="tdk-btn2" id="tdk-fund" title="Show top plays even if over budget — reminds you to free up cash first">💰 Fund</button>' +
         '<button class="tdk-btn2" id="tdk-refresh">↻ Refresh</button>' +
       '</div>' +
       '<div class="tdk-status" id="tdk-status">Click Refresh to pull live data.</div>' +
-      '<div class="tdk-filter" id="tdk-filter"></div>' +
-      '<div class="tdk-best" id="tdk-best"><div class="l">Best play</div><div class="p">—</div></div>' +
-      '<table class="tdk"><thead><tr><th class="l">Item</th><th>Buy</th><th>Resale</th><th>Profit/ea</th><th>Stock</th><th>Load</th><th>$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
-      '<div class="tdk-mug" id="tdk-mug"></div>' +
+      '<div id="tdk-board">' +
+        '<div class="tdk-filter" id="tdk-filter"></div>' +
+        '<div class="tdk-best" id="tdk-best"><div class="l">Best play</div><div class="p">—</div></div>' +
+        '<table class="tdk"><thead><tr><th class="l">Item</th><th>Buy</th><th>Resale</th><th>Profit/ea</th><th>Stock</th><th>Load</th><th>$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
+        '<div class="tdk-mug" id="tdk-mug"></div>' +
+      '</div>' +
+      '<div id="tdk-inv" style="display:none"></div>' +
       '<div id="tdk-buyers"></div>';
     host.appendChild(panel);
 
     btn.addEventListener("click", function () { panel.classList.toggle("open"); if (panel.classList.contains("open") && !state.rows.length) refresh(); });
-    host.querySelector("#tdk-refresh").addEventListener("click", refresh);
+    host.querySelector("#tdk-refresh").addEventListener("click", function () { if (state.view === "inv") { state.inv = null; renderInv(); } else refresh(); });
     host.querySelector("#tdk-cap").addEventListener("change", function (e) {
       state.cap = Math.max(1, parseInt(e.target.value, 10) || 23); GM_setValue("cap", state.cap);
       if (state.rows.length) { state.rows.forEach(function (x) { const f = FLY[x.cc]; x.ppm = Math.round((x.ppi * state.cap - f.fare) / f.rt); x.full = x.buy * state.cap; }); state.rows.sort(function (a, b) { return b.ppm - a.ppm; }); render(); }
@@ -328,6 +405,11 @@
       const tr = e.target.closest("tr"); if (!tr || !tr.dataset.id) return;
       openBuyers(+tr.dataset.id, tr.dataset.name);
     });
+    host.querySelector("#tdk-ainc").addEventListener("click", function () { state.scale = Math.min(1.6, +(state.scale + 0.1).toFixed(2)); GM_setValue("scale", state.scale); applyScale(); });
+    host.querySelector("#tdk-adec").addEventListener("click", function () { state.scale = Math.max(0.9, +(state.scale - 0.1).toFixed(2)); GM_setValue("scale", state.scale); applyScale(); });
+    host.querySelector("#tdk-invbtn").addEventListener("click", function () { setView(state.view === "inv" ? "board" : "inv"); });
+    host.querySelector("#tdk-ver").addEventListener("click", openChangelog);
+    applyScale();
   }
 
   build();
