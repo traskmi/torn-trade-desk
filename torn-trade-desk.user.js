@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.9.4
+// @version      1.9.5
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -544,6 +544,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.9.5", d: "Aug 2, 2026", c: ["Fund from the Bag now switches straight to the funded board in one click (it used to toggle fund off and need a second click) — Bag/Fund behave like proper tabs now"] },
     { v: "1.9.4", d: "Aug 2, 2026", c: ["'Incorrect key' errors on the board and in the Bag now show a clickable link straight to ⚙ Settings to update the key"] },
     { v: "1.9.3", d: "Aug 2, 2026", c: ["📦 Bag auto-recheck: the tool quietly polls every 15 min and the Bag button glows green the moment Torn's inventory API comes back online", "Added a Test button for the W3B key in Settings too", "Really fixed Fund/Bag: only one lights at a time now (Fund lit only while viewing the board)"] },
     { v: "1.9.2", d: "Aug 2, 2026", c: ["Truth in messaging: the empty 📦 Bag is Torn's fault, not yours — Torn's inventory API is temporarily returning empty for everyone during their inventory-system migration. No key (even Full) can read it until Torn restores the endpoint. Settings/Bag now say so instead of blaming your key"] },
@@ -713,8 +714,11 @@
       state.filter = c.dataset.cc; render();
     });
     host.querySelector("#tdk-fund").addEventListener("click", function () {
-      state.fund = !state.fund; GM_setValue("fund", state.fund);
-      if (state.view === "inv") setView("board"); else render(); // setView already re-renders the board
+      // From the Bag, Fund means "show me the funded board" (turn it on) — don't toggle it off.
+      // On the board, Fund toggles fund mode normally.
+      if (state.view === "inv") { state.fund = true; setView("board"); }
+      else { state.fund = !state.fund; render(); }
+      GM_setValue("fund", state.fund);
     });
     host.querySelector("#tdk-body").addEventListener("click", function (e) {
       if (e.target.closest("a, button")) return;
