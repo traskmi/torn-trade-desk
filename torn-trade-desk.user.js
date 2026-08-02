@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.6.1
+// @version      1.6.2
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -36,7 +36,7 @@
   };
 
   /* ---------- state ---------- */
-  const state = { resale: null, resaleAt: 0, cash: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0 };
+  const state = { resale: null, resaleAt: 0, cash: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null };
 
   /* ---------- helpers ---------- */
   function gmGet(url, timeoutMs) {
@@ -305,8 +305,9 @@
   async function loadInv(key) {
     const now = Date.now();
     if (state.inv && now - state.invAt < 120000) return state.inv;
-    const j = await gmGet("https://api.torn.com/user/?selections=inventory&key=" + encodeURIComponent(key));
+    const j = await gmGet("https://api.torn.com/user/?selections=inventory,travel&key=" + encodeURIComponent(key));
     if (j.error) throw new Error("Torn API: " + j.error.error);
+    state.travel = j.travel || null;
     state.inv = j.inventory || []; state.invAt = now;
     return state.inv;
   }
@@ -318,6 +319,17 @@
     if (!key) { box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk</div><div class="p">Need a Torn API key</div></div>'; return; }
     let items;
     try { items = await loadInv(key); } catch (e) { box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk</div><div class="p">Error: ' + e.message + '</div></div>'; return; }
+    const tv = state.travel;
+    const arriveIn = tv && tv.timestamp ? tv.timestamp - Math.floor(Date.now() / 1000) : 0;
+    if (arriveIn > 0) {
+      state.invAt = 0; // in-flight inventory is hidden by Torn — don't cache it past landing
+      const m = Math.floor(arriveIn / 60), s = arriveIn % 60;
+      const eta = m > 0 ? m + "m " + s + "s" : s + "s";
+      box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk</div>' +
+        '<div class="p">✈ In flight to ' + (tv.destination || "destination") + '</div>' +
+        '<div class="k">Torn hides your inventory while traveling — land first, then reopen 📦 Bag. Arriving in ~' + eta + '.</div></div>';
+      return;
+    }
     const junk = items.filter(function (it) { return JUNK_TYPES[it.type] && !it.equipped && (it.market_price || 0) > 0; })
       .map(function (it) { const p = it.market_price || 0; return { name: it.name, type: it.type, qty: it.quantity, unit: p, total: p * it.quantity }; })
       .sort(function (a, b) { return b.total - a.total; });
@@ -346,6 +358,7 @@
     if (v === "inv") renderInv();
   }
   const CHANGELOG = [
+    { v: "1.6.2", d: "Aug 2, 2026", c: ["📦 Bag detects when you're flying (Torn hides inventory in transit) — shows arrival countdown instead of an empty list"] },
     { v: "1.6.1", d: "Aug 2, 2026", c: ["Clearer message when YATA is down (502/timeout) instead of raw error", "Longer 30s timeout for YATA's heavy export"] },
     { v: "1.6.0", d: "Aug 1, 2026", c: ["Bigger-text controls (A− / A+)", "Sellable-Junk inventory view (📦 Bag)", "Clickable version → this changelog"] },
     { v: "1.5.0", d: "Aug 1, 2026", c: ["weav3r trader prices — click a row for top buyers", "One-click ⇄ Trade + profile links"] },
