@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.9.0
+// @version      1.9.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -151,11 +151,11 @@
       background:#14130f;color:#ece7d8;border:1px solid #2c2a21;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.6);
       font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:13px;display:none}
     #tdk-panel.open{display:block}
-    .tdk-h{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid #2c2a21;position:sticky;top:0;background:#14130f;flex-wrap:wrap}
+    .tdk-h{display:flex;align-items:center;gap:9px;padding:14px 52px 14px 16px;border-bottom:1px solid #2c2a21;position:sticky;top:0;background:#14130f;flex-wrap:wrap}
     .tdk-h .t{font-weight:800;letter-spacing:.02em}
     .tdk-h .t small{color:#928b78;font-weight:600;letter-spacing:.14em;text-transform:uppercase;font-size:10px;display:block}
     .tdk-h .sp{flex:1}
-    .tdk-btn2{background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:9px;padding:7px 13px;font-weight:700;cursor:pointer}
+    .tdk-btn2{background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:9px;padding:7px 11px;font-weight:700;cursor:pointer}
     .tdk-btn2:hover{background:#332a15}
     .tdk-cap{width:56px;background:#201e17;border:1px solid #3a3729;color:#ece7d8;border-radius:8px;padding:6px 8px;
       font-family:ui-monospace,Consolas,monospace}
@@ -240,7 +240,7 @@
     .tdk-set .ssub{font-size:12px;color:#928b78;margin-top:6px;line-height:1.55}
     .tdk-set .ssub b{color:#d9b441}
     .tdk-set .serr{color:#e5615c}
-    .tdk-x{border-color:#7a4a44 !important;color:#e7a49d !important}
+    .tdk-x{position:absolute;top:11px;right:12px;border-color:#7a4a44 !important;color:#e7a49d !important}
     .tdk-x:hover{background:#3a201d !important}
     .tdk-bestonline{display:block;margin:8px 0 4px;padding:9px 12px;border:1px solid #4cc281;border-radius:9px;background:#16241c;color:#bfe9cf;text-decoration:none;font-size:13px}
     .tdk-bestonline:hover{background:#1c2f24}
@@ -504,6 +504,7 @@
     if (v === "inv") renderInv();
   }
   const CHANGELOG = [
+    { v: "1.9.1", d: "Aug 2, 2026", c: ["Moved the ✕ close to the top-right corner so it stops wrapping to a second line; tightened header buttons", "Fixed the Settings key-test advice: inventory needs a Full key (or a Custom key with Inventory ticked) — Limited isn't enough, and everything else works on Limited"] },
     { v: "1.9.0", d: "Aug 2, 2026", c: ["New ⚙ Settings: view/update your Torn + W3B keys and Test the Torn key — shows its access level and whether it can actually read your inventory (diagnoses the empty 📦 Bag)", "Fund now switches you out of the Bag view instead of leaving both buttons lit", "Buy / Resale / Load columns are readable — they were inheriting Torn's dark td color"] },
     { v: "1.8.0", d: "Aug 2, 2026", c: ["Click a board row → Buyers now shows each buyer's 🟢/🟡/⚫ online status (via Torn API) and a one-click ⚡ 'Trade best online' button for the best offer from someone actually around", "Added a ✕ close button to the panel header + raised the 💰 toggle above the panel (fixes not being able to close it)", "Readable board again: brighter item names, lifted dim opacity"] },
     { v: "1.7.4", d: "Aug 2, 2026", c: ["Fund advice is now stocks-aware: reads your actual stock value (networth) and only suggests a 'funded' play you can truly reach with cash+stocks — no more 'sell $229M in stocks' when you don't have it", "Inline tag moved inside the item name to stop rows wrapping to two lines"] },
@@ -586,7 +587,7 @@
         return gmGet("https://api.torn.com/user/?selections=inventory&key=" + encodeURIComponent(k)).then(function (inv) {
           let msg;
           if (inv.error) msg = '<span class="serr">📦 inventory blocked: ' + inv.error.error + '</span>';
-          else { const raw = inv.inventory; const arr = Array.isArray(raw) ? raw : (raw && typeof raw === "object" ? Object.values(raw) : []); msg = '📦 inventory: <b>' + arr.length + '</b> item type' + (arr.length === 1 ? '' : 's') + ' readable' + (arr.length ? '' : ' — this key can’t see your inventory (needs Limited access or higher)'); }
+          else { const raw = inv.inventory; const arr = Array.isArray(raw) ? raw : (raw && typeof raw === "object" ? Object.values(raw) : []); msg = '📦 inventory: <b>' + arr.length + '</b> item type' + (arr.length === 1 ? '' : 's') + ' readable' + (arr.length ? '' : ' — this key can’t read inventory. Use a <b>Full</b>-access key, or a <b>Custom</b> key with the <b>Inventory</b> box ticked. (Everything else — board, cash, online status — works on this Limited key.)'); }
           out.innerHTML = '✓ Access: <b>' + lvl + '</b><br>' + msg;
         });
       }).catch(function (e) { out.innerHTML = '<span class="serr">Test failed: ' + e.message + '</span>'; });
