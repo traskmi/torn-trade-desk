@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.9.5
+// @version      1.10.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -15,6 +15,7 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addStyle
+// @grant        GM_setClipboard
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -70,6 +71,10 @@
     return "$" + n;
   };
   const full$ = function (n) { return "$" + Math.round(n).toLocaleString("en-US"); };
+  function copyText(t) {
+    try { if (typeof GM_setClipboard === "function") { GM_setClipboard(t, "text"); return; } } catch (e) { }
+    try { if (navigator.clipboard) navigator.clipboard.writeText(t); } catch (e) { }
+  }
   const ago = function (secs) {
     if (secs == null) return "?";
     const m = Math.floor(secs / 60);
@@ -239,6 +244,14 @@
     .tdk-bh .tt small{color:#928b78;font-weight:600;font-size:11px}
     .tdk-bx{margin-left:auto;cursor:pointer;color:#928b78;font-size:20px;background:none;border:none;line-height:1}
     .tdk-bx:hover{color:#e5615c}
+    .tdk-calc{display:flex;align-items:center;gap:8px;margin:8px 0;font-size:12px;color:#c3bda9;flex-wrap:wrap}
+    .tdk-calc input{width:66px;background:#201e17;border:1px solid #3a3729;color:#ece7d8;border-radius:8px;padding:5px 7px;font-family:ui-monospace,monospace}
+    .tdk-calc-hint{color:#928b78;font-size:11px}
+    .tdk-brow .bp{text-align:right}
+    .tdk-brow .bp .ea{color:#928b78;font-size:10px;font-weight:600}
+    .tdk-brow .bt{color:#8fe6b3;font-size:11px;font-weight:700;font-family:ui-monospace,monospace;margin-top:1px}
+    .tdk-cp{background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:5px 8px;cursor:pointer;font-size:12px;white-space:nowrap}
+    .tdk-cp:hover{background:#332a15}
     .tdk-set .sl{font-size:12px;color:#c3bda9;margin:8px 0 4px}
     .tdk-set .sl small{color:#928b78}
     .tdk-set .sl a.prof{color:#d9b441;text-decoration:none;border-bottom:1px dotted #4a4536}
@@ -386,15 +399,40 @@
       const rank = function (t) { const s = status[t.player_id]; return s === "Online" ? 0 : s === "Idle" ? 1 : s === "Offline" ? 3 : 2; };
       const sorted = traders.map(function (t, i) { return { t: t, i: i }; })
         .sort(function (a, b) { return (rank(a.t) - rank(b.t)) || (a.i - b.i); }).map(function (x) { return x.t; });
+      let owned = 0, ownedStale = false; // how many of this item the user holds
+      if (tkey) { try { const inv = await loadInv(tkey); if (inv.length) { const f = inv.find(function (it) { return (it.ID || it.id || it.item_id) == id; }); owned = f ? (f.quantity || 0) : 0; } } catch (e) { } }
+      if (!owned) { const c = GM_getValue("inv_counts", null); if (c && c.map && c.map[id] != null) { owned = c.map[id]; ownedStale = true; } } // DOM-scraped fallback while API is down
+      const q0 = owned > 0 ? owned : Math.max(1, state.cap || 1);
+      const calcBar = '<div class="tdk-calc">Qty <input id="tdk-qty" type="number" min="1" value="' + q0 + '">' +
+        (owned > 0 ? '<button class="tdk-cp" id="tdk-qty-own" title="' + (ownedStale ? 'From your last Items-page visit (Torn inventory API is down) — click to use' : 'Set quantity to how many you own') + '">You have ' + owned + (ownedStale ? '*' : '') + '</button>' : '') +
+        '<span class="tdk-calc-hint">' + (ownedStale ? '*from your last Items-page visit · ' : '') + 'totals update live · 📋 copies the trade line</span></div>';
       const list = sorted.map(function (t) {
         const r = t.rating || { upvotes: 0, downvotes: 0 };
         return '<div class="tdk-brow"><div><div class="bn">' + dot(status[t.player_id]) + ' ' + t.player_name + '</div>' +
           '<div class="br">' + r.upvotes + '↑ ' + r.downvotes + '↓ · <a class="prof" href="https://www.torn.com/profiles.php?XID=' + t.player_id + '" target="_blank" rel="noopener">profile</a></div></div>' +
-          '<div class="bp">$' + t.price.toLocaleString() + '</div>' +
+          '<div class="bp">$' + t.price.toLocaleString() + '<span class="ea"> /ea</span><div class="bt" data-price="' + t.price + '">= $' + (t.price * q0).toLocaleString() + '</div></div>' +
+          '<button class="tdk-cp" data-price="' + t.price + '" title="Copy trade line">📋</button>' +
           '<a class="tdk-trade" href="' + tradeUrl(t.player_id) + '" target="_blank" rel="noopener">⇄ Trade</a></div>';
       }).join("");
-      bx.innerHTML = head + banner + (list || '<div class="br">No traders listed for this item.</div>');
+      bx.innerHTML = head + banner + (list ? calcBar + list : '<div class="br">No traders listed for this item.</div>');
       bindClose(bx);
+      const qtyEl = bx.querySelector("#tdk-qty");
+      const getQ = function () { return Math.max(1, parseInt(qtyEl && qtyEl.value, 10) || 1); };
+      const recalc = function () {
+        const q = getQ();
+        bx.querySelectorAll(".bt").forEach(function (el) { el.textContent = "= $" + (+el.getAttribute("data-price") * q).toLocaleString(); });
+      };
+      if (qtyEl) qtyEl.addEventListener("input", recalc);
+      const ownBtn = bx.querySelector("#tdk-qty-own");
+      if (ownBtn) ownBtn.addEventListener("click", function () { if (qtyEl) { qtyEl.value = owned; recalc(); } });
+      bx.querySelectorAll(".tdk-cp").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          const p = +this.getAttribute("data-price"), q = getQ();
+          copyText(name + " ×" + q + " @ $" + p.toLocaleString() + "/ea = $" + (p * q).toLocaleString());
+          const self = this, old = this.textContent; this.textContent = "✓";
+          setTimeout(function () { self.textContent = old; }, 1200);
+        });
+      });
     } catch (e) {
       bx.innerHTML = '<div class="tdk-bh"><div class="tt">Buyers · ' + name + '<small> — error</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div><div class="br">' + e.message + ' (check your W3B key in Tampermonkey storage)</div>';
       bindClose(bx);
@@ -544,6 +582,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.10.0", d: "Aug 2, 2026", c: ["Buyers popover now has a quantity calculator: prices show /ea, every buyer shows a live running total, and 📋 copies a paste-ready trade line (e.g. 'Ambergris Lump ×23 @ $430,000/ea = $9,890,000')", "'You have N' item count — and since Torn's inventory API is down, it's scraped from your Items page (data-qty) as you browse it, so counts work anyway (marked * when from that snapshot)"] },
     { v: "1.9.5", d: "Aug 2, 2026", c: ["Fund from the Bag now switches straight to the funded board in one click (it used to toggle fund off and need a second click) — Bag/Fund behave like proper tabs now"] },
     { v: "1.9.4", d: "Aug 2, 2026", c: ["'Incorrect key' errors on the board and in the Bag now show a clickable link straight to ⚙ Settings to update the key"] },
     { v: "1.9.3", d: "Aug 2, 2026", c: ["📦 Bag auto-recheck: the tool quietly polls every 15 min and the Bag button glows green the moment Torn's inventory API comes back online", "Added a Test button for the W3B key in Settings too", "Really fixed Fund/Bag: only one lights at a time now (Fund lit only while viewing the board)"] },
@@ -779,15 +818,27 @@
       }
     });
   }
+  // Torn renders your item counts client-side (data-qty on each row) even while the inventory API is down.
+  // Scrape them off item.php and persist, so "You have N" works without the API. Merges across category tabs.
+  function harvestInvCounts() {
+    const rows = document.querySelectorAll("li[data-item][data-qty]"); if (!rows.length) return;
+    const store = GM_getValue("inv_counts", null) || { map: {}, at: 0 };
+    const map = store.map || {};
+    rows.forEach(function (li) {
+      const id = +li.getAttribute("data-item"), q = parseInt(li.getAttribute("data-qty"), 10);
+      if (id && !isNaN(q)) map[id] = q;
+    });
+    GM_setValue("inv_counts", { map: map, at: Date.now() });
+  }
   function annotateItemsPage() {
     if (!ITEM_PAGE.test(location.pathname)) return;
     const key = GM_getValue("torn_key", ""); if (!key) return; // silent — never prompt from the page
     loadResale(key).then(function () {
-      annotateRows();
+      annotateRows(); harvestInvCounts();
       let pending = false;
       new MutationObserver(function () {
         if (pending) return; pending = true;
-        requestAnimationFrame(function () { pending = false; annotateRows(); });
+        requestAnimationFrame(function () { pending = false; annotateRows(); harvestInvCounts(); });
       }).observe(document.body, { childList: true, subtree: true });
     }).catch(function () { });
   }
