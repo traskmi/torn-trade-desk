@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.6.3
+// @version      1.6.4
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -10,6 +10,7 @@
 // @connect      yata.yt
 // @connect      api.torn.com
 // @connect      weav3r.dev
+// @connect      raw.githubusercontent.com
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -183,6 +184,11 @@
     .tdk-sm{padding:7px 9px;font-size:12px}
     .tdk-ver{cursor:pointer;border-bottom:1px dotted #928b78}
     .tdk-ver:hover{color:#d9b441;border-bottom-color:#d9b441}
+    .tdk-upbar{display:flex;align-items:center;gap:10px;margin:2px 0 10px;flex-wrap:wrap}
+    .tdk-upd{font-size:12px;color:#928b78}
+    .tdk-upd b{color:#d9b441;font-family:ui-monospace,monospace}
+    .tdk-upd a{color:#d9b441;text-decoration:none;border-bottom:1px dotted #d9b441}
+    .tdk-upd a:hover{color:#f0cf6b}
     .tdk-clog{padding:9px 0;border-bottom:1px solid #2c2a21}
     .tdk-clog:last-child{border-bottom:none}
     .tdk-clog .cv{font-weight:800;color:#d9b441}
@@ -376,6 +382,7 @@
     if (v === "inv") renderInv();
   }
   const CHANGELOG = [
+    { v: "1.6.4", d: "Aug 2, 2026", c: ["🔄 Check-for-updates button in the changelog (click the version) — compares against GitHub and gives a one-click Install link when a newer version exists"] },
     { v: "1.6.3", d: "Aug 2, 2026", c: ["Fixed 📦 Bag stuck on 'loading inventory…' (inventory now coerced to an array)", "Board no longer dead-ends: when nothing is affordable + full-stock it shows the Best available play + what's blocking it"] },
     { v: "1.6.2", d: "Aug 2, 2026", c: ["📦 Bag detects when you're flying (Torn hides inventory in transit) — shows arrival countdown instead of an empty list"] },
     { v: "1.6.1", d: "Aug 2, 2026", c: ["Clearer message when YATA is down (502/timeout) instead of raw error", "Longer 30s timeout for YATA's heavy export"] },
@@ -387,13 +394,44 @@
     { v: "1.1.0", d: "Aug 1, 2026", c: ["Destination filter chips (All + per-country)"] },
     { v: "1.0.0", d: "Aug 1, 2026", c: ["Initial release — live $/min board (YATA stock × Torn resale), affordability + best pick"] }
   ];
+  const RAW_URL = "https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js";
+  function curVersion() { return (typeof GM_info !== "undefined" && GM_info.script && GM_info.script.version) || "0"; }
+  function cmpVer(a, b) {
+    const pa = String(a).split("."), pb = String(b).split(".");
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const na = parseInt(pa[i] || "0", 10), nb = parseInt(pb[i] || "0", 10);
+      if (na !== nb) return na < nb ? -1 : 1;
+    }
+    return 0;
+  }
+  function checkUpdate() {
+    const s = host.querySelector("#tdk-upd"); if (!s) return;
+    s.textContent = "Checking…";
+    GM_xmlhttpRequest({
+      method: "GET", url: RAW_URL + "?_=" + Date.now(), timeout: 15000,
+      onload: function (r) {
+        const m = (r.responseText || "").match(/@version\s+([\d.]+)/);
+        const remote = m ? m[1] : null, cur = curVersion();
+        if (!remote) { s.textContent = "Couldn't read remote version."; return; }
+        if (cmpVer(cur, remote) < 0) {
+          s.innerHTML = "Update available: <b>v" + remote + "</b> (you have v" + cur + ") — <a href=\"" + RAW_URL + "\" target=\"_blank\" rel=\"noopener\">Install now ↗</a>";
+        } else {
+          s.innerHTML = "You're on the latest — <b>v" + cur + "</b> ✓";
+        }
+      },
+      onerror: function () { s.textContent = "Couldn't reach GitHub."; },
+      ontimeout: function () { s.textContent = "Update check timed out."; }
+    });
+  }
   function openChangelog() {
     const bx = host.querySelector("#tdk-buyers");
     bx.classList.add("open");
     bx.innerHTML = '<div class="tdk-bh"><div class="tt">Changelog<small> — Torn Trade Desk</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
+      '<div class="tdk-upbar"><button class="tdk-btn2" id="tdk-updbtn" title="Check GitHub for a newer version">🔄 Check for updates</button><span class="tdk-upd" id="tdk-upd">v' + curVersion() + '</span></div>' +
       CHANGELOG.map(function (e) {
         return '<div class="tdk-clog"><div class="cv">v' + e.v + ' <span>· ' + e.d + '</span></div><ul>' + e.c.map(function (x) { return '<li>' + x + '</li>'; }).join("") + '</ul></div>';
       }).join("");
+    const ub = bx.querySelector("#tdk-updbtn"); if (ub) ub.addEventListener("click", checkUpdate);
     bindClose(bx);
   }
   function build() {
