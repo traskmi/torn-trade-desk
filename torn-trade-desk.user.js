@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.11.1
+// @version      1.11.2
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -237,7 +237,7 @@
     .tdk-mug{margin:0;padding:11px 16px;border-top:1px solid #2c2a21;font-size:12px;color:#928b78;background:#181712;line-height:1.45}
     .tdk-mug b{color:#e5615c;font-family:ui-monospace,monospace}
     table.tdk tbody tr{cursor:pointer}
-    #tdk-buyers{position:absolute;top:92px;left:16px;right:26px;z-index:6;background:#1b1a14;border:1px solid #d9b441;border-radius:12px;box-shadow:0 16px 44px rgba(0,0,0,.65);padding:13px 15px;display:none;max-height:62vh;overflow:auto}
+    #tdk-buyers{position:absolute;top:92px;left:16px;right:26px;z-index:6;background:#1b1a14;border:1px solid #d9b441;border-radius:12px;box-shadow:0 16px 44px rgba(0,0,0,.65);padding:13px 15px;display:none;max-height:85vh;overflow:auto;resize:vertical}
     #tdk-buyers.open{display:block}
     .tdk-bh{display:flex;align-items:center;gap:10px;margin-bottom:6px}
     .tdk-bh .tt{font-weight:800;font-size:14px}
@@ -582,6 +582,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.11.2", d: "Aug 2, 2026", c: ["Fixed the item.php ⚡ only showing on the last row — moved it next to the item name (the action cell was too cramped and it clipped)", "Changelog / buyers window is taller and you can drag its bottom edge to resize it"] },
     { v: "1.11.1", d: "Aug 2, 2026", c: ["Hover tooltips on the board's ★ (affordable & in stock) and 💰 (best funded play) row markers so it's clear what they mean"] },
     { v: "1.11.0", d: "Aug 2, 2026", c: ["⚡ on each sellable item.php row (next to the 🧺 basket): click it right in Torn's own Items list to open that item's buyers + quantity calculator + trade-best-online — no more opening the board and hunting for the item"] },
     { v: "1.10.0", d: "Aug 2, 2026", c: ["Buyers popover now has a quantity calculator: prices show /ea, every buyer shows a live running total, and 📋 copies a paste-ready trade line (e.g. 'Ambergris Lump ×23 @ $430,000/ea = $9,890,000')", "'You have N' item count — and since Torn's inventory API is down, it's scraped from your Items page (data-qty) as you browse it, so counts work anyway (marked * when from that snapshot)"] },
@@ -807,6 +808,12 @@
           tag.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); toggleOverride(id, sellable); repaintRow(li); });
         }
         nameWrap.appendChild(tag);
+        if (sellable && price > 0) { // ⚡ buyers + trade-best-online, by the name where there's room (not the packed action cell)
+          const z = document.createElement("span");
+          z.className = "tdk-inl tdk-zap"; z.textContent = "⚡"; z.title = "Find buyers · trade the best online offer"; z.style.cursor = "pointer";
+          z.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); panel.classList.add("open"); openBuyers(id, name); });
+          nameWrap.appendChild(z);
+        }
       }
       if (sellable && price > 0) {
         const actions = li.querySelector(".outside-actions");
@@ -815,13 +822,7 @@
           const a = document.createElement("a");
           a.href = marketUrl(id, name, cat); a.target = "_blank"; a.rel = "noopener";
           a.title = "Open Item Market"; a.textContent = "🧺";
-          wrap.appendChild(a);
-          const z = document.createElement("a"); // ⚡ buyers + trade-best-online, straight from the Items page
-          z.className = "tdk-zap"; z.href = "#"; z.title = "Find buyers · trade the best online offer";
-          z.textContent = "⚡";
-          z.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); panel.classList.add("open"); openBuyers(id, name); });
-          wrap.appendChild(z);
-          actions.appendChild(wrap);
+          wrap.appendChild(a); actions.appendChild(wrap);
         }
       }
     });
