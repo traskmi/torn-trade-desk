@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.4.0
+// @version      1.5.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -9,6 +9,7 @@
 // @match        *://*.torn.com/*
 // @connect      yata.yt
 // @connect      api.torn.com
+// @connect      weav3r.dev
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -181,6 +182,23 @@
     .fly:hover{color:#d9b441;border-bottom-color:#d9b441}
     .tdk-mug{margin:0;padding:11px 16px;border-top:1px solid #2c2a21;font-size:12px;color:#928b78;background:#181712;line-height:1.45}
     .tdk-mug b{color:#e5615c;font-family:ui-monospace,monospace}
+    table.tdk tbody tr{cursor:pointer}
+    #tdk-buyers{position:absolute;top:92px;left:16px;right:26px;z-index:6;background:#1b1a14;border:1px solid #d9b441;border-radius:12px;box-shadow:0 16px 44px rgba(0,0,0,.65);padding:13px 15px;display:none;max-height:62vh;overflow:auto}
+    #tdk-buyers.open{display:block}
+    .tdk-bh{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+    .tdk-bh .tt{font-weight:800;font-size:14px}
+    .tdk-bh .tt small{color:#928b78;font-weight:600;font-size:11px}
+    .tdk-bx{margin-left:auto;cursor:pointer;color:#928b78;font-size:20px;background:none;border:none;line-height:1}
+    .tdk-bx:hover{color:#e5615c}
+    .tdk-brow{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid #2c2a21}
+    .tdk-brow:last-child{border-bottom:none}
+    .tdk-brow .bn{font-weight:700}
+    .tdk-brow .br{font-size:11px;color:#928b78;margin-top:1px}
+    .tdk-brow .bp{margin-left:auto;font-family:ui-monospace,monospace;font-weight:800;color:#4cc281}
+    .tdk-brow a.prof{color:#c3bda9;text-decoration:none;border-bottom:1px dotted #4a4536}
+    .tdk-brow a.prof:hover{color:#d9b441}
+    .tdk-trade{background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:5px 10px;font-weight:700;cursor:pointer;text-decoration:none;font-size:12px;white-space:nowrap}
+    .tdk-trade:hover{background:#d9b441;color:#14130f}
     `;
   }
   function setStatus(msg, err) { const s = host.querySelector("#tdk-status"); if (s) { s.textContent = msg; s.className = "tdk-status" + (err ? " err" : ""); } }
@@ -223,7 +241,7 @@
       const shortB = (!aff && cash != null && fill) ? '<span class="chip short">free +' + money(x.full - cash) + '</span>' : '';
       const cls = aff ? "" : (fund ? (isTop ? "fund" : "") : "dim");
       const mark = (aff && fill) ? '<span class="star">★</span>' : (isTop ? '<span class="star">💰</span>' : '');
-      return '<tr class="' + cls + '">' +
+      return '<tr class="' + cls + '" data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '">' +
         '<td class="l"><span class="nm">' + x.name + mark + '</span><div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + ago(x.freshS) + ' old</div></td>' +
         '<td>' + full$(x.buy) + '</td><td>' + full$(x.sell) + '</td>' +
         '<td class="gd">' + full$(x.ppi) + '</td><td>' + sc + '</td>' +
@@ -237,6 +255,36 @@
       : '🩸 Only wallet cash is muggable (5–20%). Shelter your haul in stocks the moment you land.';
   }
 
+  function w3bKey() {
+    let k = GM_getValue("w3b_key", "");
+    if (!k) { k = (window.prompt("weav3r (W3B) API key — for live trader buy prices:") || "").trim(); if (k) GM_setValue("w3b_key", k); }
+    return k;
+  }
+  function bindClose(bx) { const c = host.querySelector("#tdk-bclose"); if (c) c.onclick = function () { bx.classList.remove("open"); }; }
+  async function openBuyers(id, name) {
+    const bx = host.querySelector("#tdk-buyers");
+    bx.classList.add("open");
+    bx.innerHTML = '<div class="tdk-bh"><div class="tt">Buyers · ' + name + '<small> — loading…</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>';
+    bindClose(bx);
+    const key = w3bKey();
+    if (!key) { const t = bx.querySelector(".tt"); if (t) t.innerHTML = 'Buyers · ' + name + '<small> — a W3B key is needed</small>'; return; }
+    try {
+      const j = await gmGet("https://weav3r.dev/api/marketplace/" + id + "/traders?apiKey=" + encodeURIComponent(key));
+      const traders = (j.traders || []).slice(0, 6);
+      const list = traders.map(function (t) {
+        const r = t.rating || { upvotes: 0, downvotes: 0 };
+        return '<div class="tdk-brow"><div><div class="bn">' + t.player_name + '</div>' +
+          '<div class="br">' + r.upvotes + '↑ ' + r.downvotes + '↓ · <a class="prof" href="https://www.torn.com/profiles.php?XID=' + t.player_id + '" target="_blank" rel="noopener">profile</a></div></div>' +
+          '<div class="bp">$' + t.price.toLocaleString() + '</div>' +
+          '<a class="tdk-trade" href="https://www.torn.com/trade.php#step=start&userID=' + t.player_id + '" target="_blank" rel="noopener">⇄ Trade</a></div>';
+      }).join("");
+      bx.innerHTML = '<div class="tdk-bh"><div class="tt">Buyers · ' + name + '<small> — ' + (j.total_count || traders.length) + ' buying, best prices</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' + (list || '<div class="br">No traders listed for this item.</div>');
+      bindClose(bx);
+    } catch (e) {
+      bx.innerHTML = '<div class="tdk-bh"><div class="tt">Buyers · ' + name + '<small> — error</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div><div class="br">' + e.message + ' (check your W3B key in Tampermonkey storage)</div>';
+      bindClose(bx);
+    }
+  }
   function build() {
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -249,7 +297,7 @@
     panel = document.createElement("div"); panel.id = "tdk-panel";
     panel.innerHTML =
       '<div class="tdk-h">' +
-        '<div class="t">Trade Desk<small>Torn · $/min board</small></div><div class="sp"></div>' +
+        '<div class="t">Trade Desk<small>Torn · $/min · v' + (typeof GM_info !== "undefined" && GM_info.script ? GM_info.script.version : "") + '</small></div><div class="sp"></div>' +
         'Cap <input class="tdk-cap" id="tdk-cap" type="number" min="1" max="60" value="' + state.cap + '">' +
         '<button class="tdk-btn2" id="tdk-fund" title="Show top plays even if over budget — reminds you to free up cash first">💰 Fund</button>' +
         '<button class="tdk-btn2" id="tdk-refresh">↻ Refresh</button>' +
@@ -258,7 +306,8 @@
       '<div class="tdk-filter" id="tdk-filter"></div>' +
       '<div class="tdk-best" id="tdk-best"><div class="l">Best play</div><div class="p">—</div></div>' +
       '<table class="tdk"><thead><tr><th class="l">Item</th><th>Buy</th><th>Resale</th><th>Profit/ea</th><th>Stock</th><th>Load</th><th>$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
-      '<div class="tdk-mug" id="tdk-mug"></div>';
+      '<div class="tdk-mug" id="tdk-mug"></div>' +
+      '<div id="tdk-buyers"></div>';
     host.appendChild(panel);
 
     btn.addEventListener("click", function () { panel.classList.toggle("open"); if (panel.classList.contains("open") && !state.rows.length) refresh(); });
@@ -273,6 +322,11 @@
     });
     host.querySelector("#tdk-fund").addEventListener("click", function () {
       state.fund = !state.fund; GM_setValue("fund", state.fund); render();
+    });
+    host.querySelector("#tdk-body").addEventListener("click", function (e) {
+      if (e.target.closest("a, button")) return;
+      const tr = e.target.closest("tr"); if (!tr || !tr.dataset.id) return;
+      openBuyers(+tr.dataset.id, tr.dataset.name);
     });
   }
 
