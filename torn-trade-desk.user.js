@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.18.1
+// @version      1.19.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -49,9 +49,19 @@
     if (j.travel.time_left > 0) return null;               // still in transit
     return destCC(j.travel.destination);                   // Canada/Mexico/… → cc; Torn/empty → null (home)
   }
+  // Tri-state on top of detectLoc's verified rules: are you home (in Torn), in flight, or landed abroad?
+  // "home" is where detectLoc collapses to null-but-not-flying — we split it out so it's a first-class state.
+  function detectTravel(j) {
+    if (!j || !j.status || !j.travel) return { where: "unknown", cc: null };
+    const st = j.status.state, tl = j.travel.time_left || 0;
+    if (st === "Traveling" || tl > 0) return { where: "flying", cc: destCC(j.travel.destination), arriveIn: tl };
+    const cc = detectLoc(j);           // abroad → cc; home → null (flying already ruled out above)
+    if (cc) return { where: "abroad", cc: cc };
+    return { where: "home", cc: null };
+  }
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null };
   const fmtRt = function (min) { const h = Math.floor(min / 60), m = min % 60; return (h ? h + "h" : "") + (m ? m + "m" : "") || "0m"; };
   const TIME_OPTS = [[0, "⏱ Any time"], [60, "≤ 1h"], [90, "≤ 1½h"], [120, "≤ 2h"], [180, "≤ 3h"], [240, "≤ 4h"], [360, "≤ 6h"], [480, "≤ 8h"], [600, "≤ 10h"]];
 
@@ -125,7 +135,9 @@
       const j = await gmGet("https://api.torn.com/user/?selections=money,networth,basic,travel&key=" + encodeURIComponent(key));
       if (j && typeof j.money_onhand === "number") state.cash = j.money_onhand;
       if (j && j.networth && typeof j.networth.stockmarket === "number") state.stocks = j.networth.stockmarket;
-      state.loc = detectLoc(j); // the foreign country you can shop in right now (works even while hospitalized abroad)
+      const tw = detectTravel(j);
+      state.travelWhere = tw.where;             // home | flying | abroad | unknown
+      state.loc = tw.where === "abroad" ? tw.cc : null; // preserve existing semantics: abroad cc, else null (drives auto-focus)
     } catch (e) { /* non-fatal */ }
   }
   // When you land abroad, default the board to that country — but only re-apply when your location actually
@@ -164,7 +176,11 @@
       state.rows = rows;
       applyLocationFilter(); // auto-focus the board on the country you're standing in
       render();
-      setStatus("Updated " + new Date().toLocaleTimeString() + (state.loc && FLY[state.loc] ? " · 📍 you're in " + FLY[state.loc].name : ""));
+      const locNote = state.travelWhere === "abroad" && FLY[state.loc] ? " · 📍 you're in " + FLY[state.loc].name
+        : state.travelWhere === "home" ? " · 🏠 Home"
+          : state.travelWhere === "flying" ? " · ✈ In flight"
+            : "";
+      setStatus("Updated " + new Date().toLocaleTimeString() + locNote);
     } catch (e) {
       const msg = e.message || "";
       const isYata = e.url && e.url.indexOf("yata.yt") !== -1;
@@ -245,6 +261,7 @@
     .tdk-ver{cursor:pointer;border-bottom:1px dotted #928b78}
     .tdk-ver:hover{color:#d9b441;border-bottom-color:#d9b441}
     .tdk-upbar{display:flex;align-items:center;gap:10px;margin:2px 0 10px;flex-wrap:wrap}
+    .tdk-upbar2{margin-top:-6px}
     .tdk-upd{font-size:12px;color:#928b78}
     .tdk-upd b{color:#d9b441;font-family:ui-monospace,monospace}
     .tdk-upd a{color:#d9b441;text-decoration:none;border-bottom:1px dotted #d9b441}
@@ -338,6 +355,17 @@
     .tdk-brow a.prof:hover{color:#d9b441}
     .tdk-trade{background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:5px 10px;font-weight:700;cursor:pointer;text-decoration:none;font-size:12px;white-space:nowrap}
     .tdk-trade:hover{background:#d9b441;color:#14130f}
+    .tdk-homebar{margin:10px 16px 0;padding:9px 12px;border-radius:10px;font-size:12.5px;line-height:1.5;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .tdk-homebar.abroad{border:1px solid #d9b441;background:#1f1b10;color:#e8dcb4}
+    .tdk-homebar.home{border:1px solid #4cc281;background:#16241c;color:#bfe9cf}
+    .tdk-homebar .hb-val{color:#928b78;font-size:11px}
+    .tdk-homebar .hb-go{margin-left:auto;background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:5px 9px;font-weight:700;cursor:pointer;text-decoration:none;white-space:nowrap;font-size:12px}
+    .tdk-homebar.home .hb-go{border-color:#4cc281;color:#8fe6b3;background:#173026}
+    .tdk-homebar .hb-go:hover{filter:brightness(1.15)}
+    .tdk-bmkt{text-decoration:none;font-size:14px;margin-right:8px;filter:grayscale(.15);vertical-align:middle}
+    .tdk-bmkt:hover{filter:none}
+    .tdk-bzap{cursor:pointer;font-size:13px;margin-right:8px;opacity:.85;vertical-align:middle}
+    .tdk-bzap:hover{opacity:1}
     `;
   }
   function setStatus(msg, err) { const s = host.querySelector("#tdk-status"); if (s) { s.textContent = msg; s.className = "tdk-status" + (err ? " err" : ""); } }
@@ -360,11 +388,39 @@
       return '<span class="tdk-fc' + (state.filter === c[0] ? " on" : "") + (here ? " here" : "") + '" data-cc="' + c[0] + '"' + (here ? ' title="You\'re here now"' : "") + '>' + (here ? "📍 " : "") + c[1] + '</span>';
     }).join("") + timeSel;
   }
+  // Home / sell-side helper bar: abroad → "fly home to sell" nudge; home → your sellable-haul summary + a jump
+  // straight to the Bag. Flying/unknown → hidden. The haul value comes from the scraped counts (API-down safe).
+  function renderHomeBar() {
+    const el = host.querySelector("#tdk-homebar"); if (!el) return;
+    const w = state.travelWhere, travelUrl = "https://www.torn.com/page.php?sid=travel";
+    if (w === "abroad") {
+      // Only nudge once you're actually carrying sellable goods (i.e. you've bought) — no premature reminder on landing.
+      const h = haulSummary();
+      if (h && h.items) {
+        el.style.display = ""; el.className = "tdk-homebar abroad";
+        el.innerHTML = '🏠 <b>Got your haul?</b> Fly home to sell — <b>~' + money(h.value) + '</b> in ' + h.items + ' sellable item' + (h.items === 1 ? '' : 's') + ' on hand.<a class="hb-go" href="' + travelUrl + '">✈ Return to Torn</a>';
+      } else {
+        el.style.display = "none"; el.innerHTML = "";
+      }
+    } else if (w === "home") {
+      const h = haulSummary();
+      el.style.display = ""; el.className = "tdk-homebar home";
+      el.innerHTML = '🏠 <b>Home</b>' +
+        (h && h.items
+          ? ' · <b>' + h.items + '</b> sellable item' + (h.items === 1 ? '' : 's') + ' worth <b>~' + money(h.value) + '</b> in your bag<button class="hb-go" id="tdk-hb-bag">📦 Sell haul</button>'
+          : ' · board ranked across all destinations');
+      const bag = el.querySelector("#tdk-hb-bag");
+      if (bag) bag.addEventListener("click", function () { setView("inv"); });
+    } else {
+      el.style.display = "none"; el.innerHTML = "";
+    }
+  }
   function render() {
     const cap = state.cap, cash = state.cash, fund = state.fund;
     const stocks = state.stocks || 0, funds = cash == null ? null : cash + stocks;
     if (state.filter !== "all" && !state.rows.some(function (x) { return x.cc === state.filter; })) state.filter = "all";
     renderChips();
+    renderHomeBar();
     const fbtn = host.querySelector("#tdk-fund"); if (fbtn) fbtn.className = "tdk-btn2" + (fund ? " on" : "");
     let rows = state.filter === "all" ? state.rows : state.rows.filter(function (x) { return x.cc === state.filter; });
     if (state.maxTrip) rows = rows.filter(function (x) { return FLY[x.cc] && FLY[x.cc].rt <= state.maxTrip; }); // round-trip time budget
@@ -558,6 +614,39 @@
     return "https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=" + id +
       "&itemName=" + String(name || "").trim().replace(/\s+/g, "_") + "&itemType=" + (cat || "");
   }
+  const TYPE_ICON = { Plushie: "🧸", Flower: "🌸", Collectible: "🎖️", Artifact: "🏺", Jewelry: "💎", "Supply Pack": "📦", Drug: "💊", Candy: "🍬", Enhancer: "✨", Tool: "🔧", Material: "🧱", Special: "⭐", Temporary: "⏳", Medical: "➕", Alcohol: "🍺", Energy: "🥤", Booster: "🧃", Weapon: "🗡️", Armor: "🛡️", Clothing: "👕", Car: "🚗", Book: "📖" };
+  function typeIcon(t) { return TYPE_ICON[t] || "•"; }
+  // Where the Bag's item list comes from: the live Torn inventory API when it works, else the item counts we
+  // scraped off your Items page (data-qty) as you browsed it — so the Bag still aggregates everything sellable
+  // in one place while Torn's inventory API is down for their migration. Merged across category tabs already.
+  function invItems() {
+    const api = state.inv || [];
+    if (api.length) return { items: api, source: "api", at: state.invAt };
+    const store = GM_getValue("inv_counts", null);
+    if (store && store.map && Object.keys(store.map).length) {
+      const meta = state.itemMeta || {};
+      const items = Object.keys(store.map).filter(function (id) { return store.map[id] > 0; }).map(function (id) {
+        const m = meta[id] || {};
+        return { ID: +id, id: +id, name: m.name || ("#" + id), type: m.type || "", quantity: store.map[id], equipped: false };
+      });
+      return { items: items, source: "scan", at: store.at };
+    }
+    return { items: [], source: "none", at: 0 };
+  }
+  // Rough value of the sellable goods you're holding, from the scraped counts × resale (used by the home bar).
+  function haulSummary() {
+    const store = GM_getValue("inv_counts", null);
+    if (!store || !store.map) return null;
+    const prices = state.resale || {}, meta = state.itemMeta || {};
+    let items = 0, count = 0, value = 0;
+    Object.keys(store.map).forEach(function (id) {
+      const qty = store.map[id], price = prices[id]; if (!qty || !price) return;
+      const m = meta[id] || {};
+      if (!effSellable(id, m.type, m.hasUse, false)) return; // scrape has no equipped flag — treat as unequipped
+      items++; count += qty; value += price * qty;
+    });
+    return { items: items, count: count, value: value };
+  }
   async function renderInv() {
     const box = host.querySelector("#tdk-inv");
     box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk</div><div class="p">loading inventory…</div></div>';
@@ -586,7 +675,8 @@
   }
   function paintInv() {
     const box = host.querySelector("#tdk-inv"); if (!box) return;
-    const items = state.inv || [], priceMap = state.resale || {}, meta = state.itemMeta || {};
+    const src = invItems();                       // API when live, else scraped Items-page counts
+    const items = src.items, priceMap = state.resale || {}, meta = state.itemMeta || {};
     const idOf = function (it) { return it.ID || it.id || it.item_id; };
     const priceOf = function (it) { return priceMap[idOf(it)] || it.market_price || 0; };
     const metaOf = function (it) { return meta[idOf(it)] || {}; };
@@ -600,33 +690,36 @@
     });
     sell.sort(function (a, b) { return b.total - a.total; });
     keep.sort(function (a, b) { return b.total - a.total; });
+    const esc = function (s) { return String(s || "").replace(/"/g, "&quot;"); };
     const rowsHtml = function (arr, sellable) {
       return arr.map(function (x) {
         const tog = '<span class="tdk-tog" data-id="' + x.id + '" data-eff="' + (sellable ? 1 : 0) + '" title="' + (sellable ? 'Mark as keep' : 'Allow selling this item') + (x.ov ? ' — override set' : '') + '">' + (sellable ? '🔒' : '🔓') + '</span>';
-        const action = sellable
-          ? '<a class="tdk-trade" href="' + marketUrl(x.id, x.name, x.type) + '" target="_blank" rel="noopener">Sell</a> ' + tog
-          : tog;
-        return '<tr' + (x.ov ? ' class="tdk-ovr"' : '') + '><td class="l"><span class="nm">' + x.name + (x.qty > 1 ? ' <span class="cy">×' + x.qty.toLocaleString() + '</span>' : '') + '</span></td>' +
-          '<td class="l"><span class="cy">' + x.type + '</span></td>' +
-          '<td class="num">' + full$(x.unit) + '</td>' +
+        // 🧺 open-market + ⚡ find-buyers only on sell-ok rows (held-back items are lock-only — no sell path by mistake).
+        const basket = sellable ? '<a class="tdk-bmkt" href="' + marketUrl(x.id, x.name, x.type) + '" target="_blank" rel="noopener" title="Open Item Market">🧺</a>' : '';
+        const zap = sellable ? '<span class="tdk-bzap" data-id="' + x.id + '" data-name="' + esc(x.name) + '" title="Find buyers for this item">⚡</span>' : '';
+        return '<tr' + (x.ov ? ' class="tdk-ovr"' : '') + '><td class="l"><span class="nm">' + x.name + '</span></td>' +
+          '<td class="l"><span class="cy">' + typeIcon(x.type) + ' ' + x.type + '</span></td>' +
+          '<td class="num">' + x.qty.toLocaleString() + ' × ' + full$(x.unit) + '</td>' +
           '<td class="num gd">' + full$(x.total) + '</td>' +
-          '<td class="tdk-act">' + action + '</td></tr>';
+          '<td class="tdk-act">' + basket + zap + tog + '</td></tr>';
       }).join("");
     };
     const table = function (arr, sellable) {
-      return '<table class="tdk"><thead><tr><th class="l">Item</th><th class="l">Type</th><th>Unit</th><th>Total</th><th></th></tr></thead><tbody>' + rowsHtml(arr, sellable) + '</tbody></table>';
+      return '<table class="tdk"><thead><tr><th class="l">Item</th><th class="l">Category</th><th>Qty × Sell</th><th>Expected $</th><th></th></tr></thead><tbody>' + rowsHtml(arr, sellable) + '</tbody></table>';
     };
+    const scanNote = src.source === "scan" ? ' <span class="tdk-keep">· from your Items-page visits (Torn’s inventory API is down)</span>' : '';
     if (!sell.length && !keep.length) {
-      const n = items.length;
       box.innerHTML = '<div class="tdk-best"><div class="l">Bag</div>' +
-        '<div class="p">' + (n ? 'Scanned ' + n + ' item' + (n === 1 ? '' : 's') + ' — none with a market value' : 'Inventory came back empty') + '</div>' +
-        '<div class="k">' + (n ? 'Nothing here is currently sellable on the market.' : 'Torn’s inventory API is returning empty right now — it’s mid-migration on Torn’s side, not your key (⚙ → Test to confirm). The Bag will work once Torn restores it.') + '</div></div>';
+        '<div class="p">' + (src.source === "none" ? 'Nothing catalogued yet' : 'Nothing sellable found') + '</div>' +
+        '<div class="k">' + (src.source === "none"
+          ? 'Torn’s inventory API is down for their migration, so open your <b>Items page</b> and click through the category tabs (Candy, Drugs, Plushies, …) once — the tool catalogs what you hold as you browse, then shows every sellable item here in one place.'
+          : 'Nothing here is currently sellable on the market.') + '</div></div>';
       return;
     }
     const grand = sell.reduce(function (s, x) { return s + x.total; }, 0);
-    let html = '<div class="tdk-best"><div class="l">Safe to sell · ' + sell.length + ' item' + (sell.length === 1 ? '' : 's') + '</div>' +
-      '<div class="p">' + money(grand) + ' <span>you could dump for cash</span></div>' +
-      '<div class="k">🔒 = held back, 🔓 = click to allow · your choices are saved. The Sell link only opens Torn’s market — it never sells for you.</div></div>';
+    let html = '<div class="tdk-best"><div class="l">Safe to sell · ' + sell.length + ' item' + (sell.length === 1 ? '' : 's') + scanNote + '</div>' +
+      '<div class="p">' + money(grand) + ' <span>expected if you dump it all</span></div>' +
+      '<div class="k">🧺 open market · ⚡ find buyers · 🔒 held back / 🔓 allow (saved). Links only open Torn’s market — nothing sells for you.</div></div>';
     html += sell.length ? table(sell, true) : '<div class="tdk-sub">Nothing marked sell-ok right now.</div>';
     if (keep.length) {
       const kept = keep.reduce(function (s, x) { return s + x.total; }, 0);
@@ -638,6 +731,9 @@
         toggleOverride(+this.getAttribute("data-id"), this.getAttribute("data-eff") === "1");
         paintInv();
       });
+    });
+    box.querySelectorAll(".tdk-bzap").forEach(function (el) {
+      el.addEventListener("click", function () { openBuyers(+this.getAttribute("data-id"), this.getAttribute("data-name")); });
     });
   }
   function setView(v) {
@@ -670,6 +766,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.19.0", d: "Aug 2, 2026", c: ["🏠 Home / sell-side helper: standing in Torn, the status line shows 🏠 Home and a green bar summarizes your sellable haul (item count + ~value) with a one-click 📦 Sell haul jump to the Bag. Landed abroad, a gold bar reminds you to fly home to sell — with a ✈ Return to Torn link and, when known, the value of sellable goods you're carrying", "📦 Bag now works even while Torn's inventory API is down — it falls back to the item counts scraped from your Items-page visits, so every sellable item across all categories lands in one place instead of clicking each type in Torn's own UI", "📦 Bag rows redesigned: Item · Category (with a type icon) · Qty × Sell · Expected $, plus per-row 🧺 open-market and ⚡ find-buyers (sell-ok items only — held-back items stay lock-only)"] },
     { v: "1.18.1", d: "Aug 2, 2026", c: ["📍 Abroad auto-focus now works even when you're hospitalized abroad (or jailed) — it reads the country from your travel data, not just the 'Abroad' status, so a mugging that lands you in a foreign hospital no longer drops the board back to All", "Header fixed: ↻ Refresh and ⚙ now sit on their own stable row (Refresh + ⚙ pinned left; Cap / A− / A+ on the right) so they stop shuffling around as the font size or button widths change"] },
     { v: "1.18.0", d: "Aug 2, 2026", c: ["📍 Abroad auto-focus: when you're standing in a foreign country the board defaults to that destination's items automatically (the chip shows 📍 and glows green), so you see what to buy right where you are. Pick another chip and it sticks until you move; fly home → back to All"] },
     { v: "1.17.1", d: "Aug 2, 2026", c: ["⚡ Find-buyers stays on sell-ok items only (default junk, or ones you've toggled to sell) — held-back items are lock-only, so there's no path to sell a use-item by mistake"] },
@@ -926,9 +1023,8 @@
     const ovCount = Object.keys(state.ov).length;
     bx.classList.add("open");
     bx.innerHTML = '<div class="tdk-bh"><div class="tt">Changelog<small> — Torn Trade Desk</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
-      '<div class="tdk-upbar"><button class="tdk-btn2" id="tdk-updbtn" title="Check GitHub for a newer version">🔄 Check for updates</button><span class="tdk-upd" id="tdk-upd">v' + curVersion() + '</span>' +
-        (ovCount ? '<button class="tdk-btn2" id="tdk-ovreset" title="Clear every keep/sell-ok override you\'ve set">↺ Reset ' + ovCount + ' override' + (ovCount > 1 ? 's' : '') + '</button>' : '') +
-      '</div>' +
+      '<div class="tdk-upbar"><button class="tdk-btn2" id="tdk-updbtn" title="Check GitHub for a newer version">🔄 Check for updates</button><span class="tdk-upd" id="tdk-upd">v' + curVersion() + '</span></div>' +
+      (ovCount ? '<div class="tdk-upbar tdk-upbar2"><button class="tdk-btn2" id="tdk-ovreset" title="Clear every keep/sell-ok override you\'ve set">↺ Reset ' + ovCount + ' override' + (ovCount > 1 ? 's' : '') + '</button></div>' : '') +
       CHANGELOG.map(function (e) {
         return '<div class="tdk-clog"><div class="cv">v' + e.v + ' <span>· ' + e.d + '</span></div><ul>' + e.c.map(function (x) { return '<li>' + x + '</li>'; }).join("") + '</ul></div>';
       }).join("");
@@ -972,6 +1068,7 @@
       '</div>' +
       '<div class="tdk-status" id="tdk-status">Click Refresh to pull live data.</div>' +
       '<div id="tdk-board">' +
+        '<div class="tdk-homebar" id="tdk-homebar" style="display:none"></div>' +
         '<div class="tdk-filter" id="tdk-filter"></div>' +
         '<div class="tdk-best" id="tdk-best"><div class="l">Best play</div><div class="p">—</div></div>' +
         '<table class="tdk"><thead><tr><th class="l">Item</th><th class="so" data-sort="buy">Buy</th><th class="so" data-sort="sell">Resale</th><th class="so" data-sort="ppi">Profit/ea</th><th class="so" data-sort="stock">Stock</th><th class="so" data-sort="full">Load</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
