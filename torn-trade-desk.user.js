@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.19.1
+// @version      1.19.2
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -708,7 +708,8 @@
     const table = function (arr, sellable) {
       return '<table class="tdk"><thead><tr><th class="l">Item</th><th class="l">Category</th><th>Qty × Sell</th><th>Expected $</th><th></th></tr></thead><tbody>' + rowsHtml(arr, sellable) + '</tbody></table>';
     };
-    const scanNote = src.source === "scan" ? ' <span class="tdk-keep">· from your Items-page visits (Torn’s inventory API is down)</span>' : '';
+    const scanNote = src.source === "scan" ? ' <span class="tdk-keep">· scraped snapshot' + (src.at ? ' ' + ago(Math.floor((Date.now() - src.at) / 1000)) + ' old' : '') + ' (inventory API down)</span>' : '';
+    const rescanBtn = src.source === "scan" ? ' <button class="tdk-btn2 tdk-sm" id="tdk-invclear" title="Sold something that still shows here? Wipe the scraped snapshot and rebuild it by reopening your Items-page tabs.">↻ Rescan</button>' : '';
     if (!sell.length && !keep.length) {
       box.innerHTML = '<div class="tdk-best"><div class="l">Bag</div>' +
         '<div class="p">' + (src.source === "none" ? 'Nothing catalogued yet' : 'Nothing sellable found') + '</div>' +
@@ -720,7 +721,7 @@
     const grand = sell.reduce(function (s, x) { return s + x.total; }, 0);
     let html = '<div class="tdk-best"><div class="l">Safe to sell · ' + sell.length + ' item' + (sell.length === 1 ? '' : 's') + scanNote + '</div>' +
       '<div class="p">' + money(grand) + ' <span>expected if you dump it all</span></div>' +
-      '<div class="k">🧺 open market · ⚡ find buyers · 🔒 held back / 🔓 allow (saved). Links only open Torn’s market — nothing sells for you.</div></div>';
+      '<div class="k">🧺 open market · ⚡ find buyers · 🔒 held back / 🔓 allow (saved). Links only open Torn’s market — nothing sells for you.' + rescanBtn + '</div></div>';
     html += sell.length ? table(sell, true) : '<div class="tdk-sub">Nothing marked sell-ok right now.</div>';
     if (keep.length) {
       const kept = keep.reduce(function (s, x) { return s + x.total; }, 0);
@@ -735,6 +736,12 @@
     });
     box.querySelectorAll(".tdk-bzap").forEach(function (el) {
       el.addEventListener("click", function () { openBuyers(+this.getAttribute("data-id"), this.getAttribute("data-name")); });
+    });
+    const clr = box.querySelector("#tdk-invclear");
+    if (clr) clr.addEventListener("click", function () {
+      GM_setValue("inv_counts", { map: {}, at: 0 });
+      setStatus("Snapshot cleared — reopen your Items-page tabs to rebuild it.");
+      renderInv();
     });
   }
   function setView(v) {
@@ -767,6 +774,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.19.2", d: "Aug 2, 2026", c: ["📦 Bag no longer over-reports sold items: the scraped snapshot now reconciles as you browse — opening a category tab lists all of that category's items, so anything you've since sold/used (or that shows qty 0) is dropped instead of lingering. Added a ↻ Rescan button + a 'snapshot Nm old' age so you can wipe & rebuild it for odd cases the API-down snapshot can't see"] },
     { v: "1.19.1", d: "Aug 2, 2026", c: ["📦 Bag readability: the Qty × Sell column was inheriting Torn's dark cell color and was hard to read — gave it an explicit light tone"] },
     { v: "1.19.0", d: "Aug 2, 2026", c: ["🏠 Home / sell-side helper: standing in Torn, the status line shows 🏠 Home and a green bar summarizes your sellable haul (item count + ~value) with a one-click 📦 Sell haul jump to the Bag. Landed abroad, a gold bar reminds you to fly home to sell — with a ✈ Return to Torn link and, when known, the value of sellable goods you're carrying", "📦 Bag now works even while Torn's inventory API is down — it falls back to the item counts scraped from your Items-page visits, so every sellable item across all categories lands in one place instead of clicking each type in Torn's own UI", "📦 Bag rows redesigned: Item · Category (with a type icon) · Qty × Sell · Expected $, plus per-row 🧺 open-market and ⚡ find-buyers (sell-ok items only — held-back items stay lock-only)"] },
     { v: "1.18.1", d: "Aug 2, 2026", c: ["📍 Abroad auto-focus now works even when you're hospitalized abroad (or jailed) — it reads the country from your travel data, not just the 'Abroad' status, so a mugging that lands you in a foreign hospital no longer drops the board back to All", "Header fixed: ↻ Refresh and ⚙ now sit on their own stable row (Refresh + ⚙ pinned left; Cap / A− / A+ on the right) so they stop shuffling around as the font size or button widths change"] },
@@ -1175,14 +1183,26 @@
     });
   }
   // Torn renders your item counts client-side (data-qty on each row) even while the inventory API is down.
-  // Scrape them off item.php and persist, so "You have N" works without the API. Merges across category tabs.
+  // Scrape them off item.php and persist, so the Bag works without the API. Merges across category tabs AND
+  // reconciles: an open category tab lists ALL of that category's items, so any stored item of that category we
+  // no longer see (or that shows data-qty 0) was sold/used to zero — drop it, so the snapshot stops over-reporting.
+  // (If an item-search filter hides rows, they re-appear and re-store the moment the filter is cleared.)
   function harvestInvCounts() {
     const rows = document.querySelectorAll("li[data-item][data-qty]"); if (!rows.length) return;
     const store = GM_getValue("inv_counts", null) || { map: {}, at: 0 };
-    const map = store.map || {};
+    const map = store.map || {}, meta = state.itemMeta || {};
+    const seen = {}, catsPresent = {};
     rows.forEach(function (li) {
       const id = +li.getAttribute("data-item"), q = parseInt(li.getAttribute("data-qty"), 10);
-      if (id && !isNaN(q)) map[id] = q;
+      if (!id || isNaN(q)) return;
+      const cat = li.getAttribute("data-category") || (meta[id] && meta[id].type) || "";
+      if (cat) catsPresent[cat] = 1;
+      if (q > 0) { map[id] = q; seen[id] = 1; } else { delete map[id]; } // qty 0 on-screen → sold out
+    });
+    Object.keys(map).forEach(function (id) {
+      if (seen[id]) return;
+      const cat = meta[id] && meta[id].type; // data-category == catalog type, so a shown tab reconciles its items
+      if (cat && catsPresent[cat]) delete map[id];
     });
     GM_setValue("inv_counts", { map: map, at: Date.now() });
   }
