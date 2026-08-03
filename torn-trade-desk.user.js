@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.19.2
+// @version      1.20.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -367,6 +367,10 @@
     .tdk-bmkt:hover{filter:none}
     .tdk-bzap{cursor:pointer;font-size:13px;margin-right:8px;opacity:.85;vertical-align:middle}
     .tdk-bzap:hover{opacity:1}
+    .tdk-pk{font-size:11px;margin-top:3px;font-weight:600;white-space:normal;line-height:1.35}
+    .tdk-pk.even{color:#9fb1c9}
+    .tdk-pk.warn{color:#e2933f}
+    .tdk-pk .tdk-pkm{opacity:.7;font-weight:400;font-style:italic}
     `;
   }
   function setStatus(msg, err) { const s = host.querySelector("#tdk-status"); if (s) { s.textContent = msg; s.className = "tdk-status" + (err ? " err" : ""); } }
@@ -648,6 +652,60 @@
     });
     return { items: items, count: count, value: value };
   }
+  // "Open into items" supply packs — contents compiled from wiki.torn.com (current, Mar 2026), priced LIVE via the
+  // Torn items catalog (state.resale). Two shapes: "draws" = N independent draws from a same-category pool;
+  // "oneof" = one bundle chosen among several. EV assumes equal odds (Torn doesn't publish drop rates), so where the
+  // pool value-spread is wide (a rare high-value drop dominates the mean) we DON'T give a confident verdict — we flag
+  // it a gamble instead of wrongly shouting "open". Item names must match the catalog exactly (resolver falls back to
+  // case-insensitive); a name that doesn't resolve → no hint for that pack rather than a wrong one.
+  const PACK_MODELS = {
+    "Six-Pack of Alcohol": { kind: "draws", n: 6, pool: ["Bottle of Kandy Kane", "Bottle of Pumpkin Brew", "Bottle of Minty Mayhem", "Bottle of Wicked Witch", "Bottle of Mistletoe Madness", "Bottle of Stinky Swamp Punch"] },
+    "Six-Pack of Energy Drink": { kind: "draws", n: 6, pool: ["Can of Munster", "Can of Santa Shooters", "Can of Red Cow", "Can of Rockstar Rudolph", "Can of Taurine Elite", "Can of X-MASS"] },
+    "Box of Medical Supplies": { kind: "oneof", outcomes: [[20, "Morphine"], [20, "Empty Blood Bag"], [30, "First Aid Kit"], [50, "Small First Aid Kit"]] },
+    "Box of Grenades": { kind: "oneof", outcomes: [[100, "Grenade"], [100, "HEG"]] }
+  };
+  function nameToId(nm) {
+    const meta = state.itemMeta || {};
+    if (state._nameIdFor !== meta) { // (re)build a name→id index whenever the catalog reference changes
+      const idx = {}; Object.keys(meta).forEach(function (id) { const n = meta[id] && meta[id].name; if (n && idx[n] == null) idx[n] = +id; });
+      state._nameId = idx; state._nameIdLc = null; state._nameIdFor = meta;
+    }
+    if (state._nameId[nm] != null) return state._nameId[nm];
+    if (!state._nameIdLc) { state._nameIdLc = {}; Object.keys(state._nameId).forEach(function (n) { state._nameIdLc[n.toLowerCase()] = state._nameId[n]; }); }
+    const lc = state._nameIdLc[nm.toLowerCase()];
+    return lc != null ? lc : null;
+  }
+  function packHint(name) {
+    const m = PACK_MODELS[name]; if (!m) return null;
+    const prices = state.resale || {};
+    const priceOf = function (nm) { const id = nameToId(nm); return id != null ? (prices[id] || 0) : 0; };
+    let vals;
+    if (m.kind === "draws") {
+      vals = m.pool.map(priceOf);
+      if (vals.some(function (v) { return !v; })) return { incomplete: true };
+      const mean = vals.reduce(function (a, b) { return a + b; }, 0) / vals.length;
+      return { ev: m.n * mean, spread: Math.max.apply(null, vals) / Math.max(1, Math.min.apply(null, vals)), oneof: false };
+    }
+    vals = m.outcomes.map(function (o) { return o[0] * priceOf(o[1]); });
+    if (vals.some(function (v) { return !v; })) return { incomplete: true };
+    const mean = vals.reduce(function (a, b) { return a + b; }, 0) / vals.length;
+    return { ev: mean, lo: Math.min.apply(null, vals), hi: Math.max.apply(null, vals), spread: Math.max.apply(null, vals) / Math.max(1, Math.min.apply(null, vals)), oneof: true };
+  }
+  // Informational open-vs-sell reference for a pack row (sellPrice = the pack's own market value). "" for non-packs.
+  // Deliberately NOT a buy/sell verdict: real drop odds aren't published, and an equal-odds EV is provably biased for
+  // weighted/tiered packs (user's own torn.report data confirmed it — Grenades under-, Alcohol over-estimated). So we
+  // show the equal-odds EV as a clearly-labeled rough reference + contents, flag wide-spread pools as a gamble, and
+  // point to torn.report for the empirical call.
+  function packHintHtml(name, sellPrice) {
+    const h = packHint(name); if (!h) return "";
+    if (h.incomplete) return '<div class="cy tdk-pk">🎁 open-EV: contents not priced yet — open your Items page tabs</div>';
+    const wide = h.spread >= 5; // a rare high-value drop dominates the mean → equal-odds is especially unreliable
+    let txt = '🎁 open-EV ~' + money(h.ev) + ' <span class="tdk-pkm">equal-odds, rough</span>';
+    if (h.oneof) txt += ' · one of ' + money(h.lo) + '–' + money(h.hi);
+    txt += ' · vs sell ' + money(sellPrice);
+    if (wide) txt += ' · ⚠ wide spread — gamble';
+    return '<div class="cy tdk-pk ' + (wide ? 'warn' : 'even') + '" title="Rough equal-odds estimate (wiki contents × live prices). Torn doesn’t publish drop odds and they aren’t uniform, so this is a reference, not a verdict — see torn.report for your real open-vs-sell.">' + txt + '</div>';
+  }
   async function renderInv() {
     const box = host.querySelector("#tdk-inv");
     box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk</div><div class="p">loading inventory…</div></div>';
@@ -698,7 +756,7 @@
         // 🧺 open-market + ⚡ find-buyers only on sell-ok rows (held-back items are lock-only — no sell path by mistake).
         const basket = sellable ? '<a class="tdk-bmkt" href="' + marketUrl(x.id, x.name, x.type) + '" target="_blank" rel="noopener" title="Open Item Market">🧺</a>' : '';
         const zap = sellable ? '<span class="tdk-bzap" data-id="' + x.id + '" data-name="' + esc(x.name) + '" title="Find buyers for this item">⚡</span>' : '';
-        return '<tr' + (x.ov ? ' class="tdk-ovr"' : '') + '><td class="l"><span class="nm">' + x.name + '</span></td>' +
+        return '<tr' + (x.ov ? ' class="tdk-ovr"' : '') + '><td class="l"><span class="nm">' + x.name + '</span>' + packHintHtml(x.name, x.unit) + '</td>' +
           '<td class="l"><span class="cy">' + typeIcon(x.type) + ' ' + x.type + '</span></td>' +
           '<td class="num">' + x.qty.toLocaleString() + ' × ' + full$(x.unit) + '</td>' +
           '<td class="num gd">' + full$(x.total) + '</td>' +
@@ -719,9 +777,11 @@
       return;
     }
     const grand = sell.reduce(function (s, x) { return s + x.total; }, 0);
+    const hasPack = sell.concat(keep).some(function (x) { return PACK_MODELS[x.name]; });
+    const packNote = hasPack ? ' <span class="tdk-keep">· 🎁 pack open-EV is a rough equal-odds estimate — see <a class="tdk-sett-link" href="https://torn.report/pack" target="_blank" rel="noopener">torn.report</a> for real drop odds</span>' : '';
     let html = '<div class="tdk-best"><div class="l">Safe to sell · ' + sell.length + ' item' + (sell.length === 1 ? '' : 's') + scanNote + '</div>' +
       '<div class="p">' + money(grand) + ' <span>expected if you dump it all</span></div>' +
-      '<div class="k">🧺 open market · ⚡ find buyers · 🔒 held back / 🔓 allow (saved). Links only open Torn’s market — nothing sells for you.' + rescanBtn + '</div></div>';
+      '<div class="k">🧺 open market · ⚡ find buyers · 🔒 held back / 🔓 allow (saved). Links only open Torn’s market — nothing sells for you.' + rescanBtn + packNote + '</div></div>';
     html += sell.length ? table(sell, true) : '<div class="tdk-sub">Nothing marked sell-ok right now.</div>';
     if (keep.length) {
       const kept = keep.reduce(function (s, x) { return s + x.total; }, 0);
@@ -774,6 +834,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.20.0", d: "Aug 3, 2026", c: ["🎁 Supply-pack open-vs-sell reference in the Bag: for the 'open into items' packs (Six-Pack of Alcohol/Energy, Box of Medical Supplies, Box of Grenades) each row now shows a rough open-EV — the pack's contents (from the Torn wiki) priced live × the items catalog — next to its sell price, so you can eyeball whether opening is even in the ballpark. Contents with a wide value spread are flagged ⚠ gamble. Deliberately NOT a hard buy/sell verdict: Torn doesn't publish drop odds and they aren't uniform, so an equal-odds estimate is only a reference — the footnote links to torn.report for the empirical, per-pack call"] },
     { v: "1.19.2", d: "Aug 2, 2026", c: ["📦 Bag no longer over-reports sold items: the scraped snapshot now reconciles as you browse — opening a category tab lists all of that category's items, so anything you've since sold/used (or that shows qty 0) is dropped instead of lingering. Added a ↻ Rescan button + a 'snapshot Nm old' age so you can wipe & rebuild it for odd cases the API-down snapshot can't see"] },
     { v: "1.19.1", d: "Aug 2, 2026", c: ["📦 Bag readability: the Qty × Sell column was inheriting Torn's dark cell color and was hard to read — gave it an explicit light tone"] },
     { v: "1.19.0", d: "Aug 2, 2026", c: ["🏠 Home / sell-side helper: standing in Torn, the status line shows 🏠 Home and a green bar summarizes your sellable haul (item count + ~value) with a one-click 📦 Sell haul jump to the Bag. Landed abroad, a gold bar reminds you to fly home to sell — with a ✈ Return to Torn link and, when known, the value of sellable goods you're carrying", "📦 Bag now works even while Torn's inventory API is down — it falls back to the item counts scraped from your Items-page visits, so every sellable item across all categories lands in one place instead of clicking each type in Torn's own UI", "📦 Bag rows redesigned: Item · Category (with a type icon) · Qty × Sell · Expected $, plus per-row 🧺 open-market and ⚡ find-buyers (sell-ok items only — held-back items stay lock-only)"] },
