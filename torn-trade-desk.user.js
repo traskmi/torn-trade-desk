@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.33.2
+// @version      1.34.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -190,14 +190,20 @@
         if (arr.length > HIST_MAX) arr.splice(0, arr.length - HIST_MAX); // then by count
         // Event detection off the qty change between consecutive points.
         if (prevQ != null) {
-          const rec = ev[key] || (ev[key] = { rs: [], so: [], q: null, max: 0 });
+          const rec = ev[key] || (ev[key] = { rs: [], so: [], q: null, max: 0, up: [] });
           rec.max = Math.max(rec.max || 0, prevQ, q);      // running peak stock → tells rare (0–1) items from common (thousands)
-          if (isRealRestock(q - prevQ, prevQ, rec.max)) { rec.rs.push([upd, q - prevQ]); evChanged = true; } // real restock (batch, or a rare item's 0→1)
+          const dq = q - prevQ;
+          // RAW increase stream — EVERY +N with its size + prior qty, UNfiltered (sellbacks + jitter + restocks all).
+          // Wiki-confirmed: sell-backs increase stock, and restocks are regular/irregular batches — so a +N can't be
+          // classified as "restock" from the number alone. Capture raw now; characterize empirically after a few days.
+          if (dq > 0) { (rec.up || (rec.up = [])).push([upd, dq, prevQ]); evChanged = true; }
+          if (isRealRestock(dq, prevQ, rec.max)) { rec.rs.push([upd, dq]); evChanged = true; } // PROVISIONAL "real restock" (batch/doubling) — feeds the ⏳ estimate for now
           else if (prevQ > 0 && q === 0) { rec.so.push(upd); evChanged = true; }        // just sold out
           rec.q = q;
           // prune events by age + count
           rec.rs = rec.rs.filter(function (e) { return e[0] >= evCut; }); if (rec.rs.length > EV_MAX) rec.rs.splice(0, rec.rs.length - EV_MAX);
           rec.so = rec.so.filter(function (t) { return t >= evCut; }); if (rec.so.length > EV_MAX) rec.so.splice(0, rec.so.length - EV_MAX);
+          if (rec.up) { rec.up = rec.up.filter(function (e) { return e[0] >= evCut; }); if (rec.up.length > 200) rec.up.splice(0, rec.up.length - 200); }
         }
       });
     });
@@ -1407,6 +1413,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.34.0", d: "Aug 4, 2026", c: ["Now capturing the RAW stock-increase stream (every +N with its size) unclassified, so we can learn each item's real restock pattern from real data instead of assuming. Why: the Torn wiki confirms (a) selling items back to a foreign shop increases its stock — so a +1 can be a real sell-back, not jitter — and (b) restocks happen 'regularly or irregularly', not only after hitting 0. So a +N can't be perfectly labeled a restock from the number alone; the ⏳ prediction stays a provisional estimate (batch/refill signals) while the data builds. No visible change — this is groundwork for a data-driven restock model over the next few days"] },
     { v: "1.33.2", d: "Aug 4, 2026", c: ["Refined the restock detector for RARE items: ultra-rare stock (ArmaLite M-15A4, Gold Laptop, etc.) lives at 0–1, so a real 0→1 restock IS their whole batch — the tool now judges a +1 against each item's own typical stock level (max ever seen). +1 on an item carrying thousands = still jitter (ignored); +1 refill on an item that never exceeds ~1 = a genuine restock (counted). Best of both"] },
     { v: "1.33.1", d: "Aug 4, 2026", c: ["Good catch: a +1 stock bump is NOT a real restock (real ones land in batches) — it's usually YATA report-timing jitter or a player selling one back. The predictor now only counts a genuine restock (a refill from sold-out, or a big jump that at least doubles the stock), and the ▲ arrow no longer flags those tiny +1/+2 blips — so the restock cadence stays clean"] },
     { v: "1.33.0", d: "Aug 4, 2026", c: ["⏳ Restock prediction (foundation): the tool now durably logs every restock (with time + amount) and sell-out (with time) it observes — kept ~30 days, beyond the 48h snapshot window. Out-of-stock rows show a predicted '⏳ ~Xh' next-restock once 2+ restocks have been seen (median interval since the last one; hover for cadence + last restock/sellout times), and depleting ▼ rows now estimate 'sells out in ~X' in the tooltip. Gets sharper the more cycles it watches — honest estimate, not a guarantee"] },
