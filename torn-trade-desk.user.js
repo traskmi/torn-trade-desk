@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.25.0
+// @version      1.25.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -381,6 +381,7 @@
     .skn .skhold{color:#4cc281;font-size:10px}
     .sksub{font-size:11px;color:#a49c88;margin-top:2px;font-family:ui-monospace,monospace}
     .skhint{font-size:11px;color:#c3bda9;margin-top:3px}
+    .sknet{font-size:11px;color:#928b78;margin-top:2px}.sknet b.up{color:#4cc281}.sknet b.dn{color:#e5615c}.sknet span{color:#7c7566}
     .skpl{text-align:right;font-family:ui-monospace,monospace;white-space:nowrap}
     .skpl .up{color:#4cc281;font-weight:800}.skpl .dn{color:#e5615c;font-weight:800}
     .skpct{color:#928b78;font-size:11px}
@@ -751,6 +752,7 @@
      Honest framing: stocks have NO predictable cycle, so this is range/trend + your P&L + benefit progress,
      NOT a predictor. It NEVER advises selling a block you're accumulating for its benefit. */
   const STK_MAX = 700, STK_AGE = 14 * 24 * 3600, STK_SAMPLE = 600; // ~2 weeks of ≥10-min samples
+  const STK_SELL_FEE = 0.001; // Torn charges 0.1% on SELLING stocks (verified wiki.torn.com/wiki/Stock_Market); buying is free
   function recordStockPrices(mkt) {
     if (!mkt) return;
     let hist; try { hist = GM_getValue("stk_hist", null) || {}; } catch (e) { hist = {}; }
@@ -831,13 +833,14 @@
     const asOf = new Date(state.stkAt || Date.now()).toLocaleTimeString();
     // ---- Your portfolio (live P&L + benefit-block progress) ----
     const holdIds = Object.keys(mine).filter(function (id) { return mine[id] && mine[id].total_shares > 0; });
-    let portHtml, totalVal = 0, totalPL = 0;
+    let portHtml, totalVal = 0, totalPL = 0, totalFee = 0;
     if (holdIds.length) {
       const body = holdIds.map(function (id) {
         const h = mine[id], s = mkt[id]; if (!s) return '';
         const shares = h.total_shares, cost = stkAvgCost(h), cur = s.current_price;
         const val = cur * shares, pl = (cur - cost) * shares, pct = cost > 0 ? (cur - cost) / cost * 100 : 0;
-        totalVal += val; totalPL += pl;
+        const fee = val * STK_SELL_FEE, net = pl - fee; // Torn's 0.1% sell fee (buying is free); its Profit column is GROSS
+        totalVal += val; totalPL += pl; totalFee += fee;
         const req = s.benefit && s.benefit.requirement;
         let benefit = '';
         if (req) {
@@ -846,10 +849,11 @@
         }
         const st = stkStats(id);
         return '<div class="skrow"><div class="skmain"><div class="skn">' + s.acronym + ' <span>' + s.name + '</span></div>' +
-          '<div class="sksub">' + shares.toLocaleString() + ' sh @ $' + cost.toFixed(2) + ' → $' + cur + (st ? ' ' + rangeTag(st) : '') + '</div>' + benefit + '</div>' +
+          '<div class="sksub">' + shares.toLocaleString() + ' sh @ $' + cost.toFixed(2) + ' → $' + cur + (st ? ' ' + rangeTag(st) : '') + '</div>' +
+          '<div class="sknet">net if sold now <b class="' + (net >= 0 ? 'up' : 'dn') + '">' + (net >= 0 ? '+' : '') + money(net) + '</b> <span>after 0.1% sell fee −' + money(fee) + '</span></div>' + benefit + '</div>' +
           '<div class="skpl"><div class="' + (pl >= 0 ? 'up' : 'dn') + '">' + (pl >= 0 ? '+' : '') + money(pl) + '</div><div class="skpct">' + (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%</div></div></div>';
       }).join('');
-      portHtml = '<div class="sksec">Your portfolio · value ' + money(totalVal) + ' · P&amp;L <b class="' + (totalPL >= 0 ? 'up' : 'dn') + '">' + (totalPL >= 0 ? '+' : '') + money(totalPL) + '</b></div>' + body;
+      portHtml = '<div class="sksec">Your portfolio · value ' + money(totalVal) + ' · gross P&amp;L <b class="' + (totalPL >= 0 ? 'up' : 'dn') + '">' + (totalPL >= 0 ? '+' : '') + money(totalPL) + '</b> · net after fees <b class="' + (totalPL - totalFee >= 0 ? 'up' : 'dn') + '">' + (totalPL - totalFee >= 0 ? '+' : '') + money(totalPL - totalFee) + '</b></div>' + body;
     } else {
       portHtml = '<div class="sksec">Your portfolio</div><div class="tdk-sub" style="padding:6px 12px">You don\'t hold any stocks right now.</div>';
     }
@@ -1165,6 +1169,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.25.1", d: "Aug 4, 2026", c: ["📊 Stocks now shows your NET-after-fee P&L: Torn's Profit figure is gross, but selling costs a 0.1% fee (verified on the Torn wiki — buying is free). Each holding shows 'net if sold now' after that fee, and the portfolio header totals both gross and net — so you see what you'd actually pocket (e.g. ~$12k fee on a $12.1M IST sale)"] },
     { v: "1.25.0", d: "Aug 4, 2026", c: ["📊 Stocks: a new header button with (1) YOUR portfolio — live P&L per holding + a benefit-block progress bar (e.g. 'IST 22% → free education; 77,882 more ≈ $42.6M'), and (2) a buy-low scanner across all 35 stocks ranked by how far each sits below its own recent average, with ▼near-low / ▲near-high tags. Torn gives no price history, so — like restock — it records prices itself (~10-min background poll); trend/range signals fill in as history builds. It's benefit-AWARE: it never tells you to sell a block you're still accumulating. Honest by design: prices tick constantly (figures are as-of-pull, reconcile to Torn on reopen) and signals are range/trend heuristics, NOT predictions"] },
     { v: "1.24.0", d: "Aug 4, 2026", c: ["💱 Quick Flips: a new header button that hunts genuine 'crossed market' arbitrage — an item you can BUY (Item Market / bazaar) for less than a LIVE trader is offering to BUY it from you, no travel. It scans the whole weav3r market, shortlists the most liquid + affordable items (where transient mispricings actually appear), then pulls real buy-offers and shows ONLY real, positive flips — ranked by profit/ea. Click one to see who's online + ⚡ trade. These are rare and get snapped up fast, so it honestly says 'market's efficient' when there's nothing — it never invents profit. Reconfirm prices before you buy"] },
     { v: "1.23.0", d: "Aug 4, 2026", c: ["✈ In-flight pre-focus: while you're flying TO a country, the board now auto-focuses on that destination (blue ✈ chip) so you can plan your buy before you land — the status line shows 'heading to X · land in Ym'. Flying home goes back to All. Pick another chip and it sticks until your next leg", "📈 Restock history now keeps ~2 days per item (was ~20h) so the trends have room to show full restock cycles"] },
