@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.27.0
+// @version      1.27.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -492,11 +492,12 @@
     const el = host.querySelector("#tdk-homebar"); if (!el) return;
     const w = state.travelWhere, travelUrl = "https://www.torn.com/page.php?sid=travel";
     if (w === "abroad") {
-      // Only nudge once you're actually carrying sellable goods (i.e. you've bought) — no premature reminder on landing.
-      const h = haulSummary();
+      // Nudge only when carrying FOREIGN/travel goods (a real trip haul) — not your permanent sellable stash,
+      // which would fire this on landing even empty-handed (the scrape can't tell trip purchases from old stock).
+      const h = haulSummary(true);
       if (h && h.items) {
         el.style.display = ""; el.className = "tdk-homebar abroad";
-        el.innerHTML = '🏠 <b>Got your haul?</b> Fly home to sell — <b>~' + money(h.value) + '</b> in ' + h.items + ' sellable item' + (h.items === 1 ? '' : 's') + ' on hand.<a class="hb-go" href="' + travelUrl + '">✈ Return to Torn</a>';
+        el.innerHTML = '🏠 <b>Got your haul?</b> Fly home to sell — <b>~' + money(h.value) + '</b> in ' + h.count + ' travel item' + (h.count === 1 ? '' : 's') + ' on hand.<a class="hb-go" href="' + travelUrl + '">✈ Return to Torn</a>';
       } else {
         el.style.display = "none"; el.innerHTML = "";
       }
@@ -1014,16 +1015,21 @@
     }
     return { items: [], source: "none", at: 0 };
   }
-  // Rough value of the sellable goods you're holding, from the scraped counts × resale (used by the home bar).
-  function haulSummary() {
+  // Rough value of goods you're holding, from the scraped counts × resale (used by the home bar).
+  // foreignOnly=true → count ONLY foreign/travel goods (things you can only get by buying abroad), so the abroad
+  // "fly home to sell" nudge reflects an actual TRIP HAUL, not your permanent sellable stash. The scrape is a
+  // persistent inventory snapshot and (with Torn's inventory API down) can't tell "bought this trip" from "already
+  // owned" — foreign-only is the reliable proxy for a real haul.
+  function haulSummary(foreignOnly) {
     const store = GM_getValue("inv_counts", null);
     if (!store || !store.map) return null;
-    const prices = state.resale || {}, meta = state.itemMeta || {};
+    const prices = state.resale || {}, meta = state.itemMeta || {}, foreign = state.foreignIds;
+    if (foreignOnly && (!foreign || !foreign.size)) return { items: 0, count: 0, value: 0 }; // no foreign list yet → don't nudge
     let items = 0, count = 0, value = 0;
     Object.keys(store.map).forEach(function (id) {
       const qty = store.map[id], price = prices[id]; if (!qty || !price) return;
-      const m = meta[id] || {};
-      if (!effSellable(id, m.type, m.hasUse, false)) return; // scrape has no equipped flag — treat as unequipped
+      if (foreignOnly) { if (!foreign.has(+id)) return; } // travel goods are all resale merch — skip the junk whitelist
+      else { const m = meta[id] || {}; if (!effSellable(id, m.type, m.hasUse, false)) return; }
       items++; count += qty; value += price * qty;
     });
     return { items: items, count: count, value: value };
@@ -1256,6 +1262,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.27.1", d: "Aug 4, 2026", c: ["Fixed the false 'Got your haul? Fly home to sell' nudge that showed abroad even when you'd bought nothing — it was counting your whole sellable STASH (from the scraped inventory snapshot), not this trip's purchases. It now counts only foreign/travel goods (things you can only get by buying abroad), so it stays quiet until you're actually carrying a haul"] },
     { v: "1.27.0", d: "Aug 4, 2026", c: ["🏪 Shop Flips: a new header button that finds Torn city-shop items (Big Al's, Bits 'n' Bobs, the car dealership, sweet shop, etc.) whose fixed shop price is below their market value — buy low at the shop, sell higher on the market. Uses the item catalog's buy_price vs market_value, excludes travel items (the board covers those), ranks by cash spread, and shows the net after the 1% Item Market sell fee. Reference-only: shop price is a catalog constant, so verify the item's actually stocked (limited stock/caps/restocks). Click a row for buyers, 🛒 to open the Item Market"] },
     { v: "1.26.0", d: "Aug 4, 2026", c: ["💱 Flips are now one-click actionable: each flip shows a 🏪 link straight to the cheapest seller's bazaar (these are hidden from search since Item Market 2.0 — that's the edge) and a 🛒 Item Market link, so you can jump right to buying. It re-prices on the live cheapest listing before showing, drops any that already closed, and reminds you the ⚡ sell is a direct trade (no fee)"] },
     { v: "1.25.1", d: "Aug 4, 2026", c: ["📊 Stocks now shows your NET-after-fee P&L: Torn's Profit figure is gross, but selling costs a 0.1% fee (verified on the Torn wiki — buying is free). Each holding shows 'net if sold now' after that fee, and the portfolio header totals both gross and net — so you see what you'd actually pocket (e.g. ~$12k fee on a $12.1M IST sale)"] },
