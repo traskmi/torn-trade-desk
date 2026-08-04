@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.34.1
+// @version      1.34.2
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -860,12 +860,14 @@
       const cand = [];
       items.forEach(function (it) {
         if (!it || it.item_id <= 0) return;                              // skip sets (negative ids)
-        const asks = [it.lowest_price, it.market_price].filter(function (v) { return v > 0; });
-        if (!asks.length || (it.total_bazaars || 0) < LIQ) return;       // need a buyable ask + real liquidity
-        const buy = Math.min.apply(null, asks);
+        // BUY price = cheapest BAZAAR listing (a real current ask). NEVER market_price — that field is Torn's stale
+        // last-TRADED value, which for rarely-traded items (e.g. Bathrobe: last sale $1,000, real asks $19.5M) is
+        // pure fiction and produced phantom flips.
+        const buy = it.lowest_price;
+        if (!(buy > 0) || (it.total_bazaars || 0) < LIQ) return;         // need a real bazaar ask + liquidity
         if (buy > cashCeil) return;                                      // within your budget
-        const ref = Math.max.apply(null, asks);
-        cand.push({ id: it.item_id, name: it.item_name, buy: buy, buyMk: it.market_price, buyBz: it.lowest_price, disp: ref > buy ? (ref - buy) / buy : 0 });
+        const ref = Math.max(it.bazaar_average || 0, buy);
+        cand.push({ id: it.item_id, name: it.item_name, buy: buy, disp: ref > buy ? (ref - buy) / buy : 0 });
       });
       cand.sort(function (a, b) { return b.disp - a.disp; });            // most-dispersed (likeliest crossed) first
       const short = cand.slice(0, SHORTLIST);
@@ -880,7 +882,7 @@
             if (!t.length) return;
             const sell = t[0].price, profit = sell - c.buy;
             if (profit < 1000) return; // skip penny-item noise (huge % but trivial cash)
-            flips.push({ id: c.id, name: c.name, buy: c.buy, buyMk: c.buyMk, buyBz: c.buyBz, sell: sell, profit: profit, buyers: j.total_count || t.length });
+            flips.push({ id: c.id, name: c.name, buy: c.buy, sell: sell, profit: profit, buyers: j.total_count || t.length });
           }).catch(function () { });
       }));
       flips.sort(function (a, b) { return b.profit - a.profit; });
@@ -892,15 +894,14 @@
       await Promise.all(top.map(function (f) {
         return gmGet("https://weav3r.dev/api/marketplace/" + f.id + "?apiKey=" + encodeURIComponent(key), 20000)
           .then(function (j) {
-            f.mp = (j && j.market_price > 0) ? j.market_price : f.buyMk;   // fresh Item Market price
             const L = ((j && j.listings) || []).filter(function (x) { return x.price > 0; }).sort(function (a, b) { return a.price - b.price; });
-            f.baz = L.length ? L[0] : null;                                // cheapest bazaar seller {player_id, player_name, price, quantity}
-          }).catch(function () { f.mp = f.buyMk; f.baz = null; });
+            f.baz = L.length ? L[0] : null;                                // cheapest REAL bazaar seller {player_id, player_name, price, quantity}
+          }).catch(function () { f.baz = null; });
       }));
-      // Re-price on the fresh buy side, drop any that closed, re-rank.
+      // Re-price on the FRESH cheapest real bazaar ask (never market_price), drop any that are no longer profitable, re-rank.
       top.forEach(function (f) {
-        const bazP = f.baz ? f.baz.price : Infinity, mkP = f.mp > 0 ? f.mp : Infinity;
-        f.buy2 = Math.min(bazP, mkP); f.bazCheap = bazP <= mkP; f.profit2 = f.sell - f.buy2;
+        f.buy2 = f.baz ? f.baz.price : f.buy; // fresh cheapest bazaar ask; fall back to stage-1 lowest_price
+        f.profit2 = f.sell - f.buy2;
       });
       const finalFlips = top.filter(function (f) { return f.profit2 > 0; }).sort(function (a, b) { return b.profit2 - a.profit2; });
       if (!finalFlips.length) { note.textContent = "Those flips just closed — the cheap listings moved before we could price them. Try again shortly."; setTitle("closed — prices moved"); return; }
@@ -909,8 +910,8 @@
         const marg = f.buy2 > 0 ? Math.round(f.profit2 / f.buy2 * 100) : 0;
         const warn = marg > 300 ? ' <span class="fwarn" title="Huge margin — likely a stale or fat-finger listing. Verify it\'s still live in-game before buying.">⚠</span>' : '';
         const links = [];
-        if (f.baz && f.bazCheap) links.push('<a class="fbuy" href="https://www.torn.com/bazaar.php?userId=' + f.baz.player_id + '" target="_blank" rel="noopener" title="Buy from ' + String(f.baz.player_name || "").replace(/"/g, "") + '’s bazaar — ' + (f.baz.quantity || 0) + ' @ $' + f.baz.price.toLocaleString() + '">🏪 ' + (f.baz.player_name || "bazaar") + '</a>');
-        links.push('<a class="fbuy" href="' + marketUrl(f.id, f.name, cat(f.id)) + '" target="_blank" rel="noopener" title="Buy on the Item Market' + (f.mp > 0 ? ' (~$' + f.mp.toLocaleString() + ')' : '') + '">🛒 Market</a>');
+        if (f.baz) links.push('<a class="fbuy" href="https://www.torn.com/bazaar.php?userId=' + f.baz.player_id + '" target="_blank" rel="noopener" title="Buy from ' + String(f.baz.player_name || "").replace(/"/g, "") + '’s bazaar — ' + (f.baz.quantity || 0) + ' @ $' + f.baz.price.toLocaleString() + '">🏪 ' + (f.baz.player_name || "bazaar") + '</a>');
+        links.push('<a class="fbuy" href="' + marketUrl(f.id, f.name, cat(f.id)) + '" target="_blank" rel="noopener" title="Also check the Item Market for this item">🛒 Market</a>');
         return '<div class="tdk-flip" data-id="' + f.id + '" data-name="' + f.name.replace(/"/g, "") + '">' +
           '<div class="fn">' + f.name + warn + '<div class="fs">buy <b>' + full$(f.buy2) + '</b> ' + links.join(" ") + ' → sell <b>' + full$(f.sell) + '</b> <span>· ' + f.buyers + ' buyers · ⚡ click row to trade</span></div></div>' +
           '<div class="fp"><div class="fpv">+' + money(f.profit2) + '</div><div class="fpm">' + marg + '% /ea</div></div></div>';
@@ -1413,6 +1414,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.34.2", d: "Aug 4, 2026", c: ["🐞 Big Flip-finder fix: it was showing phantom flips (e.g. 'Bathrobe buy $1,000 → sell $11.7M'). Cause: it used the item's market_price as the buy price, but that field is Torn's stale LAST-TRADED value, not a live listing — for rarely-traded items it's fiction (Bathrobe last sold for $1,000; real sellers ask $19.5M). Now the buy price is the actual cheapest BAZAAR listing (a real current ask), so a 'flip' only shows when a real listing truly sits below a live buy-offer. Result: far fewer flips, but the ones shown are real (the phantoms — Bathrobe, Thimble, even Christmas Gnome — correctly vanish). Re-open 💱 Flip to rebuild the list"] },
     { v: "1.34.1", d: "Aug 4, 2026", c: ["Added an '⬇ Export restock data' button in the changelog window (click the version). It copies all your recorded restock/stock-change data (with item names) to the clipboard — paste it to Claude and say 'analyze the restock data' to turn the collected observations into a real restock-timing model. This is how the browser-side data reaches the analysis"] },
     { v: "1.34.0", d: "Aug 4, 2026", c: ["Now capturing the RAW stock-increase stream (every +N with its size) unclassified, so we can learn each item's real restock pattern from real data instead of assuming. Why: the Torn wiki confirms (a) selling items back to a foreign shop increases its stock — so a +1 can be a real sell-back, not jitter — and (b) restocks happen 'regularly or irregularly', not only after hitting 0. So a +N can't be perfectly labeled a restock from the number alone; the ⏳ prediction stays a provisional estimate (batch/refill signals) while the data builds. No visible change — this is groundwork for a data-driven restock model over the next few days"] },
     { v: "1.33.2", d: "Aug 4, 2026", c: ["Refined the restock detector for RARE items: ultra-rare stock (ArmaLite M-15A4, Gold Laptop, etc.) lives at 0–1, so a real 0→1 restock IS their whole batch — the tool now judges a +1 against each item's own typical stock level (max ever seen). +1 on an item carrying thousands = still jitter (ignored); +1 refill on an item that never exceeds ~1 = a genuine restock (counted). Best of both"] },
