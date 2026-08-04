@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.23.0
+// @version      1.24.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -364,6 +364,15 @@
     .tdk-brow .bp .ea{color:#928b78;font-size:10px;font-weight:600}
     .tdk-brow .bt{color:#8fe6b3;font-size:11px;font-weight:700;font-family:ui-monospace,monospace;margin-top:1px}
     .tdk-brow .bt .netp{color:#d9b441}.tdk-brow .bt .netp.neg{color:#e5615c}
+    .tdk-flip{display:flex;align-items:center;gap:12px;padding:9px 12px;border-bottom:1px solid #2c2a21;cursor:pointer}
+    .tdk-flip:hover{background:#1b1a14}
+    .tdk-flip .fn{flex:1;font-weight:700;color:#f2eddf}
+    .tdk-flip .fs{font-weight:400;font-size:11px;color:#a49c88;margin-top:2px}
+    .tdk-flip .fs b{color:#ded7c5;font-family:ui-monospace,monospace}.tdk-flip .fs span{color:#7c7566}
+    .tdk-flip .fp{text-align:right}
+    .tdk-flip .fpv{color:#4cc281;font-weight:800;font-family:ui-monospace,monospace}
+    .tdk-flip .fpm{color:#928b78;font-size:11px}
+    .tdk-flip .fwarn{color:#e2933f;cursor:help}
     .tdk-cp{background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:5px 8px;cursor:pointer;font-size:12px;white-space:nowrap}
     .tdk-cp:hover{background:#332a15}
     .tdk-filldesc{display:block;margin:6px 0;background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:8px 11px;font-weight:700;cursor:pointer;font-size:12px;max-width:100%;text-align:left;white-space:normal;line-height:1.35}
@@ -653,6 +662,72 @@
     } catch (e) {
       bx.innerHTML = '<div class="tdk-bh"><div class="tt">Buyers · ' + name + '<small> — error</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div><div class="br">' + e.message + ' (check your W3B key in Tampermonkey storage)</div>';
       bindClose(bx);
+    }
+  }
+  // ---------- Flip finder: buy cheap (Item Market / bazaar) → sell to the highest live trader ----------
+  // Two-stage: (1) ONE whole-market call to shortlist undervalued items (cheapest buy well below bazaar avg),
+  // (2) real trader buy-offers for just the shortlist, ranked by actual buy→sell profit. Click a row → the
+  // buyers popover to see who's online + ⚡ trade. Reuses the #tdk-buyers overlay like Happy/Settings do.
+  async function openFlip() {
+    const bx = host.querySelector("#tdk-buyers");
+    bx.classList.add("open");
+    bx.innerHTML = '<div class="tdk-bh"><div class="tt">💱 Quick Flips<small> — scanning the market…</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div><div class="br" id="tdk-flip-note">Pulling market data…</div>';
+    bindClose(bx);
+    const setTitle = function (s) { const t = bx.querySelector(".tt"); if (t) t.innerHTML = '💱 Quick Flips<small> — ' + s + '</small>'; };
+    const key = w3bKey();
+    if (!key) { setTitle("a W3B key is needed (⚙ Settings)"); return; }
+    const note = bx.querySelector("#tdk-flip-note");
+    try {
+      // Stage 1 — whole market → shortlist LIQUID, AFFORDABLE items to spend trader-calls on. We can't see live
+      // buy-offers in bulk, and bazaar_average lies (it's avg ask, not what a buyer pays), so we rank by price
+      // DISPERSION between venues (a cheap ask vs a pricier one) — where transient mispricings actually surface.
+      const mk = await gmGet("https://weav3r.dev/api/marketplace?apiKey=" + encodeURIComponent(key), 30000);
+      const items = (mk && mk.items) || [];
+      const cashCeil = (state.cash && state.cash > 0) ? state.cash : 50e6; // only flips you can actually afford
+      const LIQ = 8, SHORTLIST = 30;
+      const cand = [];
+      items.forEach(function (it) {
+        if (!it || it.item_id <= 0) return;                              // skip sets (negative ids)
+        const asks = [it.lowest_price, it.market_price].filter(function (v) { return v > 0; });
+        if (!asks.length || (it.total_bazaars || 0) < LIQ) return;       // need a buyable ask + real liquidity
+        const buy = Math.min.apply(null, asks);
+        if (buy > cashCeil) return;                                      // within your budget
+        const ref = Math.max.apply(null, asks);
+        cand.push({ id: it.item_id, name: it.item_name, buy: buy, buyMk: it.market_price, buyBz: it.lowest_price, disp: ref > buy ? (ref - buy) / buy : 0 });
+      });
+      cand.sort(function (a, b) { return b.disp - a.disp; });            // most-dispersed (likeliest crossed) first
+      const short = cand.slice(0, SHORTLIST);
+      if (!short.length) { note.textContent = "No affordable, liquid items to check right now."; setTitle("nothing to scan"); return; }
+      note.textContent = "Checking live buy-offers for " + short.length + " liquid, affordable items…";
+      // Stage 2 — real highest buy-offer per shortlisted item (traders arrive price-desc → [0] is the best sell).
+      const flips = [];
+      await Promise.all(short.map(function (c) {
+        return gmGet("https://weav3r.dev/api/marketplace/" + c.id + "/traders?apiKey=" + encodeURIComponent(key), 20000)
+          .then(function (j) {
+            const t = (j && j.traders) || [];
+            if (!t.length) return;
+            const sell = t[0].price, profit = sell - c.buy;
+            if (profit < 1000) return; // skip penny-item noise (huge % but trivial cash)
+            flips.push({ id: c.id, name: c.name, buy: c.buy, buyMk: c.buyMk, buyBz: c.buyBz, sell: sell, profit: profit, buyers: j.total_count || t.length });
+          }).catch(function () { });
+      }));
+      flips.sort(function (a, b) { return b.profit - a.profit; });
+      if (!flips.length) { note.textContent = "Market's efficient right now — no crossed-market flips (no live buyer is paying above the cheapest listing on the items scanned). Try again later — these appear and vanish fast."; setTitle("no flips right now"); return; }
+      const rows = flips.slice(0, 12).map(function (f) {
+        const src = f.buyMk > 0 && (!(f.buyBz > 0) || f.buyMk <= f.buyBz) ? "Item Market" : "bazaar";
+        const marg = Math.round(f.profit / f.buy * 100);
+        const warn = marg > 300 ? ' <span class="fwarn" title="Huge margin — likely a stale or fat-finger listing. Verify it\'s still live in-game before buying.">⚠</span>' : '';
+        return '<div class="tdk-flip" data-id="' + f.id + '" data-name="' + f.name.replace(/"/g, "") + '" title="See who\'s online + ⚡ trade">' +
+          '<div class="fn">' + f.name + warn + '<div class="fs">buy <b>' + full$(f.buy) + '</b> <span>(' + src + ')</span> → sell <b>' + full$(f.sell) + '</b> <span>(' + f.buyers + ' buyers)</span></div></div>' +
+          '<div class="fp"><div class="fpv">+' + money(f.profit) + '</div><div class="fpm">' + marg + '% /ea</div></div></div>';
+      }).join("");
+      setTitle("buy low → sell live · top " + Math.min(12, flips.length));
+      note.outerHTML = '<div class="tdk-sub" style="padding:6px 12px">Buy at the cheapest source, sell to the highest live buyer. Click a row for who\'s online + ⚡ trade. Prices move fast — reconfirm before buying.</div><div id="tdk-flips">' + rows + '</div>';
+      bx.querySelectorAll(".tdk-flip").forEach(function (el) {
+        el.addEventListener("click", function () { openBuyers(+this.getAttribute("data-id"), this.getAttribute("data-name")); });
+      });
+    } catch (e) {
+      const n = bx.querySelector("#tdk-flip-note"); if (n) n.textContent = "Flip scan failed: " + (e.message || e) + " (check your W3B key in ⚙ Settings).";
     }
   }
   async function loadInv(key) {
@@ -948,6 +1023,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.24.0", d: "Aug 4, 2026", c: ["💱 Quick Flips: a new header button that hunts genuine 'crossed market' arbitrage — an item you can BUY (Item Market / bazaar) for less than a LIVE trader is offering to BUY it from you, no travel. It scans the whole weav3r market, shortlists the most liquid + affordable items (where transient mispricings actually appear), then pulls real buy-offers and shows ONLY real, positive flips — ranked by profit/ea. Click one to see who's online + ⚡ trade. These are rare and get snapped up fast, so it honestly says 'market's efficient' when there's nothing — it never invents profit. Reconfirm prices before you buy"] },
     { v: "1.23.0", d: "Aug 4, 2026", c: ["✈ In-flight pre-focus: while you're flying TO a country, the board now auto-focuses on that destination (blue ✈ chip) so you can plan your buy before you land — the status line shows 'heading to X · land in Ym'. Flying home goes back to All. Pick another chip and it sticks until your next leg", "📈 Restock history now keeps ~2 days per item (was ~20h) so the trends have room to show full restock cycles"] },
     { v: "1.22.0", d: "Aug 4, 2026", c: ["📈 Restock tracking (foundation): the board now quietly records each item's stock level over time (YATA only gives a live number, no history, so we build our own). A ▲/▼ appears by the Stock chip once there are two samples — ▲ restocked, ▼ being bought (hover for the rate). It polls in the background about every 5 min (shared across your open Torn tabs) so history builds even when you're not looking. This is the groundwork for 'what'll likely be in stock when I land' — predictions come once it has enough data"] },
     { v: "1.21.0", d: "Aug 3, 2026", c: ["🎁 Supply packs now support YOUR real drop odds — priced live, so opening becomes a real OPEN/SELL verdict instead of a rough equal-odds guess. Click ✎ on a pack row to (A) enter opens + what you received (straight from torn.report), or (B) ⟳ Sync from Torn log to pull your actual opens automatically. EV = your odds × live prices (never stales); with enough logged opens it shows a ± confidence interval and only calls OPEN/SELL once that interval clears the sell price — otherwise 'need more data (n=…)'. Packs with no data yet keep the equal-odds reference", "Note: the Torn-log sync is beta — it self-discovers the log type and, if the entry format doesn't match, dumps a sample to the console (F12) to finish wiring"] },
@@ -1326,6 +1402,7 @@
           '<button class="tdk-btn2" id="tdk-invbtn" title="Toggle your sellable-junk inventory">📦 Bag</button>' +
           '<button class="tdk-btn2" id="tdk-fund" title="Show top plays even if over budget — reminds you to free up cash first">💰 Fund</button>' +
           '<button class="tdk-btn2" id="tdk-happy" title="Happy-jump calculator — max happy, best order &amp; reset timer">😊 Happy</button>' +
+          '<button class="tdk-btn2" id="tdk-flip" title="Quick flips — buy cheap, sell to the highest live trader">💱 Flip</button>' +
           '<button class="tdk-btn2 tdk-x" id="tdk-close" title="Close panel">✕</button>' +
         '</div>' +
         '<div class="tdk-h2">' +
@@ -1354,6 +1431,7 @@
     host.querySelector("#tdk-close").addEventListener("click", function () { panel.classList.remove("open"); });
     host.querySelector("#tdk-settings").addEventListener("click", openSettings);
     host.querySelector("#tdk-happy").addEventListener("click", openHappy);
+    host.querySelector("#tdk-flip").addEventListener("click", openFlip);
     host.querySelector("#tdk-refresh").addEventListener("click", function () { if (state.view === "inv") { state.inv = null; renderInv(); } else refresh(); });
     host.querySelector("#tdk-cap").addEventListener("change", function (e) {
       state.cap = Math.max(1, parseInt(e.target.value, 10) || 23); GM_setValue("cap", state.cap);
