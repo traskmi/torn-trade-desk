@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.27.1
+// @version      1.28.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -492,14 +492,19 @@
     const el = host.querySelector("#tdk-homebar"); if (!el) return;
     const w = state.travelWhere, travelUrl = "https://www.torn.com/page.php?sid=travel";
     if (w === "abroad") {
-      // Nudge only when carrying FOREIGN/travel goods (a real trip haul) — not your permanent sellable stash,
-      // which would fire this on landing even empty-handed (the scrape can't tell trip purchases from old stock).
-      const h = haulSummary(true);
-      if (h && h.items) {
+      // Use Torn's OWN trip counter scraped from the travel page ("purchased N / 23") — the only reliable read of
+      // this trip's haul while abroad (inventory API down + Items page blocked in-country). Never fabricate a total.
+      const tb = GM_getValue("trip_bought", null);
+      const cap = (tb && tb.cap) || state.cap || 23;
+      const n = tb ? tb.n : null;
+      if (n != null && n > 0) {
         el.style.display = ""; el.className = "tdk-homebar abroad";
-        el.innerHTML = '🏠 <b>Got your haul?</b> Fly home to sell — <b>~' + money(h.value) + '</b> in ' + h.count + ' travel item' + (h.count === 1 ? '' : 's') + ' on hand.<a class="hb-go" href="' + travelUrl + '">✈ Return to Torn</a>';
+        el.innerHTML = '🛒 <b>' + n + '/' + cap + ' slots filled</b> this trip — fly home to sell your haul.<a class="hb-go" href="' + travelUrl + '">✈ Return to Torn</a>';
+      } else if (n === 0) {
+        el.style.display = ""; el.className = "tdk-homebar abroad";
+        el.innerHTML = '🛍️ <b>0/' + cap + '</b> bought — fill your slots here, then return to Torn to sell.<a class="hb-go" href="' + travelUrl + '">🛒 Buy</a>';
       } else {
-        el.style.display = "none"; el.innerHTML = "";
+        el.style.display = "none"; el.innerHTML = ""; // no trip data yet (open the travel page once) — don't guess
       }
     } else if (w === "home") {
       const h = haulSummary();
@@ -1262,6 +1267,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.28.0", d: "Aug 4, 2026", c: ["🛒 The 'fly home to sell' nudge now reads Torn's OWN trip counter off the travel page ('You have purchased N / 23 items so far') — the reliable source of what you've actually bought this trip. So it shows real slot progress (e.g. '15/23 slots filled — fly home'), stays quiet at 0/23, and never invents a haul total from stale inventory again. Works even though your inventory/Items page is blocked while abroad"] },
     { v: "1.27.1", d: "Aug 4, 2026", c: ["Fixed the false 'Got your haul? Fly home to sell' nudge that showed abroad even when you'd bought nothing — it was counting your whole sellable STASH (from the scraped inventory snapshot), not this trip's purchases. It now counts only foreign/travel goods (things you can only get by buying abroad), so it stays quiet until you're actually carrying a haul"] },
     { v: "1.27.0", d: "Aug 4, 2026", c: ["🏪 Shop Flips: a new header button that finds Torn city-shop items (Big Al's, Bits 'n' Bobs, the car dealership, sweet shop, etc.) whose fixed shop price is below their market value — buy low at the shop, sell higher on the market. Uses the item catalog's buy_price vs market_value, excludes travel items (the board covers those), ranks by cash spread, and shows the net after the 1% Item Market sell fee. Reference-only: shop price is a catalog constant, so verify the item's actually stocked (limited stock/caps/restocks). Click a row for buyers, 🛒 to open the Item Market"] },
     { v: "1.26.0", d: "Aug 4, 2026", c: ["💱 Flips are now one-click actionable: each flip shows a 🏪 link straight to the cheapest seller's bazaar (these are hidden from search since Item Market 2.0 — that's the edge) and a 🛒 Item Market link, so you can jump right to buying. It re-prices on the live cheapest listing before showing, drops any that already closed, and reminds you the ⚡ sell is a direct trade (no fee)"] },
@@ -1838,10 +1844,30 @@
     let pending = false;
     new MutationObserver(function () { if (pending) return; pending = true; requestAnimationFrame(function () { pending = false; run(); }); }).observe(document.body, { childList: true, subtree: true });
   }
+  // Travel page has Torn's OWN trip counter ("You have purchased N / 23 items so far") — the reliable source of
+  // this trip's haul while abroad (inventory API is down + Items page is blocked in-country). Scrape it off the
+  // text (+ the inventory panel's aria-label as a fallback) — never off the hashed slot classes.
+  function onTravelPage() { return /[?&]sid=travel\b/i.test(location.search + location.hash) || /\/travel\.php/i.test(location.pathname); }
+  function scrapeTripBought() {
+    if (!onTravelPage()) return;
+    const run = function () {
+      let n = null, cap = null;
+      const m = (document.body.innerText || "").match(/purchased\s+(\d+)\s*\/\s*(\d+)\s+item/i);
+      if (m) { n = +m[1]; cap = +m[2]; }
+      else { const ul = document.querySelector('ul[aria-label*="Inventory"]'); const al = ul && ul.getAttribute("aria-label"); const am = al && al.match(/(\d+)\s+item/i); if (am) { n = +am[1]; cap = state.cap || 23; } }
+      if (n == null) return;
+      const prev = GM_getValue("trip_bought", null);
+      if (!prev || prev.n !== n || prev.cap !== cap) { GM_setValue("trip_bought", { n: n, cap: cap, at: Date.now() }); renderHomeBar(); }
+    };
+    run();
+    let pending = false;
+    new MutationObserver(function () { if (pending) return; pending = true; requestAnimationFrame(function () { pending = false; run(); }); }).observe(document.body, { childList: true, subtree: true });
+  }
 
   build();
   annotateItemsPage();
   tradeDescHelper();
+  scrapeTripBought();
   setTimeout(checkInvStatus, 8000);              // first check shortly after load
   setInterval(checkInvStatus, 15 * 60 * 1000);   // then quietly every 15 min — lights the Bag when Torn restores inventory
   setTimeout(pollStocks, 12000);                 // seed the restock history soon after load
