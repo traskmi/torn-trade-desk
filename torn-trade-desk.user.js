@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.32.0
+// @version      1.32.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -653,6 +653,7 @@
     const disp = rows.slice();
     if (sm === "stock") disp.sort(function (a, b) { return ((a.stock > 0 ? 0 : 1) - (b.stock > 0 ? 0 : 1)) || (b.ppm - a.ppm); }); // available first, then $/min
     else if (sm === "ppm") disp.sort(function (a, b) { return b.ppm - a.ppm; });
+    else if (sm === "fullprofit") disp.sort(function (a, b) { return b.ppi - a.ppi; }); // ppi×cap order == ppi order (cap is constant)
     else disp.sort(function (a, b) { return (b[sm] || 0) - (a[sm] || 0); });
     host.querySelectorAll("#tdk-board th.so").forEach(function (th) { th.classList.toggle("on", th.getAttribute("data-sort") === sm); });
     const g = ocGuard(); // OC deadline — flights whose round trip exceeds it would make you miss the crime
@@ -1354,6 +1355,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.32.1", d: "Aug 4, 2026", c: ["The 'Profit ×N' full-load column is now sortable too (click the header). It sorts the same as Profit/ea since it's just that × your cap"] },
     { v: "1.32.0", d: "Aug 4, 2026", c: ["Added a 'Profit ×N' column right after Profit/ea — the total profit for a full load at your Cap (profit/ea × cap, e.g. ×23), before airfare. The header updates when you change Cap. Makes the per-trip payoff obvious at a glance"] },
     { v: "1.31.0", d: "Aug 4, 2026", c: ["✈ In-flight countdown + auto-land refresh: while flying, the banner now counts down 'Landing in 4:12' live, and the panel auto-refreshes the moment you touch down — so your 15s immunity timer starts on its own, no manual refresh needed (refresh once after takeoff to arm it). The OC 'ready in…' banner now also ticks down live every second"] },
     { v: "1.30.0", d: "Aug 4, 2026", c: ["🛡️ Landing-immunity countdown: Torn gives you 15 seconds of attack immunity when you land (abroad or back in Torn). The board now shows a live-ticking '🛡️ Immunity: 12s' banner right after you land (pulsing green), then a red 'you're exposed — shelter your cash' note when it lapses. Ticks off your arrival time; hit Refresh the moment you land to catch the full window. (This is the window that got away while you were buying Pearls)"] },
@@ -1764,7 +1766,7 @@
         '<div class="tdk-oc" id="tdk-oc" style="display:none"></div>' +
         '<div class="tdk-filter" id="tdk-filter"></div>' +
         '<div class="tdk-best" id="tdk-best"><div class="l">Best play</div><div class="p">—</div></div>' +
-        '<table class="tdk"><thead><tr><th class="l">Item</th><th class="so" data-sort="buy">Buy</th><th class="so" data-sort="sell">Resale</th><th class="so" data-sort="ppi">Profit/ea</th><th id="tdk-th-full" title="Total profit for a full load (profit/ea × cap), before airfare">Profit ×' + state.cap + '</th><th class="so" data-sort="stock">Stock</th><th class="so" data-sort="full">Load</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
+        '<table class="tdk"><thead><tr><th class="l">Item</th><th class="so" data-sort="buy">Buy</th><th class="so" data-sort="sell">Resale</th><th class="so" data-sort="ppi">Profit/ea</th><th id="tdk-th-full" class="so" data-sort="fullprofit" title="Total profit for a full load (profit/ea × cap), before airfare">Profit ×' + state.cap + '</th><th class="so" data-sort="stock">Stock</th><th class="so" data-sort="full">Load</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
         '<div class="tdk-mug" id="tdk-mug"></div>' +
       '</div>' +
       '<div id="tdk-inv" style="display:none"></div>';
