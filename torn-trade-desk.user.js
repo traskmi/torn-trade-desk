@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.24.0
+// @version      1.25.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -61,7 +61,7 @@
   }
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null };
   const fmtRt = function (min) { const h = Math.floor(min / 60), m = min % 60; return (h ? h + "h" : "") + (m ? m + "m" : "") || "0m"; };
   const TIME_OPTS = [[0, "⏱ Any time"], [60, "≤ 1h"], [90, "≤ 1½h"], [120, "≤ 2h"], [180, "≤ 3h"], [240, "≤ 4h"], [360, "≤ 6h"], [480, "≤ 8h"], [600, "≤ 10h"]];
 
@@ -373,6 +373,22 @@
     .tdk-flip .fpv{color:#4cc281;font-weight:800;font-family:ui-monospace,monospace}
     .tdk-flip .fpm{color:#928b78;font-size:11px}
     .tdk-flip .fwarn{color:#e2933f;cursor:help}
+    .sksec{margin:10px 12px 4px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#d9b441;font-weight:700;border-top:1px dashed #3a3729;padding-top:8px}
+    .sksec b.up{color:#4cc281}.sksec b.dn{color:#e5615c}
+    .skrow{display:flex;align-items:flex-start;gap:12px;padding:8px 12px;border-bottom:1px solid #211f18}
+    .skmain{flex:1;min-width:0}
+    .skn{font-weight:700;color:#f2eddf}.skn span{color:#a49c88;font-weight:400;font-size:11px}
+    .skn .skhold{color:#4cc281;font-size:10px}
+    .sksub{font-size:11px;color:#a49c88;margin-top:2px;font-family:ui-monospace,monospace}
+    .skhint{font-size:11px;color:#c3bda9;margin-top:3px}
+    .skpl{text-align:right;font-family:ui-monospace,monospace;white-space:nowrap}
+    .skpl .up{color:#4cc281;font-weight:800}.skpl .dn{color:#e5615c;font-weight:800}
+    .skpct{color:#928b78;font-size:11px}
+    .sktag{font-size:10px;font-weight:700;padding:1px 6px;border-radius:999px;margin-left:4px}
+    .sktag.low{color:#4cc281;background:#16281d}.sktag.high{color:#e2933f;background:#2c2114}.sktag.mid{color:#928b78;background:#211f18}
+    .skbn{font-size:11px;color:#c9a94a;margin-top:3px}.skbn.ok{color:#4cc281}
+    .skbar{display:inline-block;width:70px;height:6px;background:#211f18;border-radius:3px;overflow:hidden;vertical-align:middle;margin-right:6px}
+    .skbar i{display:block;height:100%;background:#d9b441}
     .tdk-cp{background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:5px 8px;cursor:pointer;font-size:12px;white-space:nowrap}
     .tdk-cp:hover{background:#332a15}
     .tdk-filldesc{display:block;margin:6px 0;background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:8px 11px;font-weight:700;cursor:pointer;font-size:12px;max-width:100%;text-align:left;white-space:normal;line-height:1.35}
@@ -730,6 +746,132 @@
       const n = bx.querySelector("#tdk-flip-note"); if (n) n.textContent = "Flip scan failed: " + (e.message || e) + " (check your W3B key in ⚙ Settings).";
     }
   }
+  /* ---------- 📊 Stock market: portfolio P&L + benefit blocks + buy-low/sell-high (record-and-derive) ----------
+     Torn's API gives only the CURRENT price (no history), so — like foreign restock — we record it ourselves.
+     Honest framing: stocks have NO predictable cycle, so this is range/trend + your P&L + benefit progress,
+     NOT a predictor. It NEVER advises selling a block you're accumulating for its benefit. */
+  const STK_MAX = 700, STK_AGE = 14 * 24 * 3600, STK_SAMPLE = 600; // ~2 weeks of ≥10-min samples
+  function recordStockPrices(mkt) {
+    if (!mkt) return;
+    let hist; try { hist = GM_getValue("stk_hist", null) || {}; } catch (e) { hist = {}; }
+    const now = Math.floor(Date.now() / 1000), cutoff = now - STK_AGE;
+    let changed = false;
+    Object.keys(mkt).forEach(function (id) {
+      const p = mkt[id] && mkt[id].current_price; if (!(p > 0)) return;
+      const arr = hist[id] || (hist[id] = []);
+      const last = arr[arr.length - 1];
+      if (last && now - last[0] < STK_SAMPLE) return;        // at most one sample per ~10 min
+      arr.push([now, p]); changed = true;
+      while (arr.length && arr[0][0] < cutoff) arr.shift();
+      if (arr.length > STK_MAX) arr.splice(0, arr.length - STK_MAX);
+    });
+    if (changed) { try { GM_setValue("stk_hist", hist); } catch (e) { } }
+    state._stkHist = hist;
+  }
+  function stkStats(id) { // range position + vs-recent-average from recorded history (null until enough points)
+    const hist = state._stkHist || (function () { try { return GM_getValue("stk_hist", null) || {}; } catch (e) { return {}; } })();
+    const arr = hist[id]; if (!arr || arr.length < 3) return null;
+    let lo = Infinity, hi = -Infinity, sum = 0;
+    arr.forEach(function (p) { lo = Math.min(lo, p[1]); hi = Math.max(hi, p[1]); sum += p[1]; });
+    const avg = sum / arr.length, cur = arr[arr.length - 1][1], range = hi - lo;
+    return { lo: lo, hi: hi, avg: avg, cur: cur, pos: range > 0 ? (cur - lo) / range : 0.5, vsAvg: avg > 0 ? (cur - avg) / avg : 0, n: arr.length, spanH: (arr[arr.length - 1][0] - arr[0][0]) / 3600 };
+  }
+  async function loadStocks(key) {
+    try {
+      const [m, u] = await Promise.all([
+        gmGet("https://api.torn.com/torn/?selections=stocks&key=" + encodeURIComponent(key)),
+        gmGet("https://api.torn.com/user/?selections=stocks&key=" + encodeURIComponent(key))
+      ]);
+      if (m && m.stocks) { state.stkMkt = m.stocks; state.stkAt = Date.now(); recordStockPrices(m.stocks); }
+      if (u) { state.stkMine = (u.stocks && typeof u.stocks === "object") ? u.stocks : {}; }
+    } catch (e) { /* non-fatal */ }
+  }
+  // Cross-tab background poll for stock prices (needs the Torn key) — builds price history over time.
+  function pollStockPrices() {
+    const key = GM_getValue("torn_key", ""); if (!key) return;
+    let last = 0; try { last = GM_getValue("stk_poll_at", 0); } catch (e) { }
+    if (Date.now() - last < 10 * 60 * 1000 - 4000) return;    // one fetch per ~10 min across tabs
+    try { GM_setValue("stk_poll_at", Date.now()); } catch (e) { }
+    gmGet("https://api.torn.com/torn/?selections=stocks&key=" + encodeURIComponent(key)).then(function (m) { if (m && m.stocks) { state.stkMkt = m.stocks; recordStockPrices(m.stocks); } }).catch(function () { });
+  }
+  function stkAvgCost(h) { // weighted average buy price across a holding's transactions
+    let sh = 0, cost = 0; const tx = (h && h.transactions) || {};
+    Object.keys(tx).forEach(function (k) { sh += tx[k].shares; cost += tx[k].shares * tx[k].bought_price; });
+    return sh > 0 ? cost / sh : 0;
+  }
+  function rangeTag(st) {
+    if (st.pos <= 0.2) return '<span class="sktag low">▼ near low</span>';
+    if (st.pos >= 0.8) return '<span class="sktag high">▲ near high</span>';
+    return '<span class="sktag mid">mid-range</span>';
+  }
+  // Benefit-aware: a block you're still building is a HOLD — never suggest selling it.
+  function benefitAwareHint(r, st) {
+    const s = r.s, req = s.benefit && s.benefit.requirement;
+    const shares = r.held ? (state.stkMine[r.id].total_shares || 0) : 0;
+    const accumulating = req && shares < req;
+    if (st.pos <= 0.25 && st.vsAvg < -0.02) return '🟢 near its recent low' + (accumulating ? ' — good spot to add toward ' + s.benefit.description : ' — potential buy');
+    if (st.pos >= 0.8 && st.vsAvg > 0.02) {
+      if (accumulating) return '⚪ near recent high — but you\'re building the ' + s.benefit.description + ' block, so hold (don\'t sell the block)';
+      return r.held ? '🔴 near its recent high — consider taking profit' : '⚪ near recent high';
+    }
+    return '';
+  }
+  async function openStocks() {
+    const bx = host.querySelector("#tdk-buyers");
+    bx.classList.add("open");
+    bx.innerHTML = '<div class="tdk-bh"><div class="tt">📊 Stocks<small> — loading…</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div><div class="br" style="padding:10px 12px">Pulling the stock market…</div>';
+    bindClose(bx);
+    const setTitle = function (s) { const t = bx.querySelector(".tt"); if (t) t.innerHTML = '📊 Stocks<small> — ' + s + '</small>'; };
+    const key = tornKey();
+    if (!key) { setTitle("need a Torn API key (⚙ Settings)"); return; }
+    await loadStocks(key);
+    const mkt = state.stkMkt, mine = state.stkMine || {};
+    if (!mkt) { setTitle("couldn't load stocks — check your key in ⚙ Settings"); return; }
+    const traveling = state.travelWhere === "flying" || state.travelWhere === "abroad";
+    const asOf = new Date(state.stkAt || Date.now()).toLocaleTimeString();
+    // ---- Your portfolio (live P&L + benefit-block progress) ----
+    const holdIds = Object.keys(mine).filter(function (id) { return mine[id] && mine[id].total_shares > 0; });
+    let portHtml, totalVal = 0, totalPL = 0;
+    if (holdIds.length) {
+      const body = holdIds.map(function (id) {
+        const h = mine[id], s = mkt[id]; if (!s) return '';
+        const shares = h.total_shares, cost = stkAvgCost(h), cur = s.current_price;
+        const val = cur * shares, pl = (cur - cost) * shares, pct = cost > 0 ? (cur - cost) / cost * 100 : 0;
+        totalVal += val; totalPL += pl;
+        const req = s.benefit && s.benefit.requirement;
+        let benefit = '';
+        if (req) {
+          if (shares >= req) benefit = '<div class="skbn ok">✅ Benefit active: ' + s.benefit.description + ' every ' + s.benefit.frequency + 'd</div>';
+          else { const togo = req - shares; benefit = '<div class="skbn"><span class="skbar"><i style="width:' + Math.min(100, shares / req * 100).toFixed(1) + '%"></i></span>' + (shares / req * 100).toFixed(1) + '% → ' + s.benefit.description + ' · ' + togo.toLocaleString() + ' more ≈ ' + money(togo * cur) + '</div>'; }
+        }
+        const st = stkStats(id);
+        return '<div class="skrow"><div class="skmain"><div class="skn">' + s.acronym + ' <span>' + s.name + '</span></div>' +
+          '<div class="sksub">' + shares.toLocaleString() + ' sh @ $' + cost.toFixed(2) + ' → $' + cur + (st ? ' ' + rangeTag(st) : '') + '</div>' + benefit + '</div>' +
+          '<div class="skpl"><div class="' + (pl >= 0 ? 'up' : 'dn') + '">' + (pl >= 0 ? '+' : '') + money(pl) + '</div><div class="skpct">' + (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%</div></div></div>';
+      }).join('');
+      portHtml = '<div class="sksec">Your portfolio · value ' + money(totalVal) + ' · P&amp;L <b class="' + (totalPL >= 0 ? 'up' : 'dn') + '">' + (totalPL >= 0 ? '+' : '') + money(totalPL) + '</b></div>' + body;
+    } else {
+      portHtml = '<div class="sksec">Your portfolio</div><div class="tdk-sub" style="padding:6px 12px">You don\'t hold any stocks right now.</div>';
+    }
+    // ---- Buy-low scanner (all 35, most-below-own-average first once history exists) ----
+    const rows = Object.keys(mkt).map(function (id) { const st = stkStats(id); return { id: id, s: mkt[id], st: st, held: !!(mine[id] && mine[id].total_shares > 0), vsAvg: st ? st.vsAvg : 0 }; });
+    const withHist = rows.filter(function (r) { return r.st; });
+    let scanHtml;
+    if (!withHist.length) {
+      scanHtml = '<div class="sksec">Buy-low scanner</div><div class="tdk-sub" style="padding:6px 12px">📊 Recording prices now — range &amp; buy-low signals appear once there\'s a few hours of history (a background poll runs every ~10 min).</div>';
+    } else {
+      withHist.sort(function (a, b) { return a.vsAvg - b.vsAvg; });
+      scanHtml = '<div class="sksec">Buy-low scanner · ' + withHist.length + ' with history · most-below-average first</div>' + withHist.map(function (r) {
+        const s = r.s, st = r.st, hint = benefitAwareHint(r, st);
+        return '<div class="skrow"><div class="skmain"><div class="skn">' + s.acronym + ' <span>' + s.name + '</span>' + (r.held ? ' <b class="skhold" title="You hold this">•held</b>' : '') + '</div>' +
+          '<div class="sksub">$' + s.current_price + ' · ' + (st.vsAvg >= 0 ? '+' : '') + (st.vsAvg * 100).toFixed(1) + '% vs ' + Math.round(st.spanH) + 'h avg ' + rangeTag(st) + '</div>' + (hint ? '<div class="skhint">' + hint + '</div>' : '') + '</div></div>';
+      }).join('');
+    }
+    bx.innerHTML = '<div class="tdk-bh"><div class="tt">📊 Stocks<small> — as of ' + asOf + (traveling ? ' · ✈ look-only while traveling' : '') + '</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
+      '<div class="tdk-sub" style="padding:6px 12px">Prices tick constantly — figures are as of the time above and reconcile to Torn when re-opened. Signals are range/trend heuristics, not predictions.</div>' +
+      '<div id="tdk-stocks">' + portHtml + scanHtml + '</div>';
+    bindClose(bx);
+  }
   async function loadInv(key) {
     const now = Date.now();
     if (state.inv && now - state.invAt < 120000) return state.inv;
@@ -1023,6 +1165,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.25.0", d: "Aug 4, 2026", c: ["📊 Stocks: a new header button with (1) YOUR portfolio — live P&L per holding + a benefit-block progress bar (e.g. 'IST 22% → free education; 77,882 more ≈ $42.6M'), and (2) a buy-low scanner across all 35 stocks ranked by how far each sits below its own recent average, with ▼near-low / ▲near-high tags. Torn gives no price history, so — like restock — it records prices itself (~10-min background poll); trend/range signals fill in as history builds. It's benefit-AWARE: it never tells you to sell a block you're still accumulating. Honest by design: prices tick constantly (figures are as-of-pull, reconcile to Torn on reopen) and signals are range/trend heuristics, NOT predictions"] },
     { v: "1.24.0", d: "Aug 4, 2026", c: ["💱 Quick Flips: a new header button that hunts genuine 'crossed market' arbitrage — an item you can BUY (Item Market / bazaar) for less than a LIVE trader is offering to BUY it from you, no travel. It scans the whole weav3r market, shortlists the most liquid + affordable items (where transient mispricings actually appear), then pulls real buy-offers and shows ONLY real, positive flips — ranked by profit/ea. Click one to see who's online + ⚡ trade. These are rare and get snapped up fast, so it honestly says 'market's efficient' when there's nothing — it never invents profit. Reconfirm prices before you buy"] },
     { v: "1.23.0", d: "Aug 4, 2026", c: ["✈ In-flight pre-focus: while you're flying TO a country, the board now auto-focuses on that destination (blue ✈ chip) so you can plan your buy before you land — the status line shows 'heading to X · land in Ym'. Flying home goes back to All. Pick another chip and it sticks until your next leg", "📈 Restock history now keeps ~2 days per item (was ~20h) so the trends have room to show full restock cycles"] },
     { v: "1.22.0", d: "Aug 4, 2026", c: ["📈 Restock tracking (foundation): the board now quietly records each item's stock level over time (YATA only gives a live number, no history, so we build our own). A ▲/▼ appears by the Stock chip once there are two samples — ▲ restocked, ▼ being bought (hover for the rate). It polls in the background about every 5 min (shared across your open Torn tabs) so history builds even when you're not looking. This is the groundwork for 'what'll likely be in stock when I land' — predictions come once it has enough data"] },
@@ -1403,6 +1546,7 @@
           '<button class="tdk-btn2" id="tdk-fund" title="Show top plays even if over budget — reminds you to free up cash first">💰 Fund</button>' +
           '<button class="tdk-btn2" id="tdk-happy" title="Happy-jump calculator — max happy, best order &amp; reset timer">😊 Happy</button>' +
           '<button class="tdk-btn2" id="tdk-flip" title="Quick flips — buy cheap, sell to the highest live trader">💱 Flip</button>' +
+          '<button class="tdk-btn2" id="tdk-stk" title="Stocks — your P&amp;L, benefit-block progress, buy-low scanner">📊 Stocks</button>' +
           '<button class="tdk-btn2 tdk-x" id="tdk-close" title="Close panel">✕</button>' +
         '</div>' +
         '<div class="tdk-h2">' +
@@ -1432,6 +1576,7 @@
     host.querySelector("#tdk-settings").addEventListener("click", openSettings);
     host.querySelector("#tdk-happy").addEventListener("click", openHappy);
     host.querySelector("#tdk-flip").addEventListener("click", openFlip);
+    host.querySelector("#tdk-stk").addEventListener("click", openStocks);
     host.querySelector("#tdk-refresh").addEventListener("click", function () { if (state.view === "inv") { state.inv = null; renderInv(); } else refresh(); });
     host.querySelector("#tdk-cap").addEventListener("change", function (e) {
       state.cap = Math.max(1, parseInt(e.target.value, 10) || 23); GM_setValue("cap", state.cap);
@@ -1598,4 +1743,6 @@
   setInterval(checkInvStatus, 15 * 60 * 1000);   // then quietly every 15 min — lights the Bag when Torn restores inventory
   setTimeout(pollStocks, 12000);                 // seed the restock history soon after load
   setInterval(pollStocks, 60 * 1000);            // check every minute; the GM lock caps actual fetches to one per POLL_MS across tabs
+  setTimeout(pollStockPrices, 20000);            // seed stock-price history soon after load
+  setInterval(pollStockPrices, 5 * 60 * 1000);   // check every 5 min; GM lock caps actual fetches to one per ~10 min across tabs
 })();
