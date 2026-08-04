@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.29.0
+// @version      1.30.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -61,7 +61,7 @@
   }
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0 };
   const fmtRt = function (min) { const h = Math.floor(min / 60), m = min % 60; return (h ? h + "h" : "") + (m ? m + "m" : "") || "0m"; };
   const TIME_OPTS = [[0, "⏱ Any time"], [60, "≤ 1h"], [90, "≤ 1½h"], [120, "≤ 2h"], [180, "≤ 3h"], [240, "≤ 4h"], [360, "≤ 6h"], [480, "≤ 8h"], [600, "≤ 10h"]];
 
@@ -141,6 +141,7 @@
       state.loc = tw.where === "abroad" ? tw.cc : null; // preserve existing semantics: abroad cc, else null (drives auto-focus)
       state.flyTo = tw.where === "flying" ? (tw.cc || null) : null; // destination cc while in transit (null when flying home)
       state.flyEta = tw.where === "flying" ? (tw.arriveIn || 0) : null; // seconds until landing
+      state.arrivalTs = (j && j.travel && j.travel.timestamp) || 0;    // arrival time → 15s landing-immunity countdown
     } catch (e) { /* non-fatal */ }
   }
   // The country to auto-focus the board on: where you're standing (abroad) OR, while flying out, your destination
@@ -471,6 +472,10 @@
     .tdk-homebar.home .hb-go{border-color:#4cc281;color:#8fe6b3;background:#173026}
     .tdk-homebar .hb-go:hover{filter:brightness(1.15)}
     .tdk-oc{margin:10px 16px 0;padding:9px 12px;border:1px solid #7a5a2a;border-left:4px solid #d9b441;border-radius:10px;background:#211c12;color:#e7d3a0;font-size:12.5px;line-height:1.5}
+    .tdk-imm{margin:10px 16px 0;padding:9px 12px;border-radius:10px;font-size:13px;line-height:1.45;font-weight:600}
+    .tdk-imm.active{border:1px solid #4cc281;background:#16241c;color:#bfe9cf;animation:tdkpulse 1s ease-in-out infinite}
+    .tdk-imm.gone{border:1px solid #7a4a44;background:#241717;color:#f0b3ad}
+    .tdk-imm b{color:#f2eddf;font-family:ui-monospace,monospace}
     .tdk-oc.danger{border-color:#7a4a44;border-left-color:#e5615c;background:#241717;color:#f0b3ad}
     .tdk-oc b{color:#f2eddf}
     .oc-x{color:#e5615c;font-weight:800;margin-left:6px;font-family:system-ui,sans-serif;font-size:11px;cursor:help}
@@ -549,6 +554,21 @@
       el.style.display = "none"; el.innerHTML = "";
     }
   }
+  // 15-second landing-immunity countdown (Torn: you can't be attacked for 15s after you land, abroad or home).
+  // Ticks live off the last-known arrival time; only shows right after a fresh landing.
+  function renderImmunity() {
+    const el = host && host.querySelector("#tdk-immunity"); if (!el) return;
+    const arr = state.arrivalTs || 0;
+    if (!arr || state.travelWhere === "flying") { el.style.display = "none"; el.innerHTML = ""; return; }
+    const rem = (arr + 15) - Math.floor(Date.now() / 1000);
+    if (rem > 0) {
+      el.style.display = ""; el.className = "tdk-imm active";
+      el.innerHTML = '🛡️ <b>Immunity: ' + rem + 's</b> — can’t be attacked. Buy / shelter cash in stocks / re-fly NOW.';
+    } else if (rem > -12) { // brief "you're exposed now" reminder just after it lapses
+      el.style.display = ""; el.className = "tdk-imm gone";
+      el.innerHTML = '⚠️ <b>Immunity ended — you’re exposed.</b> Only wallet cash is muggable — shelter it in stocks.';
+    } else { el.style.display = "none"; el.innerHTML = ""; }
+  }
   // OC flight guard banner (works even abroad, where Torn hides the OC from you).
   function renderOC() {
     const el = host.querySelector("#tdk-oc"); if (!el) return;
@@ -570,6 +590,7 @@
     renderChips();
     renderHomeBar();
     renderOC();
+    renderImmunity();
     const fbtn = host.querySelector("#tdk-fund"); if (fbtn) fbtn.className = "tdk-btn2" + (fund ? " on" : "");
     let rows = state.filter === "all" ? state.rows : state.rows.filter(function (x) { return x.cc === state.filter; });
     if (state.maxTrip) rows = rows.filter(function (x) { return FLY[x.cc] && FLY[x.cc].rt <= state.maxTrip; }); // round-trip time budget
@@ -1315,6 +1336,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.30.0", d: "Aug 4, 2026", c: ["🛡️ Landing-immunity countdown: Torn gives you 15 seconds of attack immunity when you land (abroad or back in Torn). The board now shows a live-ticking '🛡️ Immunity: 12s' banner right after you land (pulsing green), then a red 'you're exposed — shelter your cash' note when it lapses. Ticks off your arrival time; hit Refresh the moment you land to catch the full window. (This is the window that got away while you were buying Pearls)"] },
     { v: "1.29.0", d: "Aug 4, 2026", c: ["⛔ OC flight guard: if you're in a faction Organized Crime, the board now shows how long until it's ready ('⏰ OC ready in 9h 12m') and flags any destination whose ROUND TRIP is longer than that with a ⛔ OC badge + strike-through — because if you're flying when the crime is ready you BLOCK the whole thing (you must be in Torn, not Traveling/Hospital/Jail). Best of all it reads the OC from the API, which still works while you're abroad/hospitalized — exactly when Torn hides the OC from you. Uses ready_at (when planning completes); fails safe by warning early"] },
     { v: "1.28.0", d: "Aug 4, 2026", c: ["🛒 The 'fly home to sell' nudge now reads Torn's OWN trip counter off the travel page ('You have purchased N / 23 items so far') — the reliable source of what you've actually bought this trip. So it shows real slot progress (e.g. '15/23 slots filled — fly home'), stays quiet at 0/23, and never invents a haul total from stale inventory again. Works even though your inventory/Items page is blocked while abroad"] },
     { v: "1.27.1", d: "Aug 4, 2026", c: ["Fixed the false 'Got your haul? Fly home to sell' nudge that showed abroad even when you'd bought nothing — it was counting your whole sellable STASH (from the scraped inventory snapshot), not this trip's purchases. It now counts only foreign/travel goods (things you can only get by buying abroad), so it stays quiet until you're actually carrying a haul"] },
@@ -1717,6 +1739,7 @@
       '</div>' +
       '<div class="tdk-status" id="tdk-status">Click Refresh to pull live data.</div>' +
       '<div id="tdk-board">' +
+        '<div class="tdk-imm" id="tdk-immunity" style="display:none"></div>' +
         '<div class="tdk-homebar" id="tdk-homebar" style="display:none"></div>' +
         '<div class="tdk-oc" id="tdk-oc" style="display:none"></div>' +
         '<div class="tdk-filter" id="tdk-filter"></div>' +
@@ -1924,4 +1947,5 @@
   setInterval(pollStocks, 60 * 1000);            // check every minute; the GM lock caps actual fetches to one per POLL_MS across tabs
   setTimeout(pollStockPrices, 20000);            // seed stock-price history soon after load
   setInterval(pollStockPrices, 5 * 60 * 1000);   // check every 5 min; GM lock caps actual fetches to one per ~10 min across tabs
+  setInterval(renderImmunity, 1000);             // live-tick the 15s landing-immunity countdown
 })();
