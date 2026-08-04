@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.30.0
+// @version      1.31.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -212,10 +212,22 @@
     const oc = state.oc; if (!oc || !oc.readyAt) return null;
     return { name: oc.name, secs: oc.readyAt - Math.floor(Date.now() / 1000) };
   }
-  function fmtDur(secs) {
+  function fmtDur(secs) { // ticks down to the second under an hour so the OC banner visibly counts
     secs = Math.max(0, secs | 0);
-    const d = Math.floor(secs / 86400), h = Math.floor(secs % 86400 / 3600), m = Math.floor(secs % 3600 / 60);
-    return d ? d + "d " + h + "h" : h ? h + "h " + m + "m" : m + "m";
+    const d = Math.floor(secs / 86400), h = Math.floor(secs % 86400 / 3600), m = Math.floor(secs % 3600 / 60), s = secs % 60;
+    return d ? d + "d " + h + "h" : h ? h + "h " + m + "m" : m ? m + "m " + s + "s" : s + "s";
+  }
+  function mmss(secs) { // in-flight countdown: "Hh Mm" over an hour, else "M:SS"
+    secs = Math.max(0, secs | 0);
+    const h = Math.floor(secs / 3600), m = Math.floor(secs % 3600 / 60), s = secs % 60;
+    return h ? h + "h " + m + "m" : m + ":" + (s < 10 ? "0" : "") + s;
+  }
+  let landTimer = null;
+  function armLandingRefresh() { // schedule a one-shot refresh at arrival so the immunity timer starts on its own
+    if (landTimer) { clearTimeout(landTimer); landTimer = null; }
+    if (state.travelWhere === "flying" && state.flyEta > 0) {
+      landTimer = setTimeout(function () { landTimer = null; refresh(); }, (state.flyEta + 2) * 1000); // +2s so we're truly landed
+    }
   }
   async function refresh() {
     setStatus("Refreshing…");
@@ -258,6 +270,7 @@
           : state.travelWhere === "flying" ? flyNote
             : "";
       setStatus("Updated " + new Date().toLocaleTimeString() + locNote);
+      armLandingRefresh(); // if in flight, auto-refresh right when we land (fires the immunity timer without a manual refresh)
     } catch (e) {
       const msg = e.message || "";
       const isYata = e.url && e.url.indexOf("yata.yt") !== -1;
@@ -475,6 +488,7 @@
     .tdk-imm{margin:10px 16px 0;padding:9px 12px;border-radius:10px;font-size:13px;line-height:1.45;font-weight:600}
     .tdk-imm.active{border:1px solid #4cc281;background:#16241c;color:#bfe9cf;animation:tdkpulse 1s ease-in-out infinite}
     .tdk-imm.gone{border:1px solid #7a4a44;background:#241717;color:#f0b3ad}
+    .tdk-imm.fly{border:1px solid #4a90d9;background:#152230;color:#9fc7f0}
     .tdk-imm b{color:#f2eddf;font-family:ui-monospace,monospace}
     .tdk-oc.danger{border-color:#7a4a44;border-left-color:#e5615c;background:#241717;color:#f0b3ad}
     .tdk-oc b{color:#f2eddf}
@@ -558,13 +572,16 @@
   // Ticks live off the last-known arrival time; only shows right after a fresh landing.
   function renderImmunity() {
     const el = host && host.querySelector("#tdk-immunity"); if (!el) return;
-    const arr = state.arrivalTs || 0;
-    if (!arr || state.travelWhere === "flying") { el.style.display = "none"; el.innerHTML = ""; return; }
-    const rem = (arr + 15) - Math.floor(Date.now() / 1000);
-    if (rem > 0) {
+    const arr = state.arrivalTs || 0, now = Math.floor(Date.now() / 1000);
+    if (!arr) { el.style.display = "none"; el.innerHTML = ""; return; }
+    const toLand = arr - now, rem = (arr + 15) - now;
+    if (state.travelWhere === "flying" && toLand > 0) { // in-flight: live countdown; auto-refresh is armed for landing
+      el.style.display = ""; el.className = "tdk-imm fly";
+      el.innerHTML = '✈ <b>Landing in ' + mmss(toLand) + '</b> — panel auto-refreshes on arrival to start your 15s immunity timer.';
+    } else if (rem > 0) { // landed (now ≥ arrival): 15s immunity window (shows even before the auto-refresh confirms)
       el.style.display = ""; el.className = "tdk-imm active";
       el.innerHTML = '🛡️ <b>Immunity: ' + rem + 's</b> — can’t be attacked. Buy / shelter cash in stocks / re-fly NOW.';
-    } else if (rem > -12) { // brief "you're exposed now" reminder just after it lapses
+    } else if (rem > -12 && state.travelWhere !== "flying") { // brief "you're exposed now" reminder just after it lapses
       el.style.display = ""; el.className = "tdk-imm gone";
       el.innerHTML = '⚠️ <b>Immunity ended — you’re exposed.</b> Only wallet cash is muggable — shelter it in stocks.';
     } else { el.style.display = "none"; el.innerHTML = ""; }
@@ -1336,6 +1353,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.31.0", d: "Aug 4, 2026", c: ["✈ In-flight countdown + auto-land refresh: while flying, the banner now counts down 'Landing in 4:12' live, and the panel auto-refreshes the moment you touch down — so your 15s immunity timer starts on its own, no manual refresh needed (refresh once after takeoff to arm it). The OC 'ready in…' banner now also ticks down live every second"] },
     { v: "1.30.0", d: "Aug 4, 2026", c: ["🛡️ Landing-immunity countdown: Torn gives you 15 seconds of attack immunity when you land (abroad or back in Torn). The board now shows a live-ticking '🛡️ Immunity: 12s' banner right after you land (pulsing green), then a red 'you're exposed — shelter your cash' note when it lapses. Ticks off your arrival time; hit Refresh the moment you land to catch the full window. (This is the window that got away while you were buying Pearls)"] },
     { v: "1.29.0", d: "Aug 4, 2026", c: ["⛔ OC flight guard: if you're in a faction Organized Crime, the board now shows how long until it's ready ('⏰ OC ready in 9h 12m') and flags any destination whose ROUND TRIP is longer than that with a ⛔ OC badge + strike-through — because if you're flying when the crime is ready you BLOCK the whole thing (you must be in Torn, not Traveling/Hospital/Jail). Best of all it reads the OC from the API, which still works while you're abroad/hospitalized — exactly when Torn hides the OC from you. Uses ready_at (when planning completes); fails safe by warning early"] },
     { v: "1.28.0", d: "Aug 4, 2026", c: ["🛒 The 'fly home to sell' nudge now reads Torn's OWN trip counter off the travel page ('You have purchased N / 23 items so far') — the reliable source of what you've actually bought this trip. So it shows real slot progress (e.g. '15/23 slots filled — fly home'), stays quiet at 0/23, and never invents a haul total from stale inventory again. Works even though your inventory/Items page is blocked while abroad"] },
@@ -1947,5 +1965,5 @@
   setInterval(pollStocks, 60 * 1000);            // check every minute; the GM lock caps actual fetches to one per POLL_MS across tabs
   setTimeout(pollStockPrices, 20000);            // seed stock-price history soon after load
   setInterval(pollStockPrices, 5 * 60 * 1000);   // check every 5 min; GM lock caps actual fetches to one per ~10 min across tabs
-  setInterval(renderImmunity, 1000);             // live-tick the 15s landing-immunity countdown
+  setInterval(function () { renderImmunity(); renderOC(); }, 1000); // live-tick the immunity/flight countdown + OC banner
 })();
