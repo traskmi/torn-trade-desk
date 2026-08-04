@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.25.1
+// @version      1.26.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -373,6 +373,8 @@
     .tdk-flip .fpv{color:#4cc281;font-weight:800;font-family:ui-monospace,monospace}
     .tdk-flip .fpm{color:#928b78;font-size:11px}
     .tdk-flip .fwarn{color:#e2933f;cursor:help}
+    .tdk-flip .fbuy{display:inline-block;font-size:10px;font-weight:700;padding:1px 6px;margin:0 2px;border-radius:6px;border:1px solid #3a3729;color:#d9b441;text-decoration:none;background:#201e17;white-space:nowrap}
+    .tdk-flip .fbuy:hover{background:#2a2413;border-color:#d9b441}
     .sksec{margin:10px 12px 4px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#d9b441;font-weight:700;border-top:1px dashed #3a3729;padding-top:8px}
     .sksec b.up{color:#4cc281}.sksec b.dn{color:#e5615c}
     .skrow{display:flex;align-items:flex-start;gap:12px;padding:8px 12px;border-bottom:1px solid #211f18}
@@ -730,16 +732,39 @@
       }));
       flips.sort(function (a, b) { return b.profit - a.profit; });
       if (!flips.length) { note.textContent = "Market's efficient right now — no crossed-market flips (no live buyer is paying above the cheapest listing on the items scanned). Try again later — these appear and vanish fast."; setTitle("no flips right now"); return; }
-      const rows = flips.slice(0, 12).map(function (f) {
-        const src = f.buyMk > 0 && (!(f.buyBz > 0) || f.buyMk <= f.buyBz) ? "Item Market" : "bazaar";
-        const marg = Math.round(f.profit / f.buy * 100);
+      const top = flips.slice(0, 12);
+      note.textContent = "Finding the cheapest seller for the top " + top.length + " flips…";
+      // Stage 3 — buy side: per-item listings give the actual cheapest BAZAAR seller (post-IM2.0 these are hidden,
+      // so linking straight to that shop is the edge) plus the fresh Item Market price → make each flip clickable-to-buy.
+      await Promise.all(top.map(function (f) {
+        return gmGet("https://weav3r.dev/api/marketplace/" + f.id + "?apiKey=" + encodeURIComponent(key), 20000)
+          .then(function (j) {
+            f.mp = (j && j.market_price > 0) ? j.market_price : f.buyMk;   // fresh Item Market price
+            const L = ((j && j.listings) || []).filter(function (x) { return x.price > 0; }).sort(function (a, b) { return a.price - b.price; });
+            f.baz = L.length ? L[0] : null;                                // cheapest bazaar seller {player_id, player_name, price, quantity}
+          }).catch(function () { f.mp = f.buyMk; f.baz = null; });
+      }));
+      // Re-price on the fresh buy side, drop any that closed, re-rank.
+      top.forEach(function (f) {
+        const bazP = f.baz ? f.baz.price : Infinity, mkP = f.mp > 0 ? f.mp : Infinity;
+        f.buy2 = Math.min(bazP, mkP); f.bazCheap = bazP <= mkP; f.profit2 = f.sell - f.buy2;
+      });
+      const finalFlips = top.filter(function (f) { return f.profit2 > 0; }).sort(function (a, b) { return b.profit2 - a.profit2; });
+      if (!finalFlips.length) { note.textContent = "Those flips just closed — the cheap listings moved before we could price them. Try again shortly."; setTitle("closed — prices moved"); return; }
+      const cat = function (id) { return (state.itemMeta && state.itemMeta[id] && state.itemMeta[id].type) || ""; };
+      const rows = finalFlips.map(function (f) {
+        const marg = f.buy2 > 0 ? Math.round(f.profit2 / f.buy2 * 100) : 0;
         const warn = marg > 300 ? ' <span class="fwarn" title="Huge margin — likely a stale or fat-finger listing. Verify it\'s still live in-game before buying.">⚠</span>' : '';
-        return '<div class="tdk-flip" data-id="' + f.id + '" data-name="' + f.name.replace(/"/g, "") + '" title="See who\'s online + ⚡ trade">' +
-          '<div class="fn">' + f.name + warn + '<div class="fs">buy <b>' + full$(f.buy) + '</b> <span>(' + src + ')</span> → sell <b>' + full$(f.sell) + '</b> <span>(' + f.buyers + ' buyers)</span></div></div>' +
-          '<div class="fp"><div class="fpv">+' + money(f.profit) + '</div><div class="fpm">' + marg + '% /ea</div></div></div>';
+        const links = [];
+        if (f.baz && f.bazCheap) links.push('<a class="fbuy" href="https://www.torn.com/bazaar.php?userId=' + f.baz.player_id + '" target="_blank" rel="noopener" title="Buy from ' + String(f.baz.player_name || "").replace(/"/g, "") + '’s bazaar — ' + (f.baz.quantity || 0) + ' @ $' + f.baz.price.toLocaleString() + '">🏪 ' + (f.baz.player_name || "bazaar") + '</a>');
+        links.push('<a class="fbuy" href="' + marketUrl(f.id, f.name, cat(f.id)) + '" target="_blank" rel="noopener" title="Buy on the Item Market' + (f.mp > 0 ? ' (~$' + f.mp.toLocaleString() + ')' : '') + '">🛒 Market</a>');
+        return '<div class="tdk-flip" data-id="' + f.id + '" data-name="' + f.name.replace(/"/g, "") + '">' +
+          '<div class="fn">' + f.name + warn + '<div class="fs">buy <b>' + full$(f.buy2) + '</b> ' + links.join(" ") + ' → sell <b>' + full$(f.sell) + '</b> <span>· ' + f.buyers + ' buyers · ⚡ click row to trade</span></div></div>' +
+          '<div class="fp"><div class="fpv">+' + money(f.profit2) + '</div><div class="fpm">' + marg + '% /ea</div></div></div>';
       }).join("");
-      setTitle("buy low → sell live · top " + Math.min(12, flips.length));
-      note.outerHTML = '<div class="tdk-sub" style="padding:6px 12px">Buy at the cheapest source, sell to the highest live buyer. Click a row for who\'s online + ⚡ trade. Prices move fast — reconfirm before buying.</div><div id="tdk-flips">' + rows + '</div>';
+      setTitle("buy low → sell live · top " + finalFlips.length);
+      note.outerHTML = '<div class="tdk-sub" style="padding:6px 12px">🏪 = buy from that seller’s bazaar (hidden since Item Market 2.0) · 🛒 = Item Market. Sell via ⚡ (click the row) = a direct trade, no fee. Prices move fast — reconfirm before buying.</div><div id="tdk-flips">' + rows + '</div>';
+      bx.querySelectorAll(".tdk-flip .fbuy").forEach(function (a) { a.addEventListener("click", function (e) { e.stopPropagation(); }); }); // buy link shouldn't also open the sell popover
       bx.querySelectorAll(".tdk-flip").forEach(function (el) {
         el.addEventListener("click", function () { openBuyers(+this.getAttribute("data-id"), this.getAttribute("data-name")); });
       });
@@ -1169,6 +1194,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.26.0", d: "Aug 4, 2026", c: ["💱 Flips are now one-click actionable: each flip shows a 🏪 link straight to the cheapest seller's bazaar (these are hidden from search since Item Market 2.0 — that's the edge) and a 🛒 Item Market link, so you can jump right to buying. It re-prices on the live cheapest listing before showing, drops any that already closed, and reminds you the ⚡ sell is a direct trade (no fee)"] },
     { v: "1.25.1", d: "Aug 4, 2026", c: ["📊 Stocks now shows your NET-after-fee P&L: Torn's Profit figure is gross, but selling costs a 0.1% fee (verified on the Torn wiki — buying is free). Each holding shows 'net if sold now' after that fee, and the portfolio header totals both gross and net — so you see what you'd actually pocket (e.g. ~$12k fee on a $12.1M IST sale)"] },
     { v: "1.25.0", d: "Aug 4, 2026", c: ["📊 Stocks: a new header button with (1) YOUR portfolio — live P&L per holding + a benefit-block progress bar (e.g. 'IST 22% → free education; 77,882 more ≈ $42.6M'), and (2) a buy-low scanner across all 35 stocks ranked by how far each sits below its own recent average, with ▼near-low / ▲near-high tags. Torn gives no price history, so — like restock — it records prices itself (~10-min background poll); trend/range signals fill in as history builds. It's benefit-AWARE: it never tells you to sell a block you're still accumulating. Honest by design: prices tick constantly (figures are as-of-pull, reconcile to Torn on reopen) and signals are range/trend heuristics, NOT predictions"] },
     { v: "1.24.0", d: "Aug 4, 2026", c: ["💱 Quick Flips: a new header button that hunts genuine 'crossed market' arbitrage — an item you can BUY (Item Market / bazaar) for less than a LIVE trader is offering to BUY it from you, no travel. It scans the whole weav3r market, shortlists the most liquid + affordable items (where transient mispricings actually appear), then pulls real buy-offers and shows ONLY real, positive flips — ranked by profit/ea. Click one to see who's online + ⚡ trade. These are rare and get snapped up fast, so it honestly says 'market's efficient' when there's nothing — it never invents profit. Reconfirm prices before you buy"] },
