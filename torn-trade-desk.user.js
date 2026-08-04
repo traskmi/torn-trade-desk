@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.28.0
+// @version      1.29.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -61,7 +61,7 @@
   }
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null };
   const fmtRt = function (min) { const h = Math.floor(min / 60), m = min % 60; return (h ? h + "h" : "") + (m ? m + "m" : "") || "0m"; };
   const TIME_OPTS = [[0, "⏱ Any time"], [60, "≤ 1h"], [90, "≤ 1½h"], [120, "≤ 2h"], [180, "≤ 3h"], [240, "≤ 4h"], [360, "≤ 6h"], [480, "≤ 8h"], [600, "≤ 10h"]];
 
@@ -193,6 +193,29 @@
     if (!dq) return null;
     return { dq: dq, perMin: dq / (Math.max(60, b[0] - a[0]) / 60) };
   }
+  /* ---------- Faction OC flight guard: don't fly past your Organized Crime's ready time ----------
+     v2/user/organizedcrime WORKS while abroad/hospital (unlike the Items page), so we can warn even when Torn
+     hides the OC from you in-country. ready_at = planning completes → crime becomes executable; you must be in
+     Torn (not Traveling/Hospital/Jail) or you BLOCK the whole crime. So a round trip longer than time-to-ready
+     = you'd miss it. */
+  async function loadOC(key) {
+    try {
+      const j = await gmGet("https://api.torn.com/v2/user/organizedcrime?key=" + encodeURIComponent(key));
+      const oc = j && j.organizedCrime, nowS = Math.floor(Date.now() / 1000);
+      const st = oc ? String(oc.status || "").toLowerCase() : "";
+      if (!oc || oc.executed_at || (oc.expired_at && oc.expired_at < nowS) || ["successful", "failure", "failed", "expired", "completed"].indexOf(st) !== -1) { state.oc = null; return; }
+      state.oc = { name: oc.name, status: oc.status, readyAt: oc.ready_at || 0 };
+    } catch (e) { /* non-fatal — keep last known */ }
+  }
+  function ocGuard() { // seconds until you must be back in Torn for the OC (null if none pending)
+    const oc = state.oc; if (!oc || !oc.readyAt) return null;
+    return { name: oc.name, secs: oc.readyAt - Math.floor(Date.now() / 1000) };
+  }
+  function fmtDur(secs) {
+    secs = Math.max(0, secs | 0);
+    const d = Math.floor(secs / 86400), h = Math.floor(secs % 86400 / 3600), m = Math.floor(secs % 3600 / 60);
+    return d ? d + "d " + h + "h" : h ? h + "h " + m + "m" : m + "m";
+  }
   async function refresh() {
     setStatus("Refreshing…");
     const key = tornKey();
@@ -203,6 +226,7 @@
         loadResale(key)
       ]);
       await loadCash(key);
+      await loadOC(key); // faction OC deadline (works even while abroad, unlike the Items page)
       recordStocks(yata); // snapshot every item's stock into the rolling history
       const nowS = Math.floor(Date.now() / 1000);
       const rows = [];
@@ -446,6 +470,12 @@
     .tdk-homebar .hb-go{margin-left:auto;background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:5px 9px;font-weight:700;cursor:pointer;text-decoration:none;white-space:nowrap;font-size:12px}
     .tdk-homebar.home .hb-go{border-color:#4cc281;color:#8fe6b3;background:#173026}
     .tdk-homebar .hb-go:hover{filter:brightness(1.15)}
+    .tdk-oc{margin:10px 16px 0;padding:9px 12px;border:1px solid #7a5a2a;border-left:4px solid #d9b441;border-radius:10px;background:#211c12;color:#e7d3a0;font-size:12.5px;line-height:1.5}
+    .tdk-oc.danger{border-color:#7a4a44;border-left-color:#e5615c;background:#241717;color:#f0b3ad}
+    .tdk-oc b{color:#f2eddf}
+    .oc-x{color:#e5615c;font-weight:800;margin-left:6px;font-family:system-ui,sans-serif;font-size:11px;cursor:help}
+    table.tdk tr.ocmiss td{background:#241717}
+    table.tdk tr.ocmiss .fly{color:#e5615c;text-decoration:line-through}
     .tdk-bmkt{text-decoration:none;font-size:14px;margin-right:8px;filter:grayscale(.15);vertical-align:middle}
     .tdk-bmkt:hover{filter:none}
     .tdk-bzap{cursor:pointer;font-size:13px;margin-right:8px;opacity:.85;vertical-align:middle}
@@ -519,12 +549,27 @@
       el.style.display = "none"; el.innerHTML = "";
     }
   }
+  // OC flight guard banner (works even abroad, where Torn hides the OC from you).
+  function renderOC() {
+    const el = host.querySelector("#tdk-oc"); if (!el) return;
+    const g = ocGuard();
+    if (!g) { el.style.display = "none"; el.innerHTML = ""; return; }
+    el.style.display = "";
+    if (g.secs <= 0) {
+      el.className = "tdk-oc danger";
+      el.innerHTML = '⛔ <b>OC “' + g.name + '” is ready now</b> — don’t travel. You must be in Torn (not flying/hospital) or you’ll block the crime.';
+    } else {
+      el.className = "tdk-oc";
+      el.innerHTML = '⏰ <b>OC “' + g.name + '”</b> ready in <b>' + fmtDur(g.secs) + '</b>. Flights with a round trip longer than that are flagged ⛔ below — you must be back in Torn for it.';
+    }
+  }
   function render() {
     const cap = state.cap, cash = state.cash, fund = state.fund;
     const stocks = state.stocks || 0, funds = cash == null ? null : cash + stocks;
     if (state.filter !== "all" && !state.rows.some(function (x) { return x.cc === state.filter; })) state.filter = "all";
     renderChips();
     renderHomeBar();
+    renderOC();
     const fbtn = host.querySelector("#tdk-fund"); if (fbtn) fbtn.className = "tdk-btn2" + (fund ? " on" : "");
     let rows = state.filter === "all" ? state.rows : state.rows.filter(function (x) { return x.cc === state.filter; });
     if (state.maxTrip) rows = rows.filter(function (x) { return FLY[x.cc] && FLY[x.cc].rt <= state.maxTrip; }); // round-trip time budget
@@ -571,10 +616,12 @@
     else if (sm === "ppm") disp.sort(function (a, b) { return b.ppm - a.ppm; });
     else disp.sort(function (a, b) { return (b[sm] || 0) - (a[sm] || 0); });
     host.querySelectorAll("#tdk-board th.so").forEach(function (th) { th.classList.toggle("on", th.getAttribute("data-sort") === sm); });
+    const g = ocGuard(); // OC deadline — flights whose round trip exceeds it would make you miss the crime
     body.innerHTML = disp.map(function (x) {
       const aff = cash == null || x.full <= cash;
       const fill = x.stock >= cap;
       const isTop = topOver && x === topOver;
+      const ocMiss = g && FLY[x.cc] && (g.secs <= 0 || FLY[x.cc].rt * 60 >= g.secs); // round-trip (min→sec) vs time-to-ready
       let sc = x.stock === 0 ? '<span class="chip c-out">out</span>'
         : x.stock < cap ? '<span class="chip c-low">only ' + x.stock + '</span>'
           : '<span class="chip c-ok">' + x.stock.toLocaleString() + '</span>';
@@ -583,10 +630,11 @@
         ? '<span class="tk-tr up" title="Restocked +' + tr.dq.toLocaleString() + ' since last sample">▲</span>'
         : '<span class="tk-tr dn" title="Sold ' + Math.abs(tr.dq).toLocaleString() + ' since last sample (~' + Math.abs(Math.round(tr.perMin)) + '/min)">▼</span>') + sc;
       const shortB = (!aff && cash != null && fill) ? '<span class="chip short">free +' + money(x.full - cash) + '</span>' : '';
-      const cls = aff ? "" : (fund ? (isTop ? "fund" : "") : "dim");
+      const cls = (aff ? "" : (fund ? (isTop ? "fund" : "") : "dim")) + (ocMiss ? " ocmiss" : "");
       const mark = (aff && fill) ? '<span class="star" title="Affordable now & fully in stock — a clean pick">★</span>' : (isTop ? '<span class="star" title="Best funded play — over budget, but reachable by selling stocks (see the banner up top)">💰</span>' : '');
+      const ocBadge = ocMiss ? '<span class="oc-x" title="Round trip ' + (FLY[x.cc] ? fmtRt(FLY[x.cc].rt) : '?') + (g.secs <= 0 ? ' — your OC is ready NOW, don’t fly' : ' exceeds your OC (ready in ' + fmtDur(g.secs) + ') — you’d miss it') + '">⛔ OC</span>' : '';
       return '<tr class="' + cls + '" data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '">' +
-        '<td class="l"><span class="nm">' + x.name + mark + '</span><div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + (FLY[x.cc] ? fmtRt(FLY[x.cc].rt) + ' rt · ' : '') + ago(x.freshS) + ' old</div></td>' +
+        '<td class="l"><span class="nm">' + x.name + mark + '</span><div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + (FLY[x.cc] ? fmtRt(FLY[x.cc].rt) + ' rt · ' : '') + ago(x.freshS) + ' old' + ocBadge + '</div></td>' +
         '<td class="mv">' + full$(x.buy) + '</td><td class="mv">' + full$(x.sell) + '</td>' +
         '<td class="gd">' + full$(x.ppi) + '</td><td>' + sc + '</td>' +
         '<td class="mv">' + money(x.full) + shortB + '</td>' +
@@ -1267,6 +1315,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.29.0", d: "Aug 4, 2026", c: ["⛔ OC flight guard: if you're in a faction Organized Crime, the board now shows how long until it's ready ('⏰ OC ready in 9h 12m') and flags any destination whose ROUND TRIP is longer than that with a ⛔ OC badge + strike-through — because if you're flying when the crime is ready you BLOCK the whole thing (you must be in Torn, not Traveling/Hospital/Jail). Best of all it reads the OC from the API, which still works while you're abroad/hospitalized — exactly when Torn hides the OC from you. Uses ready_at (when planning completes); fails safe by warning early"] },
     { v: "1.28.0", d: "Aug 4, 2026", c: ["🛒 The 'fly home to sell' nudge now reads Torn's OWN trip counter off the travel page ('You have purchased N / 23 items so far') — the reliable source of what you've actually bought this trip. So it shows real slot progress (e.g. '15/23 slots filled — fly home'), stays quiet at 0/23, and never invents a haul total from stale inventory again. Works even though your inventory/Items page is blocked while abroad"] },
     { v: "1.27.1", d: "Aug 4, 2026", c: ["Fixed the false 'Got your haul? Fly home to sell' nudge that showed abroad even when you'd bought nothing — it was counting your whole sellable STASH (from the scraped inventory snapshot), not this trip's purchases. It now counts only foreign/travel goods (things you can only get by buying abroad), so it stays quiet until you're actually carrying a haul"] },
     { v: "1.27.0", d: "Aug 4, 2026", c: ["🏪 Shop Flips: a new header button that finds Torn city-shop items (Big Al's, Bits 'n' Bobs, the car dealership, sweet shop, etc.) whose fixed shop price is below their market value — buy low at the shop, sell higher on the market. Uses the item catalog's buy_price vs market_value, excludes travel items (the board covers those), ranks by cash spread, and shows the net after the 1% Item Market sell fee. Reference-only: shop price is a catalog constant, so verify the item's actually stocked (limited stock/caps/restocks). Click a row for buyers, 🛒 to open the Item Market"] },
@@ -1669,6 +1718,7 @@
       '<div class="tdk-status" id="tdk-status">Click Refresh to pull live data.</div>' +
       '<div id="tdk-board">' +
         '<div class="tdk-homebar" id="tdk-homebar" style="display:none"></div>' +
+        '<div class="tdk-oc" id="tdk-oc" style="display:none"></div>' +
         '<div class="tdk-filter" id="tdk-filter"></div>' +
         '<div class="tdk-best" id="tdk-best"><div class="l">Best play</div><div class="p">—</div></div>' +
         '<table class="tdk"><thead><tr><th class="l">Item</th><th class="so" data-sort="buy">Buy</th><th class="so" data-sort="sell">Resale</th><th class="so" data-sort="ppi">Profit/ea</th><th class="so" data-sort="stock">Stock</th><th class="so" data-sort="full">Load</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
