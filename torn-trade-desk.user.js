@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.26.0
+// @version      1.27.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -126,7 +126,7 @@
       const it = j.items[id];
       idx[+id] = it.market_value;
       const eff = (it.effect || "").trim(), req = (it.requirement || "").trim();
-      meta[+id] = { type: it.type || "", hasUse: !!(eff || req), name: it.name || "" };
+      meta[+id] = { type: it.type || "", hasUse: !!(eff || req), name: it.name || "", buy: it.buy_price || 0, mkt: it.market_value || 0, circ: it.circulation || 0 };
     });
     state.resale = idx; state.itemMeta = meta; state.resaleAt = now;
     return idx;
@@ -222,6 +222,7 @@
       });
       rows.sort(function (a, b) { return b.ppm - a.ppm; });
       state.rows = rows;
+      state.foreignIds = new Set(); Object.values(yata.stocks).forEach(function (b) { (b.stocks || []).forEach(function (it) { state.foreignIds.add(it.id); }); }); // to exclude travel items from Shop Flips
       applyLocationFilter(); // auto-focus the board on the country you're standing in
       render();
       const flyNote = state.flyTo && FLY[state.flyTo]
@@ -901,6 +902,67 @@
       '<div id="tdk-stocks">' + portHtml + scanHtml + '</div>';
     bindClose(bx);
   }
+  /* ---------- 🏪 Shop Flips: buy from a Torn city shop (fixed price) → sell on the market for more ----------
+     Torn has NO shops API, but the items catalog carries buy_price (the NPC shop price) + market_value.
+     Foreign/travel items (present in YATA) are excluded — the main board already covers those. buy_price is a
+     catalog CONSTANT (not live stock), so this is a REFERENCE: verify the item's actually stocked in its shop. */
+  async function ensureForeignIds() {
+    if (state.foreignIds) return state.foreignIds;
+    try {
+      const y = await gmGet("https://yata.yt/api/v1/travel/export/", 30000);
+      const set = new Set();
+      Object.values((y && y.stocks) || {}).forEach(function (b) { (b.stocks || []).forEach(function (it) { set.add(it.id); }); });
+      state.foreignIds = set;
+    } catch (e) { state.foreignIds = new Set(); }
+    return state.foreignIds;
+  }
+  async function openShopFlips() {
+    const bx = host.querySelector("#tdk-buyers");
+    bx.classList.add("open");
+    bx.innerHTML = '<div class="tdk-bh"><div class="tt">🏪 Shop Flips<small> — loading…</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div><div class="br" style="padding:10px 12px">Scanning the item catalog…</div>';
+    bindClose(bx);
+    const setTitle = function (s) { const t = bx.querySelector(".tt"); if (t) t.innerHTML = '🏪 Shop Flips<small> — ' + s + '</small>'; };
+    const key = tornKey();
+    if (!key) { setTitle("need a Torn API key (⚙ Settings)"); return; }
+    try {
+      await loadResale(key);                       // catalog: buy_price + market_value + circulation
+      const foreign = await ensureForeignIds();    // travel items to exclude
+      const meta = state.itemMeta || {};
+      const cashCeil = (state.cash && state.cash > 0) ? state.cash : 50e6;
+      const cand = [];
+      Object.keys(meta).forEach(function (id) {
+        const m = meta[id], buy = m.buy || 0, mkt = m.mkt || 0;
+        if (!(buy > 0) || !(mkt > 0) || foreign.has(+id)) return;    // shop item, priced, not foreign
+        if (buy > cashCeil) return;                                  // affordable
+        const spread = mkt - buy, marg = spread / buy;
+        if (spread < 500 || marg < 0.08) return;                     // meaningful cash + margin
+        cand.push({ id: +id, name: m.name, type: m.type, buy: buy, mkt: mkt, spread: spread, marg: marg });
+      });
+      cand.sort(function (a, b) { return b.spread - a.spread; });
+      const top = cand.slice(0, 20);
+      if (!top.length) { setTitle("nothing above threshold"); bx.querySelector(".br").textContent = "No shop→market flips over $500 spread right now."; return; }
+      const cat = function (id) { return (meta[id] && meta[id].type) || ""; };
+      const rows = top.map(function (c) {
+        const marg = Math.round(c.marg * 100);
+        const net = c.spread - c.mkt * 0.01;                         // if you SELL on the Item Market (1% fee); trade = fee-free
+        const warn = marg > 500 ? ' <span class="fwarn" title="Huge % on a cheap item — small cash and usually restock-capped; verify it\'s in the shop">⚠</span>' : '';
+        const mUrl = marketUrl(c.id, c.name, cat(c.id));
+        return '<div class="tdk-flip" data-id="' + c.id + '" data-name="' + c.name.replace(/"/g, "") + '">' +
+          '<div class="fn">' + c.name + ' <span class="skhold" style="color:#928b78">' + c.type + '</span>' + warn +
+          '<div class="fs">shop <b>' + full$(c.buy) + '</b> → market <b>' + full$(c.mkt) + '</b> <a class="fbuy" href="' + mUrl + '" target="_blank" rel="noopener" title="Open the Item Market to sell (1% fee) or check price">🛒 Market</a> <span>· net +' + money(net) + ' after 1% list fee · ⚡ click row for buyers</span></div></div>' +
+          '<div class="fp"><div class="fpv">+' + money(c.spread) + '</div><div class="fpm">' + marg + '% /ea</div></div></div>';
+      }).join("");
+      setTitle("Torn city shops · buy low → sell on market · top " + top.length);
+      bx.innerHTML = '<div class="tdk-bh"><div class="tt">🏪 Shop Flips<small> — Torn city shops · top ' + top.length + '</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
+        '<div class="tdk-sub" style="padding:6px 12px">Buy at the fixed shop price, sell on the market. Shop price is a catalog constant — <b>verify the item is actually stocked</b> (shops have limited stock, caps &amp; restocks; the market can\'t absorb unlimited). Selling on the Item Market costs 1% (a direct ⚡ trade is fee-free). Travel items are excluded — the board covers those.</div>' +
+        '<div id="tdk-flips">' + rows + '</div>';
+      bindClose(bx);
+      bx.querySelectorAll(".tdk-flip .fbuy").forEach(function (a) { a.addEventListener("click", function (e) { e.stopPropagation(); }); });
+      bx.querySelectorAll(".tdk-flip").forEach(function (el) { el.addEventListener("click", function () { openBuyers(+this.getAttribute("data-id"), this.getAttribute("data-name")); }); });
+    } catch (e) {
+      const b = bx.querySelector(".br"); if (b) b.textContent = "Shop scan failed: " + (e.message || e) + " (check your key in ⚙ Settings).";
+    }
+  }
   async function loadInv(key) {
     const now = Date.now();
     if (state.inv && now - state.invAt < 120000) return state.inv;
@@ -1194,6 +1256,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.27.0", d: "Aug 4, 2026", c: ["🏪 Shop Flips: a new header button that finds Torn city-shop items (Big Al's, Bits 'n' Bobs, the car dealership, sweet shop, etc.) whose fixed shop price is below their market value — buy low at the shop, sell higher on the market. Uses the item catalog's buy_price vs market_value, excludes travel items (the board covers those), ranks by cash spread, and shows the net after the 1% Item Market sell fee. Reference-only: shop price is a catalog constant, so verify the item's actually stocked (limited stock/caps/restocks). Click a row for buyers, 🛒 to open the Item Market"] },
     { v: "1.26.0", d: "Aug 4, 2026", c: ["💱 Flips are now one-click actionable: each flip shows a 🏪 link straight to the cheapest seller's bazaar (these are hidden from search since Item Market 2.0 — that's the edge) and a 🛒 Item Market link, so you can jump right to buying. It re-prices on the live cheapest listing before showing, drops any that already closed, and reminds you the ⚡ sell is a direct trade (no fee)"] },
     { v: "1.25.1", d: "Aug 4, 2026", c: ["📊 Stocks now shows your NET-after-fee P&L: Torn's Profit figure is gross, but selling costs a 0.1% fee (verified on the Torn wiki — buying is free). Each holding shows 'net if sold now' after that fee, and the portfolio header totals both gross and net — so you see what you'd actually pocket (e.g. ~$12k fee on a $12.1M IST sale)"] },
     { v: "1.25.0", d: "Aug 4, 2026", c: ["📊 Stocks: a new header button with (1) YOUR portfolio — live P&L per holding + a benefit-block progress bar (e.g. 'IST 22% → free education; 77,882 more ≈ $42.6M'), and (2) a buy-low scanner across all 35 stocks ranked by how far each sits below its own recent average, with ▼near-low / ▲near-high tags. Torn gives no price history, so — like restock — it records prices itself (~10-min background poll); trend/range signals fill in as history builds. It's benefit-AWARE: it never tells you to sell a block you're still accumulating. Honest by design: prices tick constantly (figures are as-of-pull, reconcile to Torn on reopen) and signals are range/trend heuristics, NOT predictions"] },
@@ -1577,6 +1640,7 @@
           '<button class="tdk-btn2" id="tdk-fund" title="Show top plays even if over budget — reminds you to free up cash first">💰 Fund</button>' +
           '<button class="tdk-btn2" id="tdk-happy" title="Happy-jump calculator — max happy, best order &amp; reset timer">😊 Happy</button>' +
           '<button class="tdk-btn2" id="tdk-flip" title="Quick flips — buy cheap, sell to the highest live trader">💱 Flip</button>' +
+          '<button class="tdk-btn2" id="tdk-shop" title="Shop flips — Torn city-shop items worth more on the market">🏪 Shop</button>' +
           '<button class="tdk-btn2" id="tdk-stk" title="Stocks — your P&amp;L, benefit-block progress, buy-low scanner">📊 Stocks</button>' +
           '<button class="tdk-btn2 tdk-x" id="tdk-close" title="Close panel">✕</button>' +
         '</div>' +
@@ -1607,6 +1671,7 @@
     host.querySelector("#tdk-settings").addEventListener("click", openSettings);
     host.querySelector("#tdk-happy").addEventListener("click", openHappy);
     host.querySelector("#tdk-flip").addEventListener("click", openFlip);
+    host.querySelector("#tdk-shop").addEventListener("click", openShopFlips);
     host.querySelector("#tdk-stk").addEventListener("click", openStocks);
     host.querySelector("#tdk-refresh").addEventListener("click", function () { if (state.view === "inv") { state.inv = null; renderInv(); } else refresh(); });
     host.querySelector("#tdk-cap").addEventListener("change", function (e) {
