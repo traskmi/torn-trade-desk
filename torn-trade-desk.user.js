@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.20.0
+// @version      1.21.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -96,6 +96,7 @@
     return "$" + n;
   };
   const full$ = function (n) { return "$" + Math.round(n).toLocaleString("en-US"); };
+  const escAttr = function (s) { return String(s == null ? "" : s).replace(/"/g, "&quot;"); };
   function copyText(t) {
     try { if (typeof GM_setClipboard === "function") { GM_setClipboard(t, "text"); return; } } catch (e) { }
     try { if (navigator.clipboard) navigator.clipboard.writeText(t); } catch (e) { }
@@ -370,7 +371,12 @@
     .tdk-pk{font-size:11px;margin-top:3px;font-weight:600;white-space:normal;line-height:1.35}
     .tdk-pk.even{color:#9fb1c9}
     .tdk-pk.warn{color:#e2933f}
+    .tdk-pk.open{color:#4cc281}
+    .tdk-pk.sell{color:#d9b441}
     .tdk-pk .tdk-pkm{opacity:.7;font-weight:400;font-style:italic}
+    .tdk-pkedit{cursor:pointer;margin-left:6px;opacity:.7;font-weight:400}
+    .tdk-pkedit:hover{opacity:1;color:#d9b441}
+    .tdk-pdq{width:80px}
     `;
   }
   function setStatus(msg, err) { const s = host.querySelector("#tdk-status"); if (s) { s.textContent = msg; s.className = "tdk-status" + (err ? " err" : ""); } }
@@ -691,20 +697,63 @@
     const mean = vals.reduce(function (a, b) { return a + b; }, 0) / vals.length;
     return { ev: mean, lo: Math.min.apply(null, vals), hi: Math.max.apply(null, vals), spread: Math.max.apply(null, vals) / Math.max(1, Math.min.apply(null, vals)), oneof: true };
   }
+  // ---- Empirical pack data (shared by A: manual seed + B: Torn-log sync) ----
+  // GM "pack_data" = { <packName>: { manual?: {opens:N, items:{id:qty}}, log?: [{ts, id, items:{id:qty}}], lastLogTs? } }
+  // items = TOTAL received quantity of each content item id. EV is always odds × LIVE prices, so it never stales.
+  function getPackData() { return GM_getValue("pack_data", {}) || {}; }
+  function setPackData(d) { GM_setValue("pack_data", d); }
+  // Combine the manual aggregate (EV point only) with logged per-open records (EV + a real confidence interval).
+  function packEmpirical(name) {
+    const pd = getPackData()[name]; if (!pd) return null;
+    const prices = state.resale || {};
+    const valOf = function (items) { let v = 0; Object.keys(items).forEach(function (id) { v += (prices[id] || 0) * items[id]; }); return v; };
+    let opens = 0, totalVal = 0; const perOpen = [];
+    if (pd.log && pd.log.length) pd.log.forEach(function (rec) { const v = valOf(rec.items || {}); perOpen.push(v); opens++; totalVal += v; });
+    if (pd.manual && pd.manual.opens > 0) { opens += pd.manual.opens; totalVal += valOf(pd.manual.items || {}); }
+    if (!opens) return null;
+    const ev = totalVal / opens;
+    let ci = null;
+    if (perOpen.length >= 3) { // need a few real opens for a meaningful interval
+      const mean = perOpen.reduce(function (a, b) { return a + b; }, 0) / perOpen.length;
+      const varr = perOpen.reduce(function (a, b) { return a + (b - mean) * (b - mean); }, 0) / (perOpen.length - 1);
+      ci = 1.96 * Math.sqrt(varr / perOpen.length);
+    }
+    return { ev: ev, opens: opens, ci: ci, logged: perOpen.length, manual: !!(pd.manual && pd.manual.opens) };
+  }
   // Informational open-vs-sell reference for a pack row (sellPrice = the pack's own market value). "" for non-packs.
   // Deliberately NOT a buy/sell verdict: real drop odds aren't published, and an equal-odds EV is provably biased for
   // weighted/tiered packs (user's own torn.report data confirmed it — Grenades under-, Alcohol over-estimated). So we
   // show the equal-odds EV as a clearly-labeled rough reference + contents, flag wide-spread pools as a gamble, and
   // point to torn.report for the empirical call.
   function packHintHtml(name, sellPrice) {
+    if (!PACK_MODELS[name]) return "";
+    const edit = ' <span class="tdk-pkedit" data-pack="' + escAttr(name) + '" title="Enter your real drop odds (from torn.report) or sync from your Torn log">✎</span>';
+    // Prefer YOUR real data (manual seed and/or logged opens) — an actual verdict, priced live. CI comes from logged opens.
+    const emp = packEmpirical(name);
+    if (emp && sellPrice) {
+      let verdict, cls;
+      if (emp.ci != null) { // confident only once the interval clears the sell price
+        if (emp.ev - emp.ci > sellPrice) { verdict = "OPEN"; cls = "open"; }
+        else if (emp.ev + emp.ci < sellPrice) { verdict = "SELL"; cls = "sell"; }
+        else { verdict = "need more data"; cls = "even"; }
+      } else { // point estimate (manual, or <3 logged) — softer 5% band
+        const r = emp.ev / sellPrice;
+        verdict = r >= 1.05 ? "OPEN" : r <= 0.95 ? "SELL" : "≈ even";
+        cls = r >= 1.05 ? "open" : r <= 0.95 ? "sell" : "even";
+      }
+      const src = emp.logged ? (emp.manual ? 'n=' + emp.opens + ' log+manual' : 'n=' + emp.opens + ' logged') : 'n=' + emp.opens + ' manual';
+      let txt = '🎁 open-EV ~' + money(emp.ev) + (emp.ci != null ? ' ±' + money(emp.ci) : '') + ' vs sell ' + money(sellPrice) + ' → ' + verdict + ' <span class="tdk-pkm">' + src + '</span>';
+      return '<div class="cy tdk-pk ' + cls + '" title="Your real drop odds × live prices. Verdict turns confident once the ± interval clears the sell price.">' + txt + edit + '</div>';
+    }
+    // No data yet → equal-odds reference (labeled rough), + the ✎ to add your odds.
     const h = packHint(name); if (!h) return "";
-    if (h.incomplete) return '<div class="cy tdk-pk">🎁 open-EV: contents not priced yet — open your Items page tabs</div>';
-    const wide = h.spread >= 5; // a rare high-value drop dominates the mean → equal-odds is especially unreliable
+    if (h.incomplete) return '<div class="cy tdk-pk">🎁 open-EV: contents not priced yet — open your Items page tabs' + edit + '</div>';
+    const wide = h.spread >= 5;
     let txt = '🎁 open-EV ~' + money(h.ev) + ' <span class="tdk-pkm">equal-odds, rough</span>';
     if (h.oneof) txt += ' · one of ' + money(h.lo) + '–' + money(h.hi);
     txt += ' · vs sell ' + money(sellPrice);
     if (wide) txt += ' · ⚠ wide spread — gamble';
-    return '<div class="cy tdk-pk ' + (wide ? 'warn' : 'even') + '" title="Rough equal-odds estimate (wiki contents × live prices). Torn doesn’t publish drop odds and they aren’t uniform, so this is a reference, not a verdict — see torn.report for your real open-vs-sell.">' + txt + '</div>';
+    return '<div class="cy tdk-pk ' + (wide ? 'warn' : 'even') + '" title="Rough equal-odds estimate (wiki contents × live prices). Add your real odds with ✎ for a verdict.">' + txt + edit + '</div>';
   }
   async function renderInv() {
     const box = host.querySelector("#tdk-inv");
@@ -797,6 +846,9 @@
     box.querySelectorAll(".tdk-bzap").forEach(function (el) {
       el.addEventListener("click", function () { openBuyers(+this.getAttribute("data-id"), this.getAttribute("data-name")); });
     });
+    box.querySelectorAll(".tdk-pkedit").forEach(function (el) {
+      el.addEventListener("click", function () { openPackOdds(this.getAttribute("data-pack")); });
+    });
     const clr = box.querySelector("#tdk-invclear");
     if (clr) clr.addEventListener("click", function () {
       GM_setValue("inv_counts", { map: {}, at: 0 });
@@ -834,6 +886,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.21.0", d: "Aug 3, 2026", c: ["🎁 Supply packs now support YOUR real drop odds — priced live, so opening becomes a real OPEN/SELL verdict instead of a rough equal-odds guess. Click ✎ on a pack row to (A) enter opens + what you received (straight from torn.report), or (B) ⟳ Sync from Torn log to pull your actual opens automatically. EV = your odds × live prices (never stales); with enough logged opens it shows a ± confidence interval and only calls OPEN/SELL once that interval clears the sell price — otherwise 'need more data (n=…)'. Packs with no data yet keep the equal-odds reference", "Note: the Torn-log sync is beta — it self-discovers the log type and, if the entry format doesn't match, dumps a sample to the console (F12) to finish wiring"] },
     { v: "1.20.0", d: "Aug 3, 2026", c: ["🎁 Supply-pack open-vs-sell reference in the Bag: for the 'open into items' packs (Six-Pack of Alcohol/Energy, Box of Medical Supplies, Box of Grenades) each row now shows a rough open-EV — the pack's contents (from the Torn wiki) priced live × the items catalog — next to its sell price, so you can eyeball whether opening is even in the ballpark. Contents with a wide value spread are flagged ⚠ gamble. Deliberately NOT a hard buy/sell verdict: Torn doesn't publish drop odds and they aren't uniform, so an equal-odds estimate is only a reference — the footnote links to torn.report for the empirical, per-pack call"] },
     { v: "1.19.2", d: "Aug 2, 2026", c: ["📦 Bag no longer over-reports sold items: the scraped snapshot now reconciles as you browse — opening a category tab lists all of that category's items, so anything you've since sold/used (or that shows qty 0) is dropped instead of lingering. Added a ↻ Rescan button + a 'snapshot Nm old' age so you can wipe & rebuild it for odd cases the API-down snapshot can't see"] },
     { v: "1.19.1", d: "Aug 2, 2026", c: ["📦 Bag readability: the Qty × Sell column was inheriting Torn's dark cell color and was hard to read — gave it an explicit light tone"] },
@@ -1108,6 +1161,89 @@
       openChangelog();
     });
     bindClose(bx);
+  }
+  // A: manual odds editor — enter opens + total received per content item (straight from torn.report). Reuses overlay.
+  function openPackOdds(name) {
+    const m = PACK_MODELS[name]; if (!m) return;
+    const bx = host.querySelector("#tdk-buyers"); bx.classList.add("open");
+    const names = (m.kind === "draws" ? m.pool.slice() : m.outcomes.map(function (o) { return o[1]; }));
+    const uniq = []; names.forEach(function (n) { if (uniq.indexOf(n) < 0) uniq.push(n); });
+    const pd = getPackData()[name] || {}, man = pd.manual || { opens: 0, items: {} }, prices = state.resale || {};
+    const rowFor = function (nm) {
+      const id = nameToId(nm), cur = id != null ? (man.items[id] || 0) : 0, pr = id != null ? (prices[id] || 0) : 0;
+      return '<div class="hrow"><label>' + nm + ' <span class="hv">' + (id == null ? '⚠ not in catalog' : pr ? money(pr) + '/ea' : '—') + '</span></label>' +
+        '<input class="hqty tdk-pdq" data-name="' + escAttr(nm) + '" type="number" min="0" value="' + cur + '"><span class="hv">recv</span></div>';
+    };
+    bx.innerHTML =
+      '<div class="tdk-bh"><div class="tt">Pack odds · ' + name + '<small> — your real drops</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
+      '<div class="tdk-happy">' +
+        '<div class="ssub">Enter how many you\'ve <b>opened</b> and the <b>total quantity received</b> of each item (read them off <a class="tdk-sett-link" href="https://torn.report/pack" target="_blank" rel="noopener">torn.report</a>). EV = your odds × live prices, so it never goes stale.</div>' +
+        '<div class="hrow"><label>Packs opened <span class="hv">(manual)</span></label><input class="hqty" id="tdk-pd-opens" type="number" min="0" value="' + (man.opens || 0) + '"><span class="hv"></span></div>' +
+        uniq.map(rowFor).join('') +
+        '<div class="hresult" id="tdk-pd-ev"></div>' +
+        (pd.log && pd.log.length ? '<div class="ssub">Plus <b>' + pd.log.length + '</b> opens synced from your Torn log.</div>' : '') +
+        '<div class="srow" style="margin-top:8px;flex-wrap:wrap;gap:6px"><button class="tdk-btn2" id="tdk-pd-save">Save odds</button><button class="tdk-btn2" id="tdk-pd-sync" title="Pull your real supply-pack opens from the Torn API log (beta)">⟳ Sync from Torn log</button><button class="tdk-btn2" id="tdk-pd-clear" title="Clear all saved data for this pack">Clear</button></div>' +
+        '<div id="tdk-pd-msg" class="ssub"></div>' +
+      '</div>';
+    bindClose(bx);
+    const evEl = bx.querySelector("#tdk-pd-ev");
+    const recompute = function () {
+      const opens = Math.max(0, parseInt(bx.querySelector("#tdk-pd-opens").value, 10) || 0);
+      const items = {}; let tot = 0;
+      bx.querySelectorAll(".tdk-pdq").forEach(function (inp) {
+        const id = nameToId(inp.getAttribute("data-name")), q = Math.max(0, parseInt(inp.value, 10) || 0);
+        if (id != null && q) { items[id] = (items[id] || 0) + q; tot += (prices[id] || 0) * q; }
+      });
+      evEl.innerHTML = opens > 0 ? 'EV/open: <b>' + money(tot / opens) + '</b> <span class="hv">over ' + opens + ' opens</span>' : '<span class="hv">enter opens to see EV</span>';
+      return { opens: opens, items: items };
+    };
+    bx.querySelectorAll("#tdk-pd-opens, .tdk-pdq").forEach(function (el) { el.addEventListener("input", recompute); });
+    recompute();
+    bx.querySelector("#tdk-pd-save").addEventListener("click", function () {
+      const r = recompute(), d = getPackData(); d[name] = d[name] || {}; d[name].manual = { opens: r.opens, items: r.items }; setPackData(d);
+      bx.querySelector("#tdk-pd-msg").textContent = "Saved ✓ — verdict updates in the Bag."; if (state.view === "inv") paintInv();
+    });
+    bx.querySelector("#tdk-pd-clear").addEventListener("click", function () {
+      const d = getPackData(); delete d[name]; setPackData(d); if (state.view === "inv") paintInv(); openPackOdds(name);
+    });
+    bx.querySelector("#tdk-pd-sync").addEventListener("click", function () { syncPackLog(name, bx.querySelector("#tdk-pd-msg")); });
+  }
+  // B: pull your real supply-pack opens from the Torn API log. Self-discovers the log type; parses defensively and,
+  // if the entry shape doesn't match, dumps a sample to the console so the parser can be finalized. Non-destructive.
+  async function syncPackLog(name, msgEl) {
+    const key = tornKey(); if (!key) { if (msgEl) msgEl.textContent = "Need a Torn API key (⚙ Settings)."; return; }
+    const set = function (h) { if (msgEl) msgEl.innerHTML = h; };
+    set("Syncing from your Torn log…");
+    try {
+      const lt = await gmGet("https://api.torn.com/torn/?selections=logtypes&key=" + encodeURIComponent(key));
+      const types = lt.logtypes || lt || {};
+      const ids = Object.keys(types).filter(function (id) { return /supply pack/i.test(String(types[id])); });
+      const pool = {}, m = PACK_MODELS[name];
+      (m.kind === "draws" ? m.pool : m.outcomes.map(function (o) { return o[1]; })).forEach(function (n) { const i = nameToId(n); if (i != null) pool[i] = 1; });
+      if (!ids.length) { console.log("[TDK] torn/logtypes =", types); set('No "supply pack" log type found — dumped all log types to the console (F12). Paste them to Claude to finish wiring this.'); return; }
+      const d = getPackData(); d[name] = d[name] || {}; const existing = d[name].log = d[name].log || [];
+      const seen = {}; existing.forEach(function (r) { seen[r.key] = 1; });
+      let added = 0; const samples = [];
+      for (let i = 0; i < ids.length; i++) {
+        const res = await gmGet("https://api.torn.com/user/?selections=log&log=" + encodeURIComponent(ids[i]) + "&key=" + encodeURIComponent(key));
+        const log = res.log || {};
+        Object.keys(log).forEach(function (k) {
+          const e = log[k]; if (samples.length < 2) samples.push(e);
+          const dat = e.data || {};
+          const hay = String(e.title || "") + " " + JSON.stringify(dat);
+          if (hay.toLowerCase().indexOf(name.toLowerCase()) < 0) return; // not this pack
+          const items = {};
+          const eat = function (arr) { arr.forEach(function (it) { const id = +(it.id || it.ID || it.item || 0), q = +(it.qty || it.quantity || it.amount || 1); if (id && pool[id]) items[id] = (items[id] || 0) + (q || 1); }); };
+          if (Array.isArray(dat.items)) eat(dat.items);
+          if (Array.isArray(dat.received)) eat(dat.received);
+          if (Array.isArray(dat.reward)) eat(dat.reward);
+          if (Object.keys(items).length && !seen[k]) { existing.push({ key: k, ts: e.timestamp || 0, items: items }); seen[k] = 1; added++; }
+        });
+      }
+      setPackData(d);
+      if (added) { set('Synced <b>' + added + '</b> opens from your Torn log ✓'); if (state.view === "inv") paintInv(); openPackOdds(name); }
+      else { console.log("[TDK] sample supply-pack log entries =", samples); set('Found the log type but couldn\'t auto-parse received items — dumped 2 sample entries to the console (F12). Paste them to Claude to finalize the parser.'); }
+    } catch (e) { set("Sync failed: " + (e.message || e)); }
   }
   function build() {
     host = document.createElement("div");
