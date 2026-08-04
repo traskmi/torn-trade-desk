@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.32.1
+// @version      1.33.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -158,11 +158,15 @@
      ourselves (keyed cc:id), deduped by YATA's update ts, and derive trend/restock cadence from them.
      Stored in GM "stock_hist" = { "cc:id": [[updateTs, quantity], …] }. */
   const HIST_MAX = 576, HIST_AGE = 48 * 3600; // ~2 days at the 5-min poll cadence; both caps now align at 48h
+  // Durable EVENT log (survives the 48h snapshot window) so we can learn restock cadence over days:
+  // GM "stock_events" = { "cc:id": { rs:[[t,amount],…], so:[t,…], q:lastQty } } — rs=restocks, so=sellouts.
+  const EV_MAX = 80, EV_AGE = 30 * 86400; // keep ~80 events / 30 days per item
   function recordStocks(yata) {
     if (!yata || !yata.stocks) return;
     let hist; try { hist = GM_getValue("stock_hist", null) || {}; } catch (e) { hist = {}; }
-    const now = Math.floor(Date.now() / 1000), cutoff = now - HIST_AGE;
-    let changed = false;
+    let ev; try { ev = GM_getValue("stock_events", null) || {}; } catch (e) { ev = {}; }
+    const now = Math.floor(Date.now() / 1000), cutoff = now - HIST_AGE, evCut = now - EV_AGE;
+    let changed = false, evChanged = false;
     Object.keys(yata.stocks).forEach(function (cc) {
       if (!FLY[cc]) return;
       const block = yata.stocks[cc], upd = block.update || now;
@@ -170,13 +174,37 @@
         const key = cc + ":" + it.id, arr = hist[key] || (hist[key] = []);
         const last = arr[arr.length - 1];
         if (last && last[0] === upd) return;                 // YATA hasn't refreshed this country since last point
-        arr.push([upd, it.quantity]); changed = true;
+        const prevQ = last ? last[1] : null, q = it.quantity;
+        arr.push([upd, q]); changed = true;
         while (arr.length && arr[0][0] < cutoff) arr.shift(); // prune by age
         if (arr.length > HIST_MAX) arr.splice(0, arr.length - HIST_MAX); // then by count
+        // Event detection off the qty change between consecutive points.
+        if (prevQ != null) {
+          const rec = ev[key] || (ev[key] = { rs: [], so: [], q: null });
+          if (q > prevQ) { rec.rs.push([upd, q - prevQ]); evChanged = true; }          // restocked (qty jumped up)
+          else if (prevQ > 0 && q === 0) { rec.so.push(upd); evChanged = true; }        // just sold out
+          rec.q = q;
+          // prune events by age + count
+          rec.rs = rec.rs.filter(function (e) { return e[0] >= evCut; }); if (rec.rs.length > EV_MAX) rec.rs.splice(0, rec.rs.length - EV_MAX);
+          rec.so = rec.so.filter(function (t) { return t >= evCut; }); if (rec.so.length > EV_MAX) rec.so.splice(0, rec.so.length - EV_MAX);
+        }
       });
     });
     if (changed) { try { GM_setValue("stock_hist", hist); } catch (e) { } }
-    state._hist = hist; // cache for this render cycle's trend arrows
+    if (evChanged) { try { GM_setValue("stock_events", ev); } catch (e) { } }
+    state._hist = hist; state._ev = ev; // cache for this render cycle
+  }
+  // Predict the next restock from the recorded restock events: median interval between restocks + last restock time.
+  function restockPredict(cc, id) {
+    const ev = state._ev || (function () { try { return GM_getValue("stock_events", null) || {}; } catch (e) { return {}; } })();
+    const rec = ev[cc + ":" + id]; if (!rec || !rec.rs || rec.rs.length < 2) return null;
+    const ts = rec.rs.map(function (e) { return e[0]; }).sort(function (a, b) { return a - b; });
+    const gaps = []; for (let i = 1; i < ts.length; i++) gaps.push(ts[i] - ts[i - 1]);
+    gaps.sort(function (a, b) { return a - b; });
+    const median = gaps[Math.floor(gaps.length / 2)];
+    const lastRs = ts[ts.length - 1], nextAt = lastRs + median;
+    const lastSo = (rec.so && rec.so.length) ? rec.so[rec.so.length - 1] : 0;
+    return { interval: median, lastRs: lastRs, nextAt: nextAt, n: ts.length, lastSo: lastSo };
   }
   // Cross-tab background poll: a GM timestamp lock ensures only ONE fetch per interval across all open Torn tabs.
   const POLL_MS = 5 * 60 * 1000;
@@ -339,6 +367,7 @@
     .chip{font-family:system-ui,sans-serif;font-size:10px;font-weight:700;padding:2px 7px;border-radius:999px}
     .c-ok{color:#4cc281;background:#16281d}.c-low{color:#e2933f;background:#2c2114}.c-out{color:#e5615c;background:#2c1717}
     .tk-tr{font-size:9px;margin-right:4px;vertical-align:middle}.tk-tr.up{color:#4cc281}.tk-tr.dn{color:#e5615c}
+    .rs-eta{font-size:9px;color:#9fc7f0;margin-left:4px;white-space:nowrap;cursor:help;font-family:ui-monospace,monospace}
     .star{color:#d9b441;margin-left:6px}
     .tdk-filter{display:flex;flex-wrap:wrap;gap:6px;padding:0 16px 10px}
     .tdk-fc{font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;cursor:pointer;border:1px solid #3a3729;background:#1b1a14;color:#c3bda9}
@@ -666,9 +695,18 @@
         : x.stock < cap ? '<span class="chip c-low">only ' + x.stock + '</span>'
           : '<span class="chip c-ok">' + x.stock.toLocaleString() + '</span>';
       const tr = stockTrend(x.cc, x.id); // ▲ restocking / ▼ selling since last recorded sample
-      if (tr) sc = (tr.dq > 0
-        ? '<span class="tk-tr up" title="Restocked +' + tr.dq.toLocaleString() + ' since last sample">▲</span>'
-        : '<span class="tk-tr dn" title="Sold ' + Math.abs(tr.dq).toLocaleString() + ' since last sample (~' + Math.abs(Math.round(tr.perMin)) + '/min)">▼</span>') + sc;
+      if (tr) {
+        const rate = Math.abs(Math.round(tr.perMin));
+        const soEta = (tr.dq < 0 && rate > 0 && x.stock > 0) ? ' · sells out in ~' + fmtDur(Math.round(x.stock / rate * 60)) : '';
+        sc = (tr.dq > 0
+          ? '<span class="tk-tr up" title="Restocked +' + tr.dq.toLocaleString() + ' since last sample">▲</span>'
+          : '<span class="tk-tr dn" title="Sold ' + Math.abs(tr.dq).toLocaleString() + ' since last sample (~' + rate + '/min)' + soEta + '">▼</span>') + sc;
+      }
+      const rp = restockPredict(x.cc, x.id); // predicted next restock from recorded restock events
+      if (x.stock === 0 && rp) {
+        const eta = rp.nextAt - Math.floor(Date.now() / 1000);
+        sc += ' <span class="rs-eta" title="Restocks about every ' + fmtDur(rp.interval) + ' (from ' + rp.n + ' seen). Last restock ' + new Date(rp.lastRs * 1000).toLocaleTimeString() + (rp.lastSo ? '; sold out ' + new Date(rp.lastSo * 1000).toLocaleTimeString() : '') + '">⏳ ' + (eta > 0 ? '~' + fmtDur(eta) : 'due') + '</span>';
+      }
       const shortB = (!aff && cash != null && fill) ? '<span class="chip short">free +' + money(x.full - cash) + '</span>' : '';
       const cls = (aff ? "" : (fund ? (isTop ? "fund" : "") : "dim")) + (ocMiss ? " ocmiss" : "");
       const mark = (aff && fill) ? '<span class="star" title="Affordable now & fully in stock — a clean pick">★</span>' : (isTop ? '<span class="star" title="Best funded play — over budget, but reachable by selling stocks (see the banner up top)">💰</span>' : '');
@@ -1355,6 +1393,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.33.0", d: "Aug 4, 2026", c: ["⏳ Restock prediction (foundation): the tool now durably logs every restock (with time + amount) and sell-out (with time) it observes — kept ~30 days, beyond the 48h snapshot window. Out-of-stock rows show a predicted '⏳ ~Xh' next-restock once 2+ restocks have been seen (median interval since the last one; hover for cadence + last restock/sellout times), and depleting ▼ rows now estimate 'sells out in ~X' in the tooltip. Gets sharper the more cycles it watches — honest estimate, not a guarantee"] },
     { v: "1.32.1", d: "Aug 4, 2026", c: ["The 'Profit ×N' full-load column is now sortable too (click the header). It sorts the same as Profit/ea since it's just that × your cap"] },
     { v: "1.32.0", d: "Aug 4, 2026", c: ["Added a 'Profit ×N' column right after Profit/ea — the total profit for a full load at your Cap (profit/ea × cap, e.g. ×23), before airfare. The header updates when you change Cap. Makes the per-trip payoff obvious at a glance"] },
     { v: "1.31.0", d: "Aug 4, 2026", c: ["✈ In-flight countdown + auto-land refresh: while flying, the banner now counts down 'Landing in 4:12' live, and the panel auto-refreshes the moment you touch down — so your 15s immunity timer starts on its own, no manual refresh needed (refresh once after takeoff to arm it). The OC 'ready in…' banner now also ticks down live every second"] },
