@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.34.0
+// @version      1.34.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -1413,6 +1413,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.34.1", d: "Aug 4, 2026", c: ["Added an '⬇ Export restock data' button in the changelog window (click the version). It copies all your recorded restock/stock-change data (with item names) to the clipboard — paste it to Claude and say 'analyze the restock data' to turn the collected observations into a real restock-timing model. This is how the browser-side data reaches the analysis"] },
     { v: "1.34.0", d: "Aug 4, 2026", c: ["Now capturing the RAW stock-increase stream (every +N with its size) unclassified, so we can learn each item's real restock pattern from real data instead of assuming. Why: the Torn wiki confirms (a) selling items back to a foreign shop increases its stock — so a +1 can be a real sell-back, not jitter — and (b) restocks happen 'regularly or irregularly', not only after hitting 0. So a +N can't be perfectly labeled a restock from the number alone; the ⏳ prediction stays a provisional estimate (batch/refill signals) while the data builds. No visible change — this is groundwork for a data-driven restock model over the next few days"] },
     { v: "1.33.2", d: "Aug 4, 2026", c: ["Refined the restock detector for RARE items: ultra-rare stock (ArmaLite M-15A4, Gold Laptop, etc.) lives at 0–1, so a real 0→1 restock IS their whole batch — the tool now judges a +1 against each item's own typical stock level (max ever seen). +1 on an item carrying thousands = still jitter (ignored); +1 refill on an item that never exceeds ~1 = a genuine restock (counted). Best of both"] },
     { v: "1.33.1", d: "Aug 4, 2026", c: ["Good catch: a +1 stock bump is NOT a real restock (real ones land in batches) — it's usually YATA report-timing jitter or a player selling one back. The predictor now only counts a genuine restock (a refill from sold-out, or a big jump that at least doubles the stock), and the ▲ arrow no longer flags those tiny +1/+2 blips — so the restock cadence stays clean"] },
@@ -1693,6 +1694,7 @@
     bx.classList.add("open");
     bx.innerHTML = '<div class="tdk-bh"><div class="tt">Changelog<small> — Torn Trade Desk</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
       '<div class="tdk-upbar"><button class="tdk-btn2" id="tdk-updbtn" title="Check GitHub for a newer version">🔄 Check for updates</button><span class="tdk-upd" id="tdk-upd">v' + curVersion() + '</span></div>' +
+      '<div class="tdk-upbar tdk-upbar2"><button class="tdk-btn2" id="tdk-exp-restock" title="Copy your recorded restock/stock data to the clipboard — paste it to Claude to analyze restock patterns">⬇ Export restock data</button><span class="tdk-upd" id="tdk-exp-msg"></span></div>' +
       (ovCount ? '<div class="tdk-upbar tdk-upbar2"><button class="tdk-btn2" id="tdk-ovreset" title="Clear every keep/sell-ok override you\'ve set">↺ Reset ' + ovCount + ' override' + (ovCount > 1 ? 's' : '') + '</button></div>' : '') +
       CHANGELOG.map(function (e) {
         return '<div class="tdk-clog"><div class="cv">v' + e.v + ' <span>· ' + e.d + '</span></div><ul>' + e.c.map(function (x) { return '<li>' + x + '</li>'; }).join("") + '</ul></div>';
@@ -1704,6 +1706,15 @@
       if (state.view === "inv") paintInv();
       if (ITEM_PAGE.test(location.pathname)) { document.querySelectorAll("li[data-item][data-tdk]").forEach(repaintRow); }
       openChangelog();
+    });
+    const xb = bx.querySelector("#tdk-exp-restock");
+    if (xb) xb.addEventListener("click", function () {
+      let evd = {}; try { evd = GM_getValue("stock_events", null) || {}; } catch (e) { }
+      const meta = state.itemMeta || {}, names = {};
+      Object.keys(evd).forEach(function (k) { const id = k.split(":")[1]; if (meta[id] && meta[id].name) names[id] = meta[id].name; });
+      const payload = { kind: "tdk-restock-export", version: curVersion(), at: Math.floor(Date.now() / 1000), fields: "events[cc:id]={rs:[[t,amount]] restocks, so:[t] sellouts, up:[[t,dq,prevQ]] RAW increases, max, q}", names: names, events: evd };
+      copyText(JSON.stringify(payload));
+      const m = bx.querySelector("#tdk-exp-msg"); if (m) m.textContent = "Copied " + Object.keys(evd).length + " items — paste to Claude";
     });
     bindClose(bx);
   }
