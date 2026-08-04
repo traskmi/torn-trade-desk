@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.21.0
+// @version      1.22.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -147,6 +147,47 @@
     const loc = state.loc || null;
     if (loc !== state.lastLoc) { state.lastLoc = loc; state.filter = loc || "all"; }
   }
+  /* ---------- restock history (foundation for stock-trend + landing prediction) ----------
+     YATA gives only current quantity + a per-country update ts — no velocity. So we record snapshots
+     ourselves (keyed cc:id), deduped by YATA's update ts, and derive trend/restock cadence from them.
+     Stored in GM "stock_hist" = { "cc:id": [[updateTs, quantity], …] }. */
+  const HIST_MAX = 240, HIST_AGE = 48 * 3600; // points kept per item; max age in seconds
+  function recordStocks(yata) {
+    if (!yata || !yata.stocks) return;
+    let hist; try { hist = GM_getValue("stock_hist", null) || {}; } catch (e) { hist = {}; }
+    const now = Math.floor(Date.now() / 1000), cutoff = now - HIST_AGE;
+    let changed = false;
+    Object.keys(yata.stocks).forEach(function (cc) {
+      if (!FLY[cc]) return;
+      const block = yata.stocks[cc], upd = block.update || now;
+      (block.stocks || block).forEach(function (it) {
+        const key = cc + ":" + it.id, arr = hist[key] || (hist[key] = []);
+        const last = arr[arr.length - 1];
+        if (last && last[0] === upd) return;                 // YATA hasn't refreshed this country since last point
+        arr.push([upd, it.quantity]); changed = true;
+        while (arr.length && arr[0][0] < cutoff) arr.shift(); // prune by age
+        if (arr.length > HIST_MAX) arr.splice(0, arr.length - HIST_MAX); // then by count
+      });
+    });
+    if (changed) { try { GM_setValue("stock_hist", hist); } catch (e) { } }
+    state._hist = hist; // cache for this render cycle's trend arrows
+  }
+  // Cross-tab background poll: a GM timestamp lock ensures only ONE fetch per interval across all open Torn tabs.
+  const POLL_MS = 5 * 60 * 1000;
+  function pollStocks() {
+    let last = 0; try { last = GM_getValue("stock_poll_at", 0); } catch (e) { }
+    if (Date.now() - last < POLL_MS - 4000) return;          // another tab polled recently
+    try { GM_setValue("stock_poll_at", Date.now()); } catch (e) { } // claim the slot before fetching
+    gmGet("https://yata.yt/api/v1/travel/export/", 30000).then(recordStocks).catch(function () { });
+  }
+  // Short-term trend from the last two recorded points: ▲ restocked / ▼ being bought / null if <2 points or flat.
+  function stockTrend(cc, id) {
+    const hist = state._hist || (function () { try { return GM_getValue("stock_hist", null) || {}; } catch (e) { return {}; } })();
+    const arr = hist[cc + ":" + id]; if (!arr || arr.length < 2) return null;
+    const a = arr[arr.length - 2], b = arr[arr.length - 1], dq = b[1] - a[1];
+    if (!dq) return null;
+    return { dq: dq, perMin: dq / (Math.max(60, b[0] - a[0]) / 60) };
+  }
   async function refresh() {
     setStatus("Refreshing…");
     const key = tornKey();
@@ -157,6 +198,7 @@
         loadResale(key)
       ]);
       await loadCash(key);
+      recordStocks(yata); // snapshot every item's stock into the rolling history
       const nowS = Math.floor(Date.now() / 1000);
       const rows = [];
       state.updates = {};
@@ -249,6 +291,7 @@
     .gd{color:#4cc281;font-weight:700}
     .chip{font-family:system-ui,sans-serif;font-size:10px;font-weight:700;padding:2px 7px;border-radius:999px}
     .c-ok{color:#4cc281;background:#16281d}.c-low{color:#e2933f;background:#2c2114}.c-out{color:#e5615c;background:#2c1717}
+    .tk-tr{font-size:9px;margin-right:4px;vertical-align:middle}.tk-tr.up{color:#4cc281}.tk-tr.dn{color:#e5615c}
     .star{color:#d9b441;margin-left:6px}
     .tdk-filter{display:flex;flex-wrap:wrap;gap:6px;padding:0 16px 10px}
     .tdk-fc{font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;cursor:pointer;border:1px solid #3a3729;background:#1b1a14;color:#c3bda9}
@@ -485,6 +528,10 @@
       let sc = x.stock === 0 ? '<span class="chip c-out">out</span>'
         : x.stock < cap ? '<span class="chip c-low">only ' + x.stock + '</span>'
           : '<span class="chip c-ok">' + x.stock.toLocaleString() + '</span>';
+      const tr = stockTrend(x.cc, x.id); // ▲ restocking / ▼ selling since last recorded sample
+      if (tr) sc = (tr.dq > 0
+        ? '<span class="tk-tr up" title="Restocked +' + tr.dq.toLocaleString() + ' since last sample">▲</span>'
+        : '<span class="tk-tr dn" title="Sold ' + Math.abs(tr.dq).toLocaleString() + ' since last sample (~' + Math.abs(Math.round(tr.perMin)) + '/min)">▼</span>') + sc;
       const shortB = (!aff && cash != null && fill) ? '<span class="chip short">free +' + money(x.full - cash) + '</span>' : '';
       const cls = aff ? "" : (fund ? (isTop ? "fund" : "") : "dim");
       const mark = (aff && fill) ? '<span class="star" title="Affordable now & fully in stock — a clean pick">★</span>' : (isTop ? '<span class="star" title="Best funded play — over budget, but reachable by selling stocks (see the banner up top)">💰</span>' : '');
@@ -886,6 +933,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.22.0", d: "Aug 4, 2026", c: ["📈 Restock tracking (foundation): the board now quietly records each item's stock level over time (YATA only gives a live number, no history, so we build our own). A ▲/▼ appears by the Stock chip once there are two samples — ▲ restocked, ▼ being bought (hover for the rate). It polls in the background about every 5 min (shared across your open Torn tabs) so history builds even when you're not looking. This is the groundwork for 'what'll likely be in stock when I land' — predictions come once it has enough data"] },
     { v: "1.21.0", d: "Aug 3, 2026", c: ["🎁 Supply packs now support YOUR real drop odds — priced live, so opening becomes a real OPEN/SELL verdict instead of a rough equal-odds guess. Click ✎ on a pack row to (A) enter opens + what you received (straight from torn.report), or (B) ⟳ Sync from Torn log to pull your actual opens automatically. EV = your odds × live prices (never stales); with enough logged opens it shows a ± confidence interval and only calls OPEN/SELL once that interval clears the sell price — otherwise 'need more data (n=…)'. Packs with no data yet keep the equal-odds reference", "Note: the Torn-log sync is beta — it self-discovers the log type and, if the entry format doesn't match, dumps a sample to the console (F12) to finish wiring"] },
     { v: "1.20.0", d: "Aug 3, 2026", c: ["🎁 Supply-pack open-vs-sell reference in the Bag: for the 'open into items' packs (Six-Pack of Alcohol/Energy, Box of Medical Supplies, Box of Grenades) each row now shows a rough open-EV — the pack's contents (from the Torn wiki) priced live × the items catalog — next to its sell price, so you can eyeball whether opening is even in the ballpark. Contents with a wide value spread are flagged ⚠ gamble. Deliberately NOT a hard buy/sell verdict: Torn doesn't publish drop odds and they aren't uniform, so an equal-odds estimate is only a reference — the footnote links to torn.report for the empirical, per-pack call"] },
     { v: "1.19.2", d: "Aug 2, 2026", c: ["📦 Bag no longer over-reports sold items: the scraped snapshot now reconciles as you browse — opening a category tab lists all of that category's items, so anything you've since sold/used (or that shows qty 0) is dropped instead of lingering. Added a ↻ Rescan button + a 'snapshot Nm old' age so you can wipe & rebuild it for odd cases the API-down snapshot can't see"] },
@@ -1454,4 +1502,6 @@
   tradeDescHelper();
   setTimeout(checkInvStatus, 8000);              // first check shortly after load
   setInterval(checkInvStatus, 15 * 60 * 1000);   // then quietly every 15 min — lights the Bag when Torn restores inventory
+  setTimeout(pollStocks, 12000);                 // seed the restock history soon after load
+  setInterval(pollStocks, 60 * 1000);            // check every minute; the GM lock caps actual fetches to one per POLL_MS across tabs
 })();
