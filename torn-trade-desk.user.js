@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.22.0
+// @version      1.23.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -61,7 +61,7 @@
   }
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null };
   const fmtRt = function (min) { const h = Math.floor(min / 60), m = min % 60; return (h ? h + "h" : "") + (m ? m + "m" : "") || "0m"; };
   const TIME_OPTS = [[0, "⏱ Any time"], [60, "≤ 1h"], [90, "≤ 1½h"], [120, "≤ 2h"], [180, "≤ 3h"], [240, "≤ 4h"], [360, "≤ 6h"], [480, "≤ 8h"], [600, "≤ 10h"]];
 
@@ -139,19 +139,24 @@
       const tw = detectTravel(j);
       state.travelWhere = tw.where;             // home | flying | abroad | unknown
       state.loc = tw.where === "abroad" ? tw.cc : null; // preserve existing semantics: abroad cc, else null (drives auto-focus)
+      state.flyTo = tw.where === "flying" ? (tw.cc || null) : null; // destination cc while in transit (null when flying home)
+      state.flyEta = tw.where === "flying" ? (tw.arriveIn || 0) : null; // seconds until landing
     } catch (e) { /* non-fatal */ }
   }
-  // When you land abroad, default the board to that country — but only re-apply when your location actually
-  // changes, so a chip you pick yourself sticks until you move (or fly home → back to All).
+  // The country to auto-focus the board on: where you're standing (abroad) OR, while flying out, your destination
+  // — so you can plan the buy mid-flight. Flying home (no foreign dest) or at home → null → All.
+  function focusCC() { return state.loc || (state.travelWhere === "flying" ? state.flyTo : null) || null; }
+  // Auto-focus, but only re-apply when the focus country actually changes, so a chip you pick yourself sticks
+  // until you move to a new leg (land abroad, take off toward a country, or fly home → back to All).
   function applyLocationFilter() {
-    const loc = state.loc || null;
-    if (loc !== state.lastLoc) { state.lastLoc = loc; state.filter = loc || "all"; }
+    const f = focusCC();
+    if (f !== state.lastLoc) { state.lastLoc = f; state.filter = f || "all"; }
   }
   /* ---------- restock history (foundation for stock-trend + landing prediction) ----------
      YATA gives only current quantity + a per-country update ts — no velocity. So we record snapshots
      ourselves (keyed cc:id), deduped by YATA's update ts, and derive trend/restock cadence from them.
      Stored in GM "stock_hist" = { "cc:id": [[updateTs, quantity], …] }. */
-  const HIST_MAX = 240, HIST_AGE = 48 * 3600; // points kept per item; max age in seconds
+  const HIST_MAX = 576, HIST_AGE = 48 * 3600; // ~2 days at the 5-min poll cadence; both caps now align at 48h
   function recordStocks(yata) {
     if (!yata || !yata.stocks) return;
     let hist; try { hist = GM_getValue("stock_hist", null) || {}; } catch (e) { hist = {}; }
@@ -219,9 +224,12 @@
       state.rows = rows;
       applyLocationFilter(); // auto-focus the board on the country you're standing in
       render();
+      const flyNote = state.flyTo && FLY[state.flyTo]
+        ? " · ✈ heading to " + FLY[state.flyTo].name + (state.flyEta ? " · land in " + fmtRt(Math.ceil(state.flyEta / 60)) : "") + " — planning ahead"
+        : " · ✈ In flight"; // flying home (no foreign dest) → generic
       const locNote = state.travelWhere === "abroad" && FLY[state.loc] ? " · 📍 you're in " + FLY[state.loc].name
         : state.travelWhere === "home" ? " · 🏠 Home"
-          : state.travelWhere === "flying" ? " · ✈ In flight"
+          : state.travelWhere === "flying" ? flyNote
             : "";
       setStatus("Updated " + new Date().toLocaleTimeString() + locNote);
     } catch (e) {
@@ -299,6 +307,8 @@
     .tdk-fc.on{background:#2a2413;border-color:#d9b441;color:#d9b441}
     .tdk-fc.here{border-color:#4cc281;color:#8fe6b3}
     .tdk-fc.here.on{background:#16241c;border-color:#4cc281;color:#8fe6b3}
+    .tdk-fc.heading{border-color:#4a90d9;color:#9fc7f0}
+    .tdk-fc.heading.on{background:#152230;border-color:#4a90d9;color:#9fc7f0}
     .tdk-tsel{margin-left:auto;font-size:11px;font-weight:700;padding:4px 8px;border-radius:999px;cursor:pointer;border:1px solid #3a3729;background:#1b1a14;color:#c3bda9}
     .tdk-tsel:focus{outline:none;border-color:#d9b441;color:#d9b441}
     .tdk-btn2.on{background:#d9b441;color:#14130f;border-color:#d9b441}
@@ -437,9 +447,14 @@
     const chips = [["all", "All"]].concat(present.map(function (cc) { return [cc, FLY[cc].name]; }));
     const timeSel = '<select class="tdk-tsel" id="tdk-tsel" title="Only show destinations within this round-trip time">' +
       TIME_OPTS.map(function (o) { return '<option value="' + o[0] + '"' + (state.maxTrip === o[0] ? " selected" : "") + '>' + o[1] + "</option>"; }).join("") + "</select>";
+    const heading = state.travelWhere === "flying" ? state.flyTo : null; // where you're headed (pre-focus while flying)
     host.querySelector("#tdk-filter").innerHTML = chips.map(function (c) {
-      const here = c[0] === state.loc; // the country you're currently standing in
-      return '<span class="tdk-fc' + (state.filter === c[0] ? " on" : "") + (here ? " here" : "") + '" data-cc="' + c[0] + '"' + (here ? ' title="You\'re here now"' : "") + '>' + (here ? "📍 " : "") + c[1] + '</span>';
+      const here = c[0] === state.loc;          // the country you're currently standing in
+      const toHere = c[0] === heading && !here; // your in-flight destination
+      const mark = here ? "📍 " : toHere ? "✈ " : "";
+      const cls = here ? " here" : toHere ? " heading" : "";
+      const tip = here ? ' title="You\'re here now"' : toHere ? ' title="Heading here — plan your buy before you land"' : "";
+      return '<span class="tdk-fc' + (state.filter === c[0] ? " on" : "") + cls + '" data-cc="' + c[0] + '"' + tip + '>' + mark + c[1] + '</span>';
     }).join("") + timeSel;
   }
   // Home / sell-side helper bar: abroad → "fly home to sell" nudge; home → your sellable-haul summary + a jump
@@ -933,6 +948,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.23.0", d: "Aug 4, 2026", c: ["✈ In-flight pre-focus: while you're flying TO a country, the board now auto-focuses on that destination (blue ✈ chip) so you can plan your buy before you land — the status line shows 'heading to X · land in Ym'. Flying home goes back to All. Pick another chip and it sticks until your next leg", "📈 Restock history now keeps ~2 days per item (was ~20h) so the trends have room to show full restock cycles"] },
     { v: "1.22.0", d: "Aug 4, 2026", c: ["📈 Restock tracking (foundation): the board now quietly records each item's stock level over time (YATA only gives a live number, no history, so we build our own). A ▲/▼ appears by the Stock chip once there are two samples — ▲ restocked, ▼ being bought (hover for the rate). It polls in the background about every 5 min (shared across your open Torn tabs) so history builds even when you're not looking. This is the groundwork for 'what'll likely be in stock when I land' — predictions come once it has enough data"] },
     { v: "1.21.0", d: "Aug 3, 2026", c: ["🎁 Supply packs now support YOUR real drop odds — priced live, so opening becomes a real OPEN/SELL verdict instead of a rough equal-odds guess. Click ✎ on a pack row to (A) enter opens + what you received (straight from torn.report), or (B) ⟳ Sync from Torn log to pull your actual opens automatically. EV = your odds × live prices (never stales); with enough logged opens it shows a ± confidence interval and only calls OPEN/SELL once that interval clears the sell price — otherwise 'need more data (n=…)'. Packs with no data yet keep the equal-odds reference", "Note: the Torn-log sync is beta — it self-discovers the log type and, if the entry format doesn't match, dumps a sample to the console (F12) to finish wiring"] },
     { v: "1.20.0", d: "Aug 3, 2026", c: ["🎁 Supply-pack open-vs-sell reference in the Bag: for the 'open into items' packs (Six-Pack of Alcohol/Energy, Box of Medical Supplies, Box of Grenades) each row now shows a rough open-EV — the pack's contents (from the Torn wiki) priced live × the items catalog — next to its sell price, so you can eyeball whether opening is even in the ballpark. Contents with a wide value spread are flagged ⚠ gamble. Deliberately NOT a hard buy/sell verdict: Torn doesn't publish drop odds and they aren't uniform, so an equal-odds estimate is only a reference — the footnote links to torn.report for the empirical, per-pack call"] },
