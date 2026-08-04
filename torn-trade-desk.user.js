@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.33.1
+// @version      1.33.2
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -161,9 +161,16 @@
   // Durable EVENT log (survives the 48h snapshot window) so we can learn restock cadence over days:
   // GM "stock_events" = { "cc:id": { rs:[[t,amount],…], so:[t,…], q:lastQty } } — rs=restocks, so=sellouts.
   const EV_MAX = 80, EV_AGE = 30 * 86400; // keep ~80 events / 30 days per item
-  // A REAL restock is a batch, not a +1: refill from sold-out (any batch ≥5), or a big jump while stocked (at least
-  // doubled). This rejects YATA report-ordering jitter and player sell-backs (+1/+2) so they don't pollute prediction.
-  function isRealRestock(dq, prevQ) { return dq >= 5 && (prevQ === 0 || dq >= prevQ); }
+  // A REAL restock vs YATA jitter/sell-back, judged against the item's TYPICAL stock (maxQ = max ever seen):
+  //  • low-stock/rare items (maxQ≤10, e.g. ArmaLite/Gold Laptop that live at 0–1): a refill from sold-out is real
+  //    even if it's just 0→1 — that IS their batch.
+  //  • normal items (carry hundreds/thousands): a real restock is a batch refill from empty (≥5) or a jump that at
+  //    least doubles stock — so a +1 on an item sitting at 84 is jitter, not a restock.
+  function isRealRestock(dq, prevQ, maxQ) {
+    if (dq <= 0) return false;
+    if ((maxQ || 0) <= 10) return prevQ === 0;          // rare/low-stock: 0→any = restock
+    return prevQ === 0 ? dq >= 5 : (dq >= prevQ && dq >= 5); // normal: batch refill or a doubling
+  }
   function recordStocks(yata) {
     if (!yata || !yata.stocks) return;
     let hist; try { hist = GM_getValue("stock_hist", null) || {}; } catch (e) { hist = {}; }
@@ -183,8 +190,9 @@
         if (arr.length > HIST_MAX) arr.splice(0, arr.length - HIST_MAX); // then by count
         // Event detection off the qty change between consecutive points.
         if (prevQ != null) {
-          const rec = ev[key] || (ev[key] = { rs: [], so: [], q: null });
-          if (isRealRestock(q - prevQ, prevQ)) { rec.rs.push([upd, q - prevQ]); evChanged = true; } // real restock batch (not +1 jitter/sellback)
+          const rec = ev[key] || (ev[key] = { rs: [], so: [], q: null, max: 0 });
+          rec.max = Math.max(rec.max || 0, prevQ, q);      // running peak stock → tells rare (0–1) items from common (thousands)
+          if (isRealRestock(q - prevQ, prevQ, rec.max)) { rec.rs.push([upd, q - prevQ]); evChanged = true; } // real restock (batch, or a rare item's 0→1)
           else if (prevQ > 0 && q === 0) { rec.so.push(upd); evChanged = true; }        // just sold out
           rec.q = q;
           // prune events by age + count
@@ -223,7 +231,8 @@
     const arr = hist[cc + ":" + id]; if (!arr || arr.length < 2) return null;
     const a = arr[arr.length - 2], b = arr[arr.length - 1], dq = b[1] - a[1];
     if (!dq) return null;
-    return { dq: dq, perMin: dq / (Math.max(60, b[0] - a[0]) / 60), prev: a[1] };
+    let maxQ = 0; for (let i = 0; i < arr.length; i++) if (arr[i][1] > maxQ) maxQ = arr[i][1];
+    return { dq: dq, perMin: dq / (Math.max(60, b[0] - a[0]) / 60), prev: a[1], maxQ: maxQ };
   }
   /* ---------- Faction OC flight guard: don't fly past your Organized Crime's ready time ----------
      v2/user/organizedcrime WORKS while abroad/hospital (unlike the Items page), so we can warn even when Torn
@@ -703,9 +712,9 @@
         if (tr.dq < 0) {
           const soEta = (rate > 0 && x.stock > 0) ? ' · sells out in ~' + fmtDur(Math.round(x.stock / rate * 60)) : '';
           sc = '<span class="tk-tr dn" title="Sold ' + Math.abs(tr.dq).toLocaleString() + ' since last sample (~' + rate + '/min)' + soEta + '">▼</span>' + sc;
-        } else if (isRealRestock(tr.dq, tr.prev)) {
+        } else if (isRealRestock(tr.dq, tr.prev, tr.maxQ)) {
           sc = '<span class="tk-tr up" title="Restocked +' + tr.dq.toLocaleString() + ' since last sample">▲</span>' + sc;
-        } // tiny +1/+2 increase (YATA jitter / sell-back) → no arrow, not a restock
+        } // tiny +1/+2 on a high-stock item (YATA jitter / sell-back) → no arrow, not a restock
       }
       const rp = restockPredict(x.cc, x.id); // predicted next restock from recorded restock events
       if (x.stock === 0 && rp) {
@@ -1398,6 +1407,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.33.2", d: "Aug 4, 2026", c: ["Refined the restock detector for RARE items: ultra-rare stock (ArmaLite M-15A4, Gold Laptop, etc.) lives at 0–1, so a real 0→1 restock IS their whole batch — the tool now judges a +1 against each item's own typical stock level (max ever seen). +1 on an item carrying thousands = still jitter (ignored); +1 refill on an item that never exceeds ~1 = a genuine restock (counted). Best of both"] },
     { v: "1.33.1", d: "Aug 4, 2026", c: ["Good catch: a +1 stock bump is NOT a real restock (real ones land in batches) — it's usually YATA report-timing jitter or a player selling one back. The predictor now only counts a genuine restock (a refill from sold-out, or a big jump that at least doubles the stock), and the ▲ arrow no longer flags those tiny +1/+2 blips — so the restock cadence stays clean"] },
     { v: "1.33.0", d: "Aug 4, 2026", c: ["⏳ Restock prediction (foundation): the tool now durably logs every restock (with time + amount) and sell-out (with time) it observes — kept ~30 days, beyond the 48h snapshot window. Out-of-stock rows show a predicted '⏳ ~Xh' next-restock once 2+ restocks have been seen (median interval since the last one; hover for cadence + last restock/sellout times), and depleting ▼ rows now estimate 'sells out in ~X' in the tooltip. Gets sharper the more cycles it watches — honest estimate, not a guarantee"] },
     { v: "1.32.1", d: "Aug 4, 2026", c: ["The 'Profit ×N' full-load column is now sortable too (click the header). It sorts the same as Profit/ea since it's just that × your cap"] },
