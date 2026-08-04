@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.31.0
+// @version      1.32.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -608,6 +608,7 @@
     renderHomeBar();
     renderOC();
     renderImmunity();
+    const capTh = host.querySelector("#tdk-th-full"); if (capTh) capTh.textContent = "Profit ×" + cap; // keep the full-load header in sync with Cap
     const fbtn = host.querySelector("#tdk-fund"); if (fbtn) fbtn.className = "tdk-btn2" + (fund ? " on" : "");
     let rows = state.filter === "all" ? state.rows : state.rows.filter(function (x) { return x.cc === state.filter; });
     if (state.maxTrip) rows = rows.filter(function (x) { return FLY[x.cc] && FLY[x.cc].rt <= state.maxTrip; }); // round-trip time budget
@@ -674,7 +675,7 @@
       return '<tr class="' + cls + '" data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '">' +
         '<td class="l"><span class="nm">' + x.name + mark + '</span><div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + (FLY[x.cc] ? fmtRt(FLY[x.cc].rt) + ' rt · ' : '') + ago(x.freshS) + ' old' + ocBadge + '</div></td>' +
         '<td class="mv">' + full$(x.buy) + '</td><td class="mv">' + full$(x.sell) + '</td>' +
-        '<td class="gd">' + full$(x.ppi) + '</td><td>' + sc + '</td>' +
+        '<td class="gd">' + full$(x.ppi) + '</td><td class="gd">' + money(x.ppi * cap) + '</td><td>' + sc + '</td>' +
         '<td class="mv">' + money(x.full) + shortB + '</td>' +
         '<td class="ppm">$' + x.ppm.toLocaleString() + '</td></tr>';
     }).join("");
@@ -1353,6 +1354,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.32.0", d: "Aug 4, 2026", c: ["Added a 'Profit ×N' column right after Profit/ea — the total profit for a full load at your Cap (profit/ea × cap, e.g. ×23), before airfare. The header updates when you change Cap. Makes the per-trip payoff obvious at a glance"] },
     { v: "1.31.0", d: "Aug 4, 2026", c: ["✈ In-flight countdown + auto-land refresh: while flying, the banner now counts down 'Landing in 4:12' live, and the panel auto-refreshes the moment you touch down — so your 15s immunity timer starts on its own, no manual refresh needed (refresh once after takeoff to arm it). The OC 'ready in…' banner now also ticks down live every second"] },
     { v: "1.30.0", d: "Aug 4, 2026", c: ["🛡️ Landing-immunity countdown: Torn gives you 15 seconds of attack immunity when you land (abroad or back in Torn). The board now shows a live-ticking '🛡️ Immunity: 12s' banner right after you land (pulsing green), then a red 'you're exposed — shelter your cash' note when it lapses. Ticks off your arrival time; hit Refresh the moment you land to catch the full window. (This is the window that got away while you were buying Pearls)"] },
     { v: "1.29.0", d: "Aug 4, 2026", c: ["⛔ OC flight guard: if you're in a faction Organized Crime, the board now shows how long until it's ready ('⏰ OC ready in 9h 12m') and flags any destination whose ROUND TRIP is longer than that with a ⛔ OC badge + strike-through — because if you're flying when the crime is ready you BLOCK the whole thing (you must be in Torn, not Traveling/Hospital/Jail). Best of all it reads the OC from the API, which still works while you're abroad/hospitalized — exactly when Torn hides the OC from you. Uses ready_at (when planning completes); fails safe by warning early"] },
@@ -1762,7 +1764,7 @@
         '<div class="tdk-oc" id="tdk-oc" style="display:none"></div>' +
         '<div class="tdk-filter" id="tdk-filter"></div>' +
         '<div class="tdk-best" id="tdk-best"><div class="l">Best play</div><div class="p">—</div></div>' +
-        '<table class="tdk"><thead><tr><th class="l">Item</th><th class="so" data-sort="buy">Buy</th><th class="so" data-sort="sell">Resale</th><th class="so" data-sort="ppi">Profit/ea</th><th class="so" data-sort="stock">Stock</th><th class="so" data-sort="full">Load</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
+        '<table class="tdk"><thead><tr><th class="l">Item</th><th class="so" data-sort="buy">Buy</th><th class="so" data-sort="sell">Resale</th><th class="so" data-sort="ppi">Profit/ea</th><th id="tdk-th-full" title="Total profit for a full load (profit/ea × cap), before airfare">Profit ×' + state.cap + '</th><th class="so" data-sort="stock">Stock</th><th class="so" data-sort="full">Load</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
         '<div class="tdk-mug" id="tdk-mug"></div>' +
       '</div>' +
       '<div id="tdk-inv" style="display:none"></div>';
