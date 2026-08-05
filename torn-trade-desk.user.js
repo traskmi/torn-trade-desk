@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.38.1
+// @version      1.38.2
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -418,6 +418,7 @@
     ul.bwlog li{margin:2px 0}
     ul.bwlog code{color:#9fc7f0;font-family:ui-monospace,Consolas,monospace}
     ul.bwlog b{color:#4cc281}
+    ul.bwlog li.muted{color:#7c7566;font-style:italic}
     .tdk-upbar{display:flex;align-items:center;gap:10px;margin:2px 0 10px;flex-wrap:wrap}
     .tdk-upbar2{margin-top:-6px}
     .tdk-upd{font-size:12px;color:#928b78}
@@ -1549,6 +1550,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.38.2", d: "Aug 5, 2026", c: ["🔬 Build watcher fix: it was flagging ~40 'NEW' modules that were just existing Torn modules the watcher saw for the first time as you browsed (it only baselined off the first page). Now there's a 3-day cataloging window — first-sightings are quietly recorded (not alerts), and the 🆕 only fires for genuine code UPDATES (a bundle's hash changing) or truly new modules after the catalog settles. Existing installs get their noisy log auto-cleared once"] },
     { v: "1.38.1", d: "Aug 5, 2026", c: ["Bounty: fixed the ⚔ attack link (Torn retired loader.php — now uses page.php)", "Bounty now also filters New Player Protection: targets under 14 days old can't be attacked by you at all, so they move to a '🛡 new-player protected' section (shows days until they're fair game) instead of dangling in your attackable list"] },
     { v: "1.38.0", d: "Aug 5, 2026", c: ["🛡 Bounty tab now AUTO-HIDES stat-built traps. Since the API won't show battle stats, it reads each target's public personal stats and flags the tells — thousands of xanax taken, tens of thousands of 'defends won' (people who attacked them and LOST), billions in net worth, or a decade-old account still stuck at level 5-6. Those drop into a dimmed '⚠ likely stat-builds — don't attack' section with the reason shown, so a level-6 monster like Tilted (40k defends won) or Wimp_Lo (50k) can't lure you in. Real newbies (≈0 xanax, 0 defends won) stay in your attackable list"] },
     { v: "1.37.1", d: "Aug 5, 2026", c: ["🎯 Bounty tab: each target now has a 🚫 button to hide it from ALL future scans — for the stat-built traps that one-shot you despite a low level (looking at you, Tilted). Hidden targets are remembered; a 'N hidden · clear all' link at the bottom lets you reset. Level really is only a proxy for beatability, so this lets you curate a personal do-not-attack list"] },
@@ -1836,9 +1838,11 @@
     const bx = host.querySelector("#tdk-buyers");
     const ovCount = Object.keys(state.ov).length;
     const blog = (function () { try { return GM_getValue("build_log", []) || []; } catch (e) { return []; } })();
-    const bsec = '<div class="tdk-clog"><div class="cv">🔬 Torn build watcher <span>· ' + (blog.length ? blog.length + ' change' + (blog.length === 1 ? '' : 's') + ' · newest first · fresh code to poke (disclose, don’t exploit)' : 'baselining…') + '</span></div><ul class="bwlog">' +
-      (blog.length ? blog.slice(0, 25).map(function (x) { return '<li>' + (x.type === "new" ? '🆕 <b>NEW</b> ' : '♻ changed ') + '<code>' + x.k + '</code> · ' + new Date(x.t).toLocaleString() + '</li>'; }).join("")
-        : '<li>Changes to Torn’s <code>/builds/</code> modules appear here as you browse — a new module or a rebuilt bundle = freshly-shipped code (best bug-bounty odds). Read-only.</li>') + '</ul></div>';
+    const alerts = blog.filter(function (x) { return x.type !== "seen"; }), catN = blog.length - alerts.length;
+    const bsec = '<div class="tdk-clog"><div class="cv">🔬 Torn build watcher <span>· ' + (alerts.length ? alerts.length + ' new/changed · fresh code to poke (disclose, don’t exploit)' : 'watching — no fresh releases yet') + '</span></div><ul class="bwlog">' +
+      (alerts.length ? alerts.slice(0, 25).map(function (x) { return '<li>' + (x.type === "new" ? '🆕 <b>NEW module</b> ' : '♻ <b>updated</b> ') + '<code>' + x.k + '</code> · ' + new Date(x.t).toLocaleString() + '</li>'; }).join("")
+        : '<li>Nothing yet — a <b>NEW</b> module or an <b>updated</b> bundle (a hash change = fresh code) will show here as you browse. Best bug-bounty odds. Read-only.</li>') +
+      (catN ? '<li class="muted">…plus ' + catN + ' existing module' + (catN === 1 ? '' : 's') + ' cataloged while learning what exists (not alerts).</li>' : '') + '</ul></div>';
     bx.classList.add("open");
     bx.innerHTML = '<div class="tdk-bh"><div class="tt">Changelog<small> — Torn Trade Desk</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
       '<div class="tdk-upbar"><button class="tdk-btn2" id="tdk-updbtn" title="Check GitHub for a newer version">🔄 Check for updates</button><span class="tdk-upd" id="tdk-upd">v' + curVersion() + '</span></div>' +
@@ -2188,23 +2192,31 @@
      Purely observational — reads the /builds/{module}/{name}.{hash}.js bundles the page ALREADY loaded (no fetching).
      A new module or a changed hash = freshly-shipped code = least-scrutinized → best bug-bounty odds. Read-only;
      the point is being EARLY to disclose, never to exploit. */
+  const BUILD_WARMUP = 3 * 86400 * 1000; // 3-day cataloging window: first-seen bundles are "cataloged", not alerts —
+  // the watcher only sees a module once you browse its page, so early first-sightings are just learning-what-exists.
   function recordBuilds() {
     let man; try { man = GM_getValue("build_manifest", null); } catch (e) { man = null; }
     const first = !man; const manifest = man || {};
     let log; try { log = GM_getValue("build_log", []) || []; } catch (e) { log = []; }
-    let changed = false; const now = Date.now();
+    let started; try { started = GM_getValue("build_started", 0); } catch (e) { started = 0; }
+    const now = Date.now();
+    // Migration: a pre-warmup install has a manifest + a log full of cataloging noise (existing modules first-seen
+    // while browsing — NOT real Torn releases). Reset that log, start the clock, mark seen.
+    if (!started) { started = now; try { GM_setValue("build_started", started); GM_setValue("build_log", []); GM_setValue("build_seen_at", now); } catch (e) { } log = []; }
+    const warming = (now - started) < BUILD_WARMUP;
+    let changed = false;
     (performance.getEntriesByType ? performance.getEntriesByType("resource") : []).forEach(function (r) {
       const m = String(r.name || "").match(/\/builds\/([^/]+)\/([^/]+?)\.([0-9a-f]{8,})\.js(?:$|\?)/);
       if (!m) return;
       const key = m[1] + "/" + m[2], hash = m[3], prev = manifest[key];
-      if (!prev) { manifest[key] = hash; if (!first) { log.unshift({ k: key, h: hash, t: now, type: "new" }); changed = true; } }
-      else if (prev !== hash) { log.unshift({ k: key, h: hash, ph: prev, t: now, type: "changed" }); manifest[key] = hash; changed = true; }
+      if (!prev) { manifest[key] = hash; if (!first) { log.unshift({ k: key, h: hash, t: now, type: warming ? "seen" : "new" }); changed = true; } } // first-seen: cataloging during warm-up, a real NEW module after
+      else if (prev !== hash) { log.unshift({ k: key, h: hash, ph: prev, t: now, type: "changed" }); manifest[key] = hash; changed = true; } // hash change = fresh code — ALWAYS an alert
     });
-    if (log.length > 80) log.length = 80;
+    if (log.length > 100) log.length = 100;
     try { GM_setValue("build_manifest", manifest); if (changed || first) GM_setValue("build_log", log); } catch (e) { }
     updateBuildBadge();
   }
-  function buildUnseen() { try { const log = GM_getValue("build_log", []) || [], seen = GM_getValue("build_seen_at", 0); return log.filter(function (x) { return x.t > seen; }).length; } catch (e) { return 0; } }
+  function buildUnseen() { try { const log = GM_getValue("build_log", []) || [], seen = GM_getValue("build_seen_at", 0); return log.filter(function (x) { return x.t > seen && x.type !== "seen"; }).length; } catch (e) { return 0; } } // "seen" (cataloged) never badges
   function updateBuildBadge() {
     const v = host && host.querySelector("#tdk-ver"); if (!v) return;
     const n = buildUnseen();
