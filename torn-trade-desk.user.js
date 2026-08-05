@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.40.0
+// @version      1.40.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -1585,6 +1585,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.40.1", d: "Aug 5, 2026", c: ["✈ Travel auto-detect now works for real: reads your Torn property (verified API shape — checks modifications.airstrip & staff.pilot as 0/1 flags, keyed to your actual residence, and catches a Private Island you RENT), and auto-applies Airstrip −30% once on load if you have it. Fixed a false-positive where the first cut matched the word 'airstrip' even when you didn't have one"] },
     { v: "1.40.0", d: "Aug 5, 2026", c: ["✈ Renamed 💰 Fund → ✈ Travel and it now uses YOUR real flight time: pick your method in ⚙ Settings (Standard / Airstrip −30% [Private Island + Pilot] / WLT −50% / Business Class −70%, + optional −25% 'Mailing Yourself Abroad' book) and the whole board re-times — accurate $/min, the ≤time filter, the OC flight-guard, and the shown round-trips all match your setup (verified vs the Torn wiki; ±3% game variance)", "Auto-detect: ⚙ Settings reads your Torn property and offers one-click 'Use Airstrip −30%' if it finds an Airstrip + Pilot", "Cap now auto-grows to your true carry max the moment you open the travel page (e.g. after adding the Airstrip+Pilot's +items) — never shrinks it"] },
     { v: "1.39.0", d: "Aug 5, 2026", c: ["🛒 Item Market pages now annotate live: a context banner (market value · cheapest bazaar · top trader bid) with a 💰/🔒 sell-guard mirror (click to toggle keep⇄sell), and any listing priced BELOW the top live trader bid gets outlined green with a ⚡+profit tag — a crossed-market flip you can buy right there and trade for more", "🏬 City shops (shops.php) now show a 💰+spread flip tag on the shelf: each item compares its shop price to market value, so you can spot 'buy here, resell higher' straight off the shelf (muted 'mkt $X' on the rest)"] },
     { v: "1.38.3", d: "Aug 5, 2026", c: ["🎯 Bounty: hospital/jail targets now show 'out in ~18m' (their release countdown), and the unavailable list is sorted soonest-out first — so you can see who's about to be fair game and time your hit"] },
@@ -1824,43 +1825,78 @@
       updateReset();
     }, 1000);
   }
-  // Auto-detect the user's flight method from their Torn property: an Airstrip (property modification) + Pilot
-  // (staff) → the Airstrip −30% method. Defensive about the exact API shape (flatten + case-insensitive match) until
-  // verified against a real `user/?selections=properties` payload — it REPORTS what it found and offers one-click
-  // apply rather than silently overriding a manual pick.
-  function detectTravelProp() {
-    const el = host.querySelector("#tdk-set-tdetect"); if (!el) return;
+  // ---------- Auto-detect the user's flight method from their Torn property ----------
+  // Verified shape (user/?selections=properties, Aug 5 2026): properties is an object keyed by property id; each has
+  // modifications:{airstrip:0|1,…} and staff:{pilot:0|1,…} as NUMERIC flags (so check the VALUE, not the key's
+  // presence — every property carries an "airstrip" key). Airstrip −30% needs BOTH modifications.airstrip>0 AND
+  // staff.pilot>0. Current residence = profile.property_id; the perk can also come from a Private Island you RENT
+  // (that property is in the payload with rented.user_id === your id), so fall back to a perked rental you occupy.
+  function updateTravelEff() {
+    const el = host && host.querySelector("#tdk-set-teff"); if (!el) return;
+    const pct = Math.round((1 - travelMult()) * 100);
+    const ex = FLY.uae ? " · e.g. UAE " + fmtRt(FLY.uae.rt) + " → " + fmtRt(rtOf("uae")) : "";
+    el.innerHTML = pct > 0 ? "Effective flight time: <b>−" + pct + "%</b> vs Standard" + ex + " · ±3% Torn variance" : "Standard flight times" + ex;
+  }
+  function applyTravelChange(manual) {
+    GM_setValue("travelMethod", state.travelMethod); GM_setValue("travelBook", state.travelBook);
+    if (manual) GM_setValue("travel_manual", true); // a manual pick freezes auto-detect from re-flipping it
+    if (state.rows && state.rows.length) recomputePpm();
+    const sel = host && host.querySelector("#tdk-set-tmethod"); if (sel) sel.value = state.travelMethod;
+    updateTravelEff(); render();
+  }
+  function probeTravelProp() { // → Promise<{ok, perk, name, via, air, pilot, reason}>
     const key = GM_getValue("torn_key", "");
-    if (!key) { el.innerHTML = "Add a Torn key above to auto-detect your Private Island / Airstrip / Pilot."; return; }
-    el.textContent = "🔍 Checking your property…";
-    gmGet("https://api.torn.com/user/?selections=properties&key=" + encodeURIComponent(key)).then(function (j) {
-      if (!j || j.error) { el.innerHTML = '<span class="serr">Couldn’t read properties: ' + ((j && j.error && j.error.error) || "no data") + '</span> — pick your method manually above.'; return; }
-      const props = j.properties || {};
-      const list = Array.isArray(props) ? props : Object.values(props);
-      if (!list.length) { el.innerHTML = "No properties returned — pick your method manually above."; return; }
-      const blob = function (v) { try { return JSON.stringify(v == null ? "" : v).toLowerCase(); } catch (e) { return String(v).toLowerCase(); } };
-      // current residence = the property flagged current/staying; else the Private Island; else the first
-      const cur = list.find(function (p) { return /current|staying|residence/.test(blob(p.status)); })
-        || list.find(function (p) { return /private island/.test(blob(p.property) + blob(p.property_type)); })
-        || list[0];
-      const hay = blob(cur.modifications) + " " + blob(cur.staff) + " " + blob(cur);
-      const hasAir = /airstrip/.test(hay), hasPilot = /pilot/.test(hay);
-      const pname = (cur.property || "your property");
-      if (hasAir) {
-        el.innerHTML = "Detected: <b>" + pname + "</b> · Airstrip ✓" + (hasPilot ? " · Pilot ✓" : " · Pilot ？") +
-          " → Airstrip <b>−30%</b>. " + (state.travelMethod === "air" ? "<b>Active.</b>" : '<a href="#" id="tdk-tapply" class="prof">Use it</a>');
-        const ap = host.querySelector("#tdk-tapply");
-        if (ap) ap.addEventListener("click", function (e) {
-          e.preventDefault(); state.travelMethod = "air"; GM_setValue("travelMethod", "air");
-          const sel = host.querySelector("#tdk-set-tmethod"); if (sel) sel.value = "air";
-          if (state.rows && state.rows.length) recomputePpm();
-          const eff = host.querySelector("#tdk-set-teff"); if (eff) { const pct = Math.round((1 - travelMult()) * 100); eff.innerHTML = "Effective flight time: <b>−" + pct + "%</b> vs Standard · ±3% Torn variance"; }
-          detectTravelProp(); render();
-        });
-      } else {
-        el.innerHTML = "Current property: <b>" + pname + "</b> — no Airstrip found (so Standard flight time). Add an Airstrip + Pilot in-game for −30%, or pick a method manually.";
+    if (!key) return Promise.resolve({ ok: false, reason: "no Torn key" });
+    return Promise.all([
+      gmGet("https://api.torn.com/user/?selections=profile&key=" + encodeURIComponent(key)).catch(function () { return null; }),
+      gmGet("https://api.torn.com/user/?selections=properties&key=" + encodeURIComponent(key)).catch(function () { return null; })
+    ]).then(function (res) {
+      const prof = res[0], pj = res[1];
+      if (!pj || pj.error) return { ok: false, reason: (pj && pj.error && pj.error.error) || "no property data" };
+      const props = pj.properties || {};
+      const myId = prof && !prof.error ? prof.player_id : null;
+      const residenceId = prof && !prof.error ? prof.property_id : null;
+      const hasPerk = function (p) { return !!(p && p.modifications && p.staff && +p.modifications.airstrip > 0 && +p.staff.pilot > 0); };
+      let cur = residenceId != null ? props[String(residenceId)] : null, via = "residence";
+      if (!hasPerk(cur)) { // living in a rented PI? scan properties you rent (rented.user_id === you) for the perk
+        const rental = Object.keys(props).map(function (k) { return props[k]; })
+          .find(function (p) { return p && p.rented && myId != null && p.rented.user_id === myId && hasPerk(p); });
+        if (rental) { cur = rental; via = "rented"; }
       }
-    }).catch(function (e) { el.innerHTML = '<span class="serr">Detect failed: ' + (e.message || e) + '</span> — pick manually above.'; });
+      return {
+        ok: true, perk: hasPerk(cur), name: cur ? (cur.property || "your property") : null, via: via,
+        air: !!(cur && cur.modifications && +cur.modifications.airstrip > 0),
+        pilot: !!(cur && cur.staff && +cur.staff.pilot > 0)
+      };
+    }).catch(function (e) { return { ok: false, reason: (e.message || e) }; });
+  }
+  function detectTravelProp() { // Settings UI: report + (auto-)apply
+    const el = host.querySelector("#tdk-set-tdetect"); if (!el) return;
+    if (!GM_getValue("torn_key", "")) { el.innerHTML = "Add a Torn key above to auto-detect your Private Island / Airstrip / Pilot."; return; }
+    el.textContent = "🔍 Checking your property…";
+    probeTravelProp().then(function (r) {
+      if (!r.ok) { el.innerHTML = '<span class="serr">Couldn’t read properties: ' + r.reason + '</span> — pick your method manually above.'; return; }
+      GM_setValue("travel_detect_done", true);
+      if (r.perk) {
+        if (!GM_getValue("travel_manual", false) && state.travelMethod !== "air") { state.travelMethod = "air"; applyTravelChange(false); }
+        const applied = state.travelMethod === "air";
+        el.innerHTML = "Detected: <b>" + r.name + "</b>" + (r.via === "rented" ? " (rented)" : "") + " · Airstrip ✓ · Pilot ✓ → Airstrip <b>−30%</b>. " +
+          (applied ? "<b>Active ✓</b>" : '<a href="#" id="tdk-tapply" class="prof">Use it</a>');
+        const ap = host.querySelector("#tdk-tapply");
+        if (ap) ap.addEventListener("click", function (e) { e.preventDefault(); state.travelMethod = "air"; applyTravelChange(true); detectTravelProp(); });
+      } else {
+        el.innerHTML = "Current property: <b>" + (r.name || "unknown") + "</b> — " + (r.air && !r.pilot ? "Airstrip but no Pilot (both needed for −30%)" : "no active Airstrip") + ". Standard flight time; pick a method manually if that’s wrong.";
+      }
+    });
+  }
+  function autoDetectTravelOnce() { // one-time, silent: correct the board on first load without opening Settings
+    if (GM_getValue("travel_manual", false) || GM_getValue("travel_detect_done", false)) return;
+    if (!GM_getValue("torn_key", "")) return;
+    probeTravelProp().then(function (r) {
+      if (!r.ok) return; // don't set the done-flag on failure, so it retries next load
+      GM_setValue("travel_detect_done", true);
+      if (r.perk && state.travelMethod !== "air") { state.travelMethod = "air"; GM_setValue("travelMethod", "air"); if (state.rows && state.rows.length) recomputePpm(); render(); }
+    });
   }
   function openSettings() {
     const bx = host.querySelector("#tdk-buyers");
@@ -1891,24 +1927,13 @@
       state.inv = null; state.resale = null; state.itemMeta = null; state.cash = null; state.stocks = null;
       host.querySelector("#tdk-set-msg").textContent = " Saved ✓ — caches cleared, hit Refresh";
     });
-    // ✈ Travel method: persist + live-re-price the board (no refetch needed — just re-time the existing rows)
-    const effLine = function () {
-      const el = host.querySelector("#tdk-set-teff"); if (!el) return;
-      const pct = Math.round((1 - travelMult()) * 100);
-      const ex = FLY.uae ? " · UAE " + fmtRt(FLY.uae.rt) + " → " + fmtRt(rtOf("uae")) : "";
-      el.innerHTML = pct > 0 ? "Effective flight time: <b>−" + pct + "%</b> vs Standard" + ex + " · ±3% Torn variance" : "Standard flight times" + ex;
-    };
-    const applyTravel = function () {
-      GM_setValue("travelMethod", state.travelMethod); GM_setValue("travelBook", state.travelBook);
-      if (state.rows && state.rows.length) recomputePpm();
-      effLine(); render();
-    };
+    // ✈ Travel method: persist (as a MANUAL pick) + live-re-price the board — no refetch, just re-time the rows
     const mSel = host.querySelector("#tdk-set-tmethod");
-    if (mSel) mSel.addEventListener("change", function () { state.travelMethod = this.value; applyTravel(); });
+    if (mSel) mSel.addEventListener("change", function () { state.travelMethod = this.value; applyTravelChange(true); });
     const bChk = host.querySelector("#tdk-set-tbook");
-    if (bChk) bChk.addEventListener("change", function () { state.travelBook = this.checked; applyTravel(); });
-    effLine();
-    detectTravelProp(); // fills #tdk-set-tdetect from your Torn property (Airstrip + Pilot), if a key is set
+    if (bChk) bChk.addEventListener("change", function () { state.travelBook = this.checked; applyTravelChange(true); });
+    updateTravelEff();
+    detectTravelProp(); // fills #tdk-set-tdetect from your Torn property (Airstrip + Pilot), and auto-applies once
     host.querySelector("#tdk-set-test").addEventListener("click", function () {
       const k = host.querySelector("#tdk-set-torn").value.trim(), out = host.querySelector("#tdk-set-out");
       if (!k) { out.textContent = "Enter a Torn key first."; return; }
@@ -2472,6 +2497,7 @@
   scrapeTripBought();
   setTimeout(recordBuilds, 5000);                // snapshot the /builds/ bundles this page loaded
   setInterval(recordBuilds, 60 * 1000);          // catch SPA-loaded chunks + hash changes as you browse
+  setTimeout(autoDetectTravelOnce, 9000);        // one-time: read your property → auto-set Airstrip −30% if you have it
   setTimeout(checkInvStatus, 8000);              // first check shortly after load
   setInterval(checkInvStatus, 15 * 60 * 1000);   // then quietly every 15 min — lights the Bag when Torn restores inventory
   setTimeout(pollStocks, 12000);                 // seed the restock history soon after load
