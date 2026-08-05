@@ -114,6 +114,37 @@ function poll() {
   save_(d);
 }
 
+/**
+ * ONE-TIME SEED from the userscript's local data (e.g. hours you already collected before deploying this).
+ * HOW:  1. In Torn Trade Desk → changelog window → click ⬇ Export (copies the blob to your clipboard).
+ *       2. Paste that blob between the backticks below, replacing PASTE_EXPORT_JSON_HERE.
+ *       3. Pick `seedFromBlob` in the toolbar dropdown and Run (no redeploy needed — this writes straight to the
+ *          Drive file that doGet serves). Check View → Executions / Logs for the "Seeded:" line.
+ *       4. Clear the blob back to the placeholder when done (keeps the file tidy).
+ * SAFE: runs as YOU in the editor, not a public endpoint. Events merge by timestamp (idempotent); seasonal only
+ * FILLS buckets the poller doesn't have yet (never overwrites the poller's own ongoing data → no double-count).
+ */
+function seedFromBlob() {
+  var BLOB = `PASTE_EXPORT_JSON_HERE`;
+  if (BLOB.indexOf('PASTE_EXPORT') === 0) { Logger.log('Paste your ⬇ Export blob between the backticks first.'); return; }
+  var p = JSON.parse(BLOB);
+  var d = load_(), evIn = p.events || {}, seaIn = p.seasonal || {};
+  var addedEv = 0, filled = 0;
+  Object.keys(evIn).forEach(function (k) {
+    var s = evIn[k], t = d.events[k] || (d.events[k] = { rs: [], so: [], up: [], q: null, max: 0 });
+    var mrg = function (dArr, sArr, kf) { var seen = {}; (dArr || []).forEach(function (e) { seen[kf(e)] = 1; }); (sArr || []).forEach(function (e) { if (!seen[kf(e)]) { dArr.push(e); addedEv++; } }); };
+    mrg(t.rs, s.rs, function (e) { return e[0]; }); mrg(t.so, s.so, function (x) { return x; }); t.up = t.up || []; mrg(t.up, s.up, function (e) { return e[0]; });
+    t.rs.sort(function (a, b) { return a[0] - b[0]; }); t.so.sort(function (a, b) { return a - b; }); t.up.sort(function (a, b) { return a[0] - b[0]; });
+    t.max = Math.max(t.max || 0, s.max || 0); if (t.q == null) t.q = s.q;
+  });
+  Object.keys(seaIn).forEach(function (k) {
+    var dk = d.seasonal[k] || (d.seasonal[k] = {});
+    Object.keys(seaIn[k]).forEach(function (b) { if (!dk[b]) { dk[b] = seaIn[k][b].slice(); filled++; } }); // gap-fill only
+  });
+  save_(d);
+  Logger.log('Seeded: +' + addedEv + ' events merged, ' + filled + ' seasonal buckets filled. Items now: ' + Object.keys(d.events).length);
+}
+
 /** Web-app read endpoint: returns the collected dataset in the same shape the userscript's ⬇ Export uses. */
 function doGet(e) {
   var d = load_();
