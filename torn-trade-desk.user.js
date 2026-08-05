@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.42.1
+// @version      1.43.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -190,8 +190,9 @@
     if (!yata || !yata.stocks) return;
     let hist; try { hist = GM_getValue("stock_hist", null) || {}; } catch (e) { hist = {}; }
     let ev; try { ev = GM_getValue("stock_events", null) || {}; } catch (e) { ev = {}; }
+    let sea; try { sea = GM_getValue("stock_seasonal", null) || {}; } catch (e) { sea = {}; } // persistent, NEVER pruned
     const now = Math.floor(Date.now() / 1000), cutoff = now - HIST_AGE, evCut = now - EV_AGE;
-    let changed = false, evChanged = false;
+    let changed = false, evChanged = false, seaChanged = false;
     Object.keys(yata.stocks).forEach(function (cc) {
       if (!FLY[cc]) return;
       const block = yata.stocks[cc], upd = block.update || now;
@@ -199,7 +200,7 @@
         const key = cc + ":" + it.id, arr = hist[key] || (hist[key] = []);
         const last = arr[arr.length - 1];
         if (last && last[0] === upd) return;                 // YATA hasn't refreshed this country since last point
-        const prevQ = last ? last[1] : null, q = it.quantity;
+        const prevT = last ? last[0] : null, prevQ = last ? last[1] : null, q = it.quantity;
         arr.push([upd, q]); changed = true;
         while (arr.length && arr[0][0] < cutoff) arr.shift(); // prune by age
         if (arr.length > HIST_MAX) arr.splice(0, arr.length - HIST_MAX); // then by count
@@ -208,6 +209,17 @@
           const rec = ev[key] || (ev[key] = { rs: [], so: [], q: null, max: 0, up: [] });
           rec.max = Math.max(rec.max || 0, prevQ, q);      // running peak stock → tells rare (0–1) items from common (thousands)
           const dq = q - prevQ;
+          // SEASONAL sell-rate bank (persistent, NEVER pruned): attribute each selling interval's sold-qty + seconds
+          // to a day-of-week × hour bucket (TCT = UTC), so a future model can predict depletion over the ACTUAL
+          // arrival window (weekend/night pace differs). stock_hist is pruned at 48h → we must accumulate this now.
+          if (dq < 0 && prevT != null) {
+            const dt = upd - prevT;
+            if (dt > 0 && dt <= 3600) {                     // skip long browser-closed gaps (unreliable rate)
+              const d = new Date(((prevT + upd) / 2) * 1000), b = d.getUTCDay() * 24 + d.getUTCHours(); // midpoint → 0..167
+              const sk = sea[key] || (sea[key] = {}), cell = sk[b] || (sk[b] = [0, 0, 0]);               // [soldQty, seconds, samples]
+              cell[0] += -dq; cell[1] += dt; cell[2] += 1; seaChanged = true;
+            }
+          }
           // RAW increase stream — EVERY +N with its size + prior qty, UNfiltered (sellbacks + jitter + restocks all).
           // Wiki-confirmed: sell-backs increase stock, and restocks are regular/irregular batches — so a +N can't be
           // classified as "restock" from the number alone. Capture raw now; characterize empirically after a few days.
@@ -224,7 +236,8 @@
     });
     if (changed) { try { GM_setValue("stock_hist", hist); } catch (e) { } }
     if (evChanged) { try { GM_setValue("stock_events", ev); } catch (e) { } }
-    state._hist = hist; state._ev = ev; // cache for this render cycle
+    if (seaChanged) { try { GM_setValue("stock_seasonal", sea); } catch (e) { } }
+    state._hist = hist; state._ev = ev; state._seasonal = sea; // cache for this render cycle
   }
   const med = function (arr) { if (!arr.length) return 0; const a = arr.slice().sort(function (x, y) { return x - y; }); return a[Math.floor(a.length / 2)]; };
   // From recorded restock/sellout events, derive: full CYCLE (interval between restocks) + its parts — typical
@@ -1641,6 +1654,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.43.0", d: "Aug 5, 2026", c: ["📅 Started banking SEASONAL sell-rate data (persistent, never pruned): every selling interval is logged into a day-of-week × hour bucket (TCT), so down the road we can build a real model that predicts arrival stock differently for a quiet Sunday morning vs a busy weeknight. It just collects quietly now — raw stock history only lives 48h, so we had to start accumulating this compact aggregate to ever have the weekend/weekday history. The ⬇ Export button now includes it (shows how many buckets are banked)"] },
     { v: "1.42.1", d: "Aug 5, 2026", c: ["🛬 Landing prediction now estimates the sell-rate from ALL recorded history — a time-weighted average over every selling interval, not just the last 2 samples — so the “sells out in ~X” / ↻fresh / ⚠gone calls get steadier and keep improving as more data accrues (the ▲/▼ arrows still reflect the latest sample). Tooltip shows the avg rate + how many intervals it’s based on"] },
     { v: "1.42.0", d: "Aug 5, 2026", c: ["🛬 New “Landing” column: predicts the stock state when you'd touch down if you flew there RIGHT NOW — combines your one-way flight time (travel method), the current buy-rate, and the restock cycle. Shows ✓ stocked / ◑ partial / ↻ fresh (restocks before you land) / ⚠ gone (sells out before you land) / ✗ out / ? (not enough history). Hover for the reasoning + timing. Answers “will it be out-and-restocked by the time I get there?” — no longer only shows restock info when an item is currently out"] },
     { v: "1.41.0", d: "Aug 5, 2026", c: ["🔬 Build watcher — killed the false alarms: it now only flags a hash it has NEVER seen (a bundle bouncing back to an earlier hash is a flap from browsing different pages, not fresh code), debounces repeat changes of the same module (shows ×N), and stops badging legacy “-old” bundles like header-old that Torn is retiring. One-time purge of the header-old flap noise already logged. Fresh-code alerts now show a short hash so you can tell real drops apart"] },
@@ -2053,11 +2067,14 @@
     const xb = bx.querySelector("#tdk-exp-restock");
     if (xb) xb.addEventListener("click", function () {
       let evd = {}; try { evd = GM_getValue("stock_events", null) || {}; } catch (e) { }
+      let sead = {}; try { sead = GM_getValue("stock_seasonal", null) || {}; } catch (e) { }
       const meta = state.itemMeta || {}, names = {};
       Object.keys(evd).forEach(function (k) { const id = k.split(":")[1]; if (meta[id] && meta[id].name) names[id] = meta[id].name; });
-      const payload = { kind: "tdk-restock-export", version: curVersion(), at: Math.floor(Date.now() / 1000), fields: "events[cc:id]={rs:[[t,amount]] restocks, so:[t] sellouts, up:[[t,dq,prevQ]] RAW increases, max, q}", names: names, events: evd };
+      Object.keys(sead).forEach(function (k) { const id = k.split(":")[1]; if (meta[id] && meta[id].name) names[id] = meta[id].name; });
+      let buckets = 0; Object.keys(sead).forEach(function (k) { buckets += Object.keys(sead[k]).length; });
+      const payload = { kind: "tdk-restock-export", version: curVersion(), at: Math.floor(Date.now() / 1000), fields: "events[cc:id]={rs:[[t,amount]] restocks, so:[t] sellouts, up:[[t,dq,prevQ]] RAW increases, max, q}; seasonal[cc:id]={bucket→[soldQty,seconds,samples]}, bucket = UTC(dayOfWeek 0=Sun..6)*24 + hourOfDay(0..23)", names: names, events: evd, seasonal: sead };
       copyText(JSON.stringify(payload));
-      const m = bx.querySelector("#tdk-exp-msg"); if (m) m.textContent = "Copied " + Object.keys(evd).length + " items — paste to Claude";
+      const m = bx.querySelector("#tdk-exp-msg"); if (m) m.textContent = "Copied " + Object.keys(evd).length + " items · " + buckets + " seasonal buckets — paste to Claude";
     });
     try { GM_setValue("build_seen_at", Date.now()); } catch (e) { } updateBuildBadge(); // opening the changelog marks build changes as seen
     bindClose(bx);
