@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.36.0
+// @version      1.37.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -413,6 +413,11 @@
     .tdk-sm{padding:7px 9px;font-size:12px}
     .tdk-ver{cursor:pointer;border-bottom:1px dotted #928b78}
     .tdk-ver:hover{color:#d9b441;border-bottom-color:#d9b441}
+    .tdk-ver[data-new]:not([data-new=""])::after{content:" 🆕" attr(data-new);color:#4cc281;font-weight:800;border:none}
+    ul.bwlog{margin:4px 0 0;padding-left:18px;color:#c3bda9;font-size:12px;line-height:1.5}
+    ul.bwlog li{margin:2px 0}
+    ul.bwlog code{color:#9fc7f0;font-family:ui-monospace,Consolas,monospace}
+    ul.bwlog b{color:#4cc281}
     .tdk-upbar{display:flex;align-items:center;gap:10px;margin:2px 0 10px;flex-wrap:wrap}
     .tdk-upbar2{margin-top:-6px}
     .tdk-upd{font-size:12px;color:#928b78}
@@ -1504,6 +1509,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.37.0", d: "Aug 5, 2026", c: ["🔬 Torn build watcher (for bug-bounty hunting): quietly notes the /builds/ module bundles each page loads and flags when a NEW module ships or a bundle's code changes — a 🆕 badge appears on the version chip, and clicking it (the changelog) lists the changes, newest first. Fresh code = least-scrutinized = best bug-bounty odds, so this tells you when to be early. Purely read-only (it just watches what already loaded); the point is to DISCLOSE to Torn, never exploit"] },
     { v: "1.36.0", d: "Aug 4, 2026", c: ["🎯 New Bounty tab: find collectible bounties you might actually win. Set a reward range ($50k–$250k default) + a max target level (defaults to your level), and it pulls the bounty board, keeps the lowest-level targets (your best shot), and shows each one's LIVE status (✅ attackable now vs ⛔ in hospital) and faction — with a 'solo only' toggle so you only see targets whose faction can't retaliate. Click a name to jump to the attack. Honest: level is a proxy, not stats — spy first if you can, and a loss just costs energy + a short hospital stay"] },
     { v: "1.35.1", d: "Aug 4, 2026", c: ["OC guard fix: while your Organized Crime is still RECRUITING, Torn's API reports a placeholder ready-time that's wrong (it jumps to the real value only once planning starts — which is why it briefly showed ~10h then corrected to match Torn's 2d). It no longer shows that misleading countdown or flags flights during recruiting — it just says 'recruiting, clear to travel'. Once planning begins, the real countdown + ⛔ flight flags kick in"] },
     { v: "1.35.0", d: "Aug 4, 2026", c: ["⏳ Restock estimate now shows the whole cycle: out-of-stock rows show '⏳ ~36m · +500' (next restock + typical batch size), and hovering breaks down the full cycle — 'restocks ~500 → sells out in ~18m → out ~1h before it returns'. So you can see how many each restock brings and how fast it sells out.", "Removed the Profit/ea column — it's redundant with 'Profit ×N' (which already respects your Cap). Want per-item profit? Just set Cap to 1"] },
@@ -1786,11 +1792,16 @@
   function openChangelog() {
     const bx = host.querySelector("#tdk-buyers");
     const ovCount = Object.keys(state.ov).length;
+    const blog = (function () { try { return GM_getValue("build_log", []) || []; } catch (e) { return []; } })();
+    const bsec = '<div class="tdk-clog"><div class="cv">🔬 Torn build watcher <span>· ' + (blog.length ? blog.length + ' change' + (blog.length === 1 ? '' : 's') + ' · newest first · fresh code to poke (disclose, don’t exploit)' : 'baselining…') + '</span></div><ul class="bwlog">' +
+      (blog.length ? blog.slice(0, 25).map(function (x) { return '<li>' + (x.type === "new" ? '🆕 <b>NEW</b> ' : '♻ changed ') + '<code>' + x.k + '</code> · ' + new Date(x.t).toLocaleString() + '</li>'; }).join("")
+        : '<li>Changes to Torn’s <code>/builds/</code> modules appear here as you browse — a new module or a rebuilt bundle = freshly-shipped code (best bug-bounty odds). Read-only.</li>') + '</ul></div>';
     bx.classList.add("open");
     bx.innerHTML = '<div class="tdk-bh"><div class="tt">Changelog<small> — Torn Trade Desk</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
       '<div class="tdk-upbar"><button class="tdk-btn2" id="tdk-updbtn" title="Check GitHub for a newer version">🔄 Check for updates</button><span class="tdk-upd" id="tdk-upd">v' + curVersion() + '</span></div>' +
       '<div class="tdk-upbar tdk-upbar2"><button class="tdk-btn2" id="tdk-exp-restock" title="Copy your recorded restock/stock data to the clipboard — paste it to Claude to analyze restock patterns">⬇ Export restock data</button><span class="tdk-upd" id="tdk-exp-msg"></span></div>' +
       (ovCount ? '<div class="tdk-upbar tdk-upbar2"><button class="tdk-btn2" id="tdk-ovreset" title="Clear every keep/sell-ok override you\'ve set">↺ Reset ' + ovCount + ' override' + (ovCount > 1 ? 's' : '') + '</button></div>' : '') +
+      bsec +
       CHANGELOG.map(function (e) {
         return '<div class="tdk-clog"><div class="cv">v' + e.v + ' <span>· ' + e.d + '</span></div><ul>' + e.c.map(function (x) { return '<li>' + x + '</li>'; }).join("") + '</ul></div>';
       }).join("");
@@ -1811,6 +1822,7 @@
       copyText(JSON.stringify(payload));
       const m = bx.querySelector("#tdk-exp-msg"); if (m) m.textContent = "Copied " + Object.keys(evd).length + " items — paste to Claude";
     });
+    try { GM_setValue("build_seen_at", Date.now()); } catch (e) { } updateBuildBadge(); // opening the changelog marks build changes as seen
     bindClose(bx);
   }
   // A: manual odds editor — enter opens + total received per content item (straight from torn.report). Reuses overlay.
@@ -2129,10 +2141,40 @@
     new MutationObserver(function () { if (pending) return; pending = true; requestAnimationFrame(function () { pending = false; run(); }); }).observe(document.body, { childList: true, subtree: true });
   }
 
+  /* ---------- 🔬 Torn build watcher: flag when a new module ships or a bundle's hash changes (fresh code to poke) ----------
+     Purely observational — reads the /builds/{module}/{name}.{hash}.js bundles the page ALREADY loaded (no fetching).
+     A new module or a changed hash = freshly-shipped code = least-scrutinized → best bug-bounty odds. Read-only;
+     the point is being EARLY to disclose, never to exploit. */
+  function recordBuilds() {
+    let man; try { man = GM_getValue("build_manifest", null); } catch (e) { man = null; }
+    const first = !man; const manifest = man || {};
+    let log; try { log = GM_getValue("build_log", []) || []; } catch (e) { log = []; }
+    let changed = false; const now = Date.now();
+    (performance.getEntriesByType ? performance.getEntriesByType("resource") : []).forEach(function (r) {
+      const m = String(r.name || "").match(/\/builds\/([^/]+)\/([^/]+?)\.([0-9a-f]{8,})\.js(?:$|\?)/);
+      if (!m) return;
+      const key = m[1] + "/" + m[2], hash = m[3], prev = manifest[key];
+      if (!prev) { manifest[key] = hash; if (!first) { log.unshift({ k: key, h: hash, t: now, type: "new" }); changed = true; } }
+      else if (prev !== hash) { log.unshift({ k: key, h: hash, ph: prev, t: now, type: "changed" }); manifest[key] = hash; changed = true; }
+    });
+    if (log.length > 80) log.length = 80;
+    try { GM_setValue("build_manifest", manifest); if (changed || first) GM_setValue("build_log", log); } catch (e) { }
+    updateBuildBadge();
+  }
+  function buildUnseen() { try { const log = GM_getValue("build_log", []) || [], seen = GM_getValue("build_seen_at", 0); return log.filter(function (x) { return x.t > seen; }).length; } catch (e) { return 0; } }
+  function updateBuildBadge() {
+    const v = host && host.querySelector("#tdk-ver"); if (!v) return;
+    const n = buildUnseen();
+    v.setAttribute("data-new", n > 0 ? String(n) : "");
+    v.title = n > 0 ? n + " new/changed Torn module" + (n === 1 ? "" : "s") + " since you last looked — click for the build watcher" : "View changelog";
+  }
+
   build();
   annotateItemsPage();
   tradeDescHelper();
   scrapeTripBought();
+  setTimeout(recordBuilds, 5000);                // snapshot the /builds/ bundles this page loaded
+  setInterval(recordBuilds, 60 * 1000);          // catch SPA-loaded chunks + hash changes as you browse
   setTimeout(checkInvStatus, 8000);              // first check shortly after load
   setInterval(checkInvStatus, 15 * 60 * 1000);   // then quietly every 15 min — lights the Bag when Torn restores inventory
   setTimeout(pollStocks, 12000);                 // seed the restock history soon after load
