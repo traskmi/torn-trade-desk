@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.37.1
+// @version      1.38.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -508,6 +508,8 @@
     .bnty .bpay span{color:#928b78;font-size:10px}
     .bnty .bhide{background:none;border:1px solid #3a3729;color:#928b78;border-radius:6px;padding:2px 5px;cursor:pointer;font-size:11px;line-height:1}
     .bnty .bhide:hover{border-color:#e5615c;color:#e5615c;background:#241717}
+    .bnty.trap{opacity:.6}
+    .bnty .btrap{color:#e5615c;font-weight:700}
     .tdk-cp{background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:5px 8px;cursor:pointer;font-size:12px;white-space:nowrap}
     .tdk-cp:hover{background:#332a15}
     .tdk-filldesc{display:block;margin:6px 0;background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:8px 11px;font-weight:700;cursor:pointer;font-size:12px;max-width:100%;text-align:left;white-space:normal;line-height:1.35}
@@ -1160,6 +1162,18 @@
      target, then pulls each target's live status + faction so you see who's attackable NOW and who's solo (no faction
      = no retaliation). Level ≠ stats — it's a proxy; a loss just costs energy + a short hospital stay. */
   const bDec = function (s) { return String(s || "").replace(/&#0?39;/g, "'").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">"); };
+  // Infer a stat-built "trap" from PUBLIC signals (the API won't show battle stats). Validated live Aug 5 2026:
+  // real newbies have ~0 xanax / 0 defends-won / <$1M / days-old accounts; traps (Tilted, Wimp_Lo) have thousands
+  // of xanax, tens of thousands of defends WON, billions net worth, decade-old accounts kept at level 5-6.
+  function trapInfo(x) {
+    const r = [];
+    if (x.defw >= 300) r.push(x.defw.toLocaleString() + ' defends won');
+    if (x.xan >= 100) r.push(x.xan.toLocaleString() + ' xanax');
+    if (x.nw >= 1e9) r.push('$' + (x.nw / 1e9).toFixed(1) + 'B');
+    if (!r.length) return null;                                   // needs a real combat/veteran signal, not just age
+    const ageBit = (x.age && x.level && x.age / x.level >= 50) ? ((x.age >= 365 ? (x.age / 365).toFixed(1) + 'y' : x.age + 'd') + ' old at L' + x.level) : null;
+    return (ageBit ? ageBit + ' · ' : '') + r.slice(0, 2).join(' · ');
+  }
   async function openBounty() {
     const bx = host.querySelector("#tdk-buyers");
     bx.classList.add("open");
@@ -1189,28 +1203,33 @@
         if (!cand.length) { list.innerHTML = '<div class="tdk-sub" style="padding:10px 12px">No bounties in $' + mn.toLocaleString() + '–$' + mx.toLocaleString() + ' at ≤ lvl ' + ml + (Object.keys(block).length ? ' (' + Object.keys(block).length + ' hidden)' : '') + '. Widen the range.</div>'; return; }
         list.innerHTML = '<div class="tdk-sub" style="padding:6px 12px">Checking status + faction for ' + cand.length + ' targets…</div>';
         await Promise.all(cand.map(function (x) {
-          return gmGet("https://api.torn.com/user/" + x.target_id + "/?selections=profile&key=" + encodeURIComponent(key)).then(function (p) {
+          return gmGet("https://api.torn.com/user/" + x.target_id + "/?selections=profile,personalstats&key=" + encodeURIComponent(key)).then(function (p) {
             x.state = (p && p.status && p.status.state) || "?"; x.last = (p && p.last_action && p.last_action.status) || "?";
             x.faction = (p && p.faction && p.faction.faction_id) ? (p.faction.faction_name || "faction") : null;
+            x.age = (p && p.age) || 0; const ps = (p && p.personalstats) || {};
+            x.defw = ps.defendswon || 0; x.xan = ps.xantaken || 0; x.nw = ps.networth || 0; x.aw = ps.attackswon || 0;
+            x.trap = trapInfo(x); // stat-build tell
           }).catch(function () { x.state = "?"; x.last = "?"; x.faction = null; });
         }));
         let rows = cand;
         if (solo) rows = rows.filter(function (x) { return !x.faction; });
         const dot = function (s) { return s === "Online" ? "🟢" : s === "Idle" ? "🟡" : "⚫"; };
         const rowFn = function (x) {
-          return '<div class="bnty' + (x.state === "Okay" ? "" : " na") + '"><div class="bmain"><div class="bn">' +
+          return '<div class="bnty' + (x.state === "Okay" ? "" : " na") + (x.trap ? " trap" : "") + '"><div class="bmain"><div class="bn">' +
             '<a href="https://www.torn.com/loader.php?sid=attack&user2ID=' + x.target_id + '" target="_blank" rel="noopener" title="Attack ' + x.target_name + '">⚔ ' + x.target_name + '</a> <span class="bl">L' + x.target_level + '</span> <a class="bprof" href="https://www.torn.com/profiles.php?XID=' + x.target_id + '" target="_blank" rel="noopener" title="Profile">👤</a></div>' +
-            '<div class="bsub">' + dot(x.last) + ' ' + (x.state === "Okay" ? "Okay" : x.state) + ' · ' + (x.faction ? '🚩 ' + bDec(x.faction) : '🕊 solo') + (x.reason ? ' · “' + bDec(x.reason) + '”' : '') + '</div></div>' +
+            '<div class="bsub">' + dot(x.last) + ' ' + (x.state === "Okay" ? "Okay" : x.state) + ' · ' + (x.faction ? '🚩 ' + bDec(x.faction) : '🕊 solo') + (x.trap ? ' · <span class="btrap">⚠ ' + x.trap + '</span>' : (x.reason ? ' · “' + bDec(x.reason) + '”' : '')) + '</div></div>' +
             '<div class="bpay">$' + x.reward.toLocaleString() + (x.quantity > 1 ? ' <span>×' + x.quantity + '</span>' : '') + '</div>' +
             '<button class="bhide" data-id="' + x.target_id + '" data-name="' + String(x.target_name).replace(/"/g, "") + '" title="Avoid — hide this target from all future scans (too strong / beat you)">🚫</button></div>';
         };
-        const ok = rows.filter(function (x) { return x.state === "Okay"; });
-        const na = rows.filter(function (x) { return x.state !== "Okay"; });
+        const safe = rows.filter(function (x) { return !x.trap; }), traps = rows.filter(function (x) { return x.trap; });
+        const ok = safe.filter(function (x) { return x.state === "Okay"; });
+        const na = safe.filter(function (x) { return x.state !== "Okay"; });
         const blkN = Object.keys(block).length;
         list.innerHTML =
           '<div class="sksec">✅ Attackable now · ' + ok.length + (solo ? ' · solo only' : '') + '</div>' +
           (ok.length ? ok.map(rowFn).join('') : '<div class="tdk-sub" style="padding:6px 12px">None attackable this second' + (solo ? ' (try unchecking “solo only”)' : '') + ' — see below or rescan.</div>') +
           (na.length ? '<div class="sksec">⛔ In hospital / unavailable · ' + na.length + '</div>' + na.map(rowFn).join('') : '') +
+          (traps.length ? '<div class="sksec">⚠ Auto-hidden — likely stat-builds · ' + traps.length + ' (don’t attack)</div>' + traps.map(rowFn).join('') : '') +
           (blkN ? '<div class="tdk-sub" style="padding:8px 12px">🚫 ' + blkN + ' target' + (blkN === 1 ? '' : 's') + ' hidden. <a class="tdk-sett-link" id="tdk-bclear">clear all</a></div>' : '');
         list.querySelectorAll(".bhide").forEach(function (b) {
           b.addEventListener("click", function (e) {
@@ -1526,6 +1545,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.38.0", d: "Aug 5, 2026", c: ["🛡 Bounty tab now AUTO-HIDES stat-built traps. Since the API won't show battle stats, it reads each target's public personal stats and flags the tells — thousands of xanax taken, tens of thousands of 'defends won' (people who attacked them and LOST), billions in net worth, or a decade-old account still stuck at level 5-6. Those drop into a dimmed '⚠ likely stat-builds — don't attack' section with the reason shown, so a level-6 monster like Tilted (40k defends won) or Wimp_Lo (50k) can't lure you in. Real newbies (≈0 xanax, 0 defends won) stay in your attackable list"] },
     { v: "1.37.1", d: "Aug 5, 2026", c: ["🎯 Bounty tab: each target now has a 🚫 button to hide it from ALL future scans — for the stat-built traps that one-shot you despite a low level (looking at you, Tilted). Hidden targets are remembered; a 'N hidden · clear all' link at the bottom lets you reset. Level really is only a proxy for beatability, so this lets you curate a personal do-not-attack list"] },
     { v: "1.37.0", d: "Aug 5, 2026", c: ["🔬 Torn build watcher (for bug-bounty hunting): quietly notes the /builds/ module bundles each page loads and flags when a NEW module ships or a bundle's code changes — a 🆕 badge appears on the version chip, and clicking it (the changelog) lists the changes, newest first. Fresh code = least-scrutinized = best bug-bounty odds, so this tells you when to be early. Purely read-only (it just watches what already loaded); the point is to DISCLOSE to Torn, never exploit"] },
     { v: "1.36.0", d: "Aug 4, 2026", c: ["🎯 New Bounty tab: find collectible bounties you might actually win. Set a reward range ($50k–$250k default) + a max target level (defaults to your level), and it pulls the bounty board, keeps the lowest-level targets (your best shot), and shows each one's LIVE status (✅ attackable now vs ⛔ in hospital) and faction — with a 'solo only' toggle so you only see targets whose faction can't retaliate. Click a name to jump to the attack. Honest: level is a proxy, not stats — spy first if you can, and a loss just costs energy + a short hospital stay"] },
