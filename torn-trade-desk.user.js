@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.40.1
+// @version      1.41.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -1585,6 +1585,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.41.0", d: "Aug 5, 2026", c: ["🔬 Build watcher — killed the false alarms: it now only flags a hash it has NEVER seen (a bundle bouncing back to an earlier hash is a flap from browsing different pages, not fresh code), debounces repeat changes of the same module (shows ×N), and stops badging legacy “-old” bundles like header-old that Torn is retiring. One-time purge of the header-old flap noise already logged. Fresh-code alerts now show a short hash so you can tell real drops apart"] },
     { v: "1.40.1", d: "Aug 5, 2026", c: ["✈ Travel auto-detect now works for real: reads your Torn property (verified API shape — checks modifications.airstrip & staff.pilot as 0/1 flags, keyed to your actual residence, and catches a Private Island you RENT), and auto-applies Airstrip −30% once on load if you have it. Fixed a false-positive where the first cut matched the word 'airstrip' even when you didn't have one"] },
     { v: "1.40.0", d: "Aug 5, 2026", c: ["✈ Renamed 💰 Fund → ✈ Travel and it now uses YOUR real flight time: pick your method in ⚙ Settings (Standard / Airstrip −30% [Private Island + Pilot] / WLT −50% / Business Class −70%, + optional −25% 'Mailing Yourself Abroad' book) and the whole board re-times — accurate $/min, the ≤time filter, the OC flight-guard, and the shown round-trips all match your setup (verified vs the Torn wiki; ±3% game variance)", "Auto-detect: ⚙ Settings reads your Torn property and offers one-click 'Use Airstrip −30%' if it finds an Airstrip + Pilot", "Cap now auto-grows to your true carry max the moment you open the travel page (e.g. after adding the Airstrip+Pilot's +items) — never shrinks it"] },
     { v: "1.39.0", d: "Aug 5, 2026", c: ["🛒 Item Market pages now annotate live: a context banner (market value · cheapest bazaar · top trader bid) with a 💰/🔒 sell-guard mirror (click to toggle keep⇄sell), and any listing priced BELOW the top live trader bid gets outlined green with a ⚡+profit tag — a crossed-market flip you can buy right there and trade for more", "🏬 City shops (shops.php) now show a 💰+spread flip tag on the shelf: each item compares its shop price to market value, so you can spot 'buy here, resell higher' straight off the shelf (muted 'mkt $X' on the rest)"] },
@@ -1964,10 +1965,15 @@
     const bx = host.querySelector("#tdk-buyers");
     const ovCount = Object.keys(state.ov).length;
     const blog = (function () { try { return GM_getValue("build_log", []) || []; } catch (e) { return []; } })();
-    const alerts = blog.filter(function (x) { return x.type !== "seen"; }), catN = blog.length - alerts.length;
-    const bsec = '<div class="tdk-clog"><div class="cv">🔬 Torn build watcher <span>· ' + (alerts.length ? alerts.length + ' new/changed · fresh code to poke (disclose, don’t exploit)' : 'watching — no fresh releases yet') + '</span></div><ul class="bwlog">' +
-      (alerts.length ? alerts.slice(0, 25).map(function (x) { return '<li>' + (x.type === "new" ? '🆕 <b>NEW module</b> ' : '♻ <b>updated</b> ') + '<code>' + x.k + '</code> · ' + new Date(x.t).toLocaleString() + '</li>'; }).join("")
-        : '<li>Nothing yet — a <b>NEW</b> module or an <b>updated</b> bundle (a hash change = fresh code) will show here as you browse. Best bug-bounty odds. Read-only.</li>') +
+    const fresh = blog.filter(function (x) { return x.type !== "seen" && !x.lg; });   // genuine fresh code — the bug-bounty signal
+    const legacy = blog.filter(function (x) { return x.type !== "seen" && x.lg; });     // -old bundles Torn is phasing out — churn, low value
+    const catN = blog.filter(function (x) { return x.type === "seen"; }).length;
+    const cnt = function (x) { return x.n > 1 ? ' <span class="muted">×' + x.n + '</span>' : ''; };
+    const sh = function (x) { return x.h ? ' <code class="muted">' + String(x.h).slice(0, 7) + '</code>' : ''; };
+    const bsec = '<div class="tdk-clog"><div class="cv">🔬 Torn build watcher <span>· ' + (fresh.length ? fresh.length + ' new/changed · fresh code to poke (disclose, don’t exploit)' : 'watching — no fresh releases yet') + '</span></div><ul class="bwlog">' +
+      (fresh.length ? fresh.slice(0, 25).map(function (x) { return '<li>' + (x.type === "new" ? '🆕 <b>NEW module</b> ' : '♻ <b>updated</b> ') + '<code>' + x.k + '</code>' + sh(x) + cnt(x) + ' · ' + new Date(x.t).toLocaleString() + '</li>'; }).join("")
+        : '<li>Nothing yet — a <b>NEW</b> module or a genuinely fresh bundle hash will show here as you browse. Best bug-bounty odds. Read-only.</li>') +
+      (legacy.length ? '<li class="muted">…plus ' + legacy.length + ' legacy <code>-old</code> bundle update' + (legacy.length === 1 ? '' : 's') + ' (e.g. header-old — Torn phasing these out, low value; not badged).</li>' : '') +
       (catN ? '<li class="muted">…plus ' + catN + ' existing module' + (catN === 1 ? '' : 's') + ' cataloged while learning what exists (not alerts).</li>' : '') + '</ul></div>';
     bx.classList.add("open");
     bx.innerHTML = '<div class="tdk-bh"><div class="tt">Changelog<small> — Torn Trade Desk</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
@@ -2459,29 +2465,46 @@
      the point is being EARLY to disclose, never to exploit. */
   const BUILD_WARMUP = 3 * 86400 * 1000; // 3-day cataloging window: first-seen bundles are "cataloged", not alerts —
   // the watcher only sees a module once you browse its page, so early first-sightings are just learning-what-exists.
+  const BUILD_DEBOUNCE = 15 * 60 * 1000;          // collapse repeat changes of the SAME module within 15 min into one row (×n)
+  const LEGACY_RE = /(^|\/)[^/]*-old(\/|$)/i;      // e.g. "header-old/app" — a bundle Torn is phasing out; track but never badge
   function recordBuilds() {
     let man; try { man = GM_getValue("build_manifest", null); } catch (e) { man = null; }
     const first = !man; const manifest = man || {};
     let log; try { log = GM_getValue("build_log", []) || []; } catch (e) { log = []; }
     let started; try { started = GM_getValue("build_started", 0); } catch (e) { started = 0; }
+    let hashes; try { hashes = GM_getValue("build_hashes", null); } catch (e) { hashes = null; } // key → every hash we've ever recorded (fresh code = a hash NEVER seen; a bounce back = flap, not new)
     const now = Date.now();
-    // Migration: a pre-warmup install has a manifest + a log full of cataloging noise (existing modules first-seen
-    // while browsing — NOT real Torn releases). Reset that log, start the clock, mark seen.
-    if (!started) { started = now; try { GM_setValue("build_started", started); GM_setValue("build_log", []); GM_setValue("build_seen_at", now); } catch (e) { } log = []; }
+    let dirty = false;
+    // Migration: a pre-warmup install has a manifest + a log full of cataloging noise. Reset that log, start the clock.
+    if (!started) { started = now; try { GM_setValue("build_started", started); GM_setValue("build_seen_at", now); } catch (e) { } log = []; dirty = true; }
+    // One-time: seed the seen-hash set from the current manifest AND purge legacy-bundle flap noise already logged.
+    if (!hashes) { hashes = {}; Object.keys(manifest).forEach(function (k) { hashes[k] = [manifest[k]]; }); log = log.filter(function (x) { return !(LEGACY_RE.test(x.k) && (x.type === "changed" || x.type === "new")); }); dirty = true; }
     const warming = (now - started) < BUILD_WARMUP;
-    let changed = false;
+    const bump = function (key, hash, entry) { // debounce: same module + same type within the window → update the top row, don't add
+      const top = log[0];
+      if (top && top.k === key && top.type === entry.type && (now - top.t) < BUILD_DEBOUNCE) { top.h = hash; top.t = now; top.n = (top.n || 1) + 1; }
+      else log.unshift(entry);
+      dirty = true;
+    };
     (performance.getEntriesByType ? performance.getEntriesByType("resource") : []).forEach(function (r) {
       const m = String(r.name || "").match(/\/builds\/([^/]+)\/([^/]+?)\.([0-9a-f]{8,})\.js(?:$|\?)/);
       if (!m) return;
-      const key = m[1] + "/" + m[2], hash = m[3], prev = manifest[key];
-      if (!prev) { manifest[key] = hash; if (!first) { log.unshift({ k: key, h: hash, t: now, type: warming ? "seen" : "new" }); changed = true; } } // first-seen: cataloging during warm-up, a real NEW module after
-      else if (prev !== hash) { log.unshift({ k: key, h: hash, ph: prev, t: now, type: "changed" }); manifest[key] = hash; changed = true; } // hash change = fresh code — ALWAYS an alert
+      const key = m[1] + "/" + m[2], hash = m[3], prev = manifest[key], lg = LEGACY_RE.test(key) ? 1 : 0;
+      const seen = hashes[key] || (hashes[key] = []);
+      if (!prev) { // first sighting: cataloging during warm-up, a real NEW module after
+        manifest[key] = hash; if (seen.indexOf(hash) < 0) seen.push(hash);
+        if (!first) bump(key, hash, { k: key, h: hash, t: now, type: warming ? "seen" : "new", lg: lg });
+      } else if (prev !== hash) {
+        manifest[key] = hash;
+        if (seen.indexOf(hash) >= 0) { /* a hash we've already recorded — a flap/revert, NOT fresh code → stay quiet */ }
+        else { seen.push(hash); if (seen.length > 12) seen.shift(); bump(key, hash, { k: key, h: hash, ph: prev, t: now, type: "changed", lg: lg }); }
+      }
     });
     if (log.length > 100) log.length = 100;
-    try { GM_setValue("build_manifest", manifest); if (changed || first) GM_setValue("build_log", log); } catch (e) { }
+    try { GM_setValue("build_manifest", manifest); GM_setValue("build_hashes", hashes); if (dirty || first) GM_setValue("build_log", log); } catch (e) { }
     updateBuildBadge();
   }
-  function buildUnseen() { try { const log = GM_getValue("build_log", []) || [], seen = GM_getValue("build_seen_at", 0); return log.filter(function (x) { return x.t > seen && x.type !== "seen"; }).length; } catch (e) { return 0; } } // "seen" (cataloged) never badges
+  function buildUnseen() { try { const log = GM_getValue("build_log", []) || [], seen = GM_getValue("build_seen_at", 0); return log.filter(function (x) { return x.t > seen && x.type !== "seen" && !x.lg; }).length; } catch (e) { return 0; } } // "seen" (cataloged) + legacy (-old) never badge
   function updateBuildBadge() {
     const v = host && host.querySelector("#tdk-ver"); if (!v) return;
     const n = buildUnseen();
