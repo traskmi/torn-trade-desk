@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.35.1
+// @version      1.36.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -61,7 +61,7 @@
   }
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0 };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null };
   const fmtRt = function (min) { const h = Math.floor(min / 60), m = min % 60; return (h ? h + "h" : "") + (m ? m + "m" : "") || "0m"; };
   const TIME_OPTS = [[0, "⏱ Any time"], [60, "≤ 1h"], [90, "≤ 1½h"], [120, "≤ 2h"], [180, "≤ 3h"], [240, "≤ 4h"], [360, "≤ 6h"], [480, "≤ 8h"], [600, "≤ 10h"]];
 
@@ -136,6 +136,7 @@
       const j = await gmGet("https://api.torn.com/user/?selections=money,networth,basic,travel&key=" + encodeURIComponent(key));
       if (j && typeof j.money_onhand === "number") state.cash = j.money_onhand;
       if (j && j.networth && typeof j.networth.stockmarket === "number") state.stocks = j.networth.stockmarket;
+      if (j && typeof j.level === "number") state.myLevel = j.level; // for the Bounty tab's beatability context
       const tw = detectTravel(j);
       state.travelWhere = tw.where;             // home | flying | abroad | unknown
       state.loc = tw.where === "abroad" ? tw.cc : null; // preserve existing semantics: abroad cc, else null (drives auto-focus)
@@ -489,6 +490,17 @@
     .skbn{font-size:11px;color:#c9a94a;margin-top:3px}.skbn.ok{color:#4cc281}
     .skbar{display:inline-block;width:70px;height:6px;background:#211f18;border-radius:3px;overflow:hidden;vertical-align:middle;margin-right:6px}
     .skbar i{display:block;height:100%;background:#d9b441}
+    .tdk-solo{font-size:11px;color:#c3bda9;white-space:nowrap;cursor:pointer}
+    .bnty{display:flex;align-items:center;gap:12px;padding:8px 12px;border-bottom:1px solid #211f18}
+    .bnty.na{opacity:.55}
+    .bnty .bmain{flex:1;min-width:0}
+    .bnty .bn a{color:#e5615c;text-decoration:none;font-weight:700}
+    .bnty .bn a:hover{text-decoration:underline}
+    .bnty .bn .bl{color:#928b78;font-size:11px;font-weight:400;margin-left:2px}
+    .bnty .bn .bprof{font-size:12px;text-decoration:none;margin-left:2px}
+    .bnty .bsub{font-size:11px;color:#a49c88;margin-top:2px}
+    .bnty .bpay{color:#4cc281;font-weight:800;font-family:ui-monospace,monospace;white-space:nowrap}
+    .bnty .bpay span{color:#928b78;font-size:10px}
     .tdk-cp{background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:5px 8px;cursor:pointer;font-size:12px;white-space:nowrap}
     .tdk-cp:hover{background:#332a15}
     .tdk-filldesc{display:block;margin:6px 0;background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:8px 11px;font-weight:700;cursor:pointer;font-size:12px;max-width:100%;text-align:left;white-space:normal;line-height:1.35}
@@ -1136,6 +1148,64 @@
       const b = bx.querySelector(".br"); if (b) b.textContent = "Shop scan failed: " + (e.message || e) + " (check your key in ⚙ Settings).";
     }
   }
+  /* ---------- 🎯 Bounty planner: collectible bounties in your reward range, lowest-level (most beatable) first ----------
+     v2/torn/bounties (sorted by reward desc, 100/page). Pages the low-value band, filters reward + level, dedups per
+     target, then pulls each target's live status + faction so you see who's attackable NOW and who's solo (no faction
+     = no retaliation). Level ≠ stats — it's a proxy; a loss just costs energy + a short hospital stay. */
+  const bDec = function (s) { return String(s || "").replace(/&#0?39;/g, "'").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">"); };
+  async function openBounty() {
+    const bx = host.querySelector("#tdk-buyers");
+    bx.classList.add("open");
+    const mn0 = GM_getValue("bounty_min", 50000), mx0 = GM_getValue("bounty_max", 250000), ml0 = GM_getValue("bounty_maxlvl", state.myLevel || 25), solo0 = GM_getValue("bounty_solo", true);
+    bx.innerHTML = '<div class="tdk-bh"><div class="tt">🎯 Bounty<small> — targets you might beat</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
+      '<div class="tdk-calc">$<input id="tdk-bmin" type="number" value="' + mn0 + '" title="Min reward"> – $<input id="tdk-bmax" type="number" value="' + mx0 + '" title="Max reward"> · ≤ lvl <input id="tdk-bmaxlvl" type="number" value="' + ml0 + '" title="Max target level"> · <label class="tdk-solo"><input type="checkbox" id="tdk-bsolo"' + (solo0 ? ' checked' : '') + '> solo only</label> <button class="tdk-btn2 tdk-sm" id="tdk-bscan">🔄 Scan</button></div>' +
+      '<div class="tdk-sub" style="padding:6px 12px" id="tdk-bnote">' + (state.myLevel ? "You're level " + state.myLevel + ". " : "") + 'Lowest-level first = best chance to win. Level ≠ stats — spy first if you can; solo targets (no faction) can\'t be avenged. A loss just costs energy + a short hospital stay.</div>' +
+      '<div id="tdk-blist"></div>';
+    bindClose(bx);
+    const scan = async function () {
+      const key = tornKey(); const list = host.querySelector("#tdk-blist");
+      if (!key) { host.querySelector("#tdk-bnote").innerHTML = 'Need a Torn API key (⚙ Settings).'; return; }
+      const mn = Math.max(0, parseInt(host.querySelector("#tdk-bmin").value, 10) || 0);
+      const mx = Math.max(mn, parseInt(host.querySelector("#tdk-bmax").value, 10) || 250000);
+      const ml = Math.max(1, parseInt(host.querySelector("#tdk-bmaxlvl").value, 10) || 99);
+      const solo = host.querySelector("#tdk-bsolo").checked;
+      GM_setValue("bounty_min", mn); GM_setValue("bounty_max", mx); GM_setValue("bounty_maxlvl", ml); GM_setValue("bounty_solo", solo);
+      list.innerHTML = '<div class="tdk-sub" style="padding:10px 12px">Scanning bounties…</div>';
+      try {
+        const offs = []; for (let o = 0; o <= 1500; o += 100) offs.push(o);   // sorted reward-desc; this covers the low-value band
+        const pages = await Promise.all(offs.map(function (o) { return gmGet("https://api.torn.com/v2/torn/bounties?offset=" + o + "&key=" + encodeURIComponent(key)).catch(function () { return null; }); }));
+        const all = []; pages.forEach(function (j) { if (j && j.bounties) all.push.apply(all, j.bounties); });
+        const inR = all.filter(function (x) { return x.reward >= mn && x.reward <= mx && x.target_level <= ml; });
+        const byT = {}; inR.forEach(function (x) { if (!byT[x.target_id] || x.reward > byT[x.target_id].reward) byT[x.target_id] = x; });
+        const cand = Object.keys(byT).map(function (k) { return byT[k]; }).sort(function (a, b) { return a.target_level - b.target_level; }).slice(0, 36);
+        if (!cand.length) { list.innerHTML = '<div class="tdk-sub" style="padding:10px 12px">No bounties in $' + mn.toLocaleString() + '–$' + mx.toLocaleString() + ' at ≤ lvl ' + ml + '. Widen the range.</div>'; return; }
+        list.innerHTML = '<div class="tdk-sub" style="padding:6px 12px">Checking status + faction for ' + cand.length + ' targets…</div>';
+        await Promise.all(cand.map(function (x) {
+          return gmGet("https://api.torn.com/user/" + x.target_id + "/?selections=profile&key=" + encodeURIComponent(key)).then(function (p) {
+            x.state = (p && p.status && p.status.state) || "?"; x.last = (p && p.last_action && p.last_action.status) || "?";
+            x.faction = (p && p.faction && p.faction.faction_id) ? (p.faction.faction_name || "faction") : null;
+          }).catch(function () { x.state = "?"; x.last = "?"; x.faction = null; });
+        }));
+        let rows = cand;
+        if (solo) rows = rows.filter(function (x) { return !x.faction; });
+        const dot = function (s) { return s === "Online" ? "🟢" : s === "Idle" ? "🟡" : "⚫"; };
+        const rowFn = function (x) {
+          return '<div class="bnty' + (x.state === "Okay" ? "" : " na") + '"><div class="bmain"><div class="bn">' +
+            '<a href="https://www.torn.com/loader.php?sid=attack&user2ID=' + x.target_id + '" target="_blank" rel="noopener" title="Attack ' + x.target_name + '">⚔ ' + x.target_name + '</a> <span class="bl">L' + x.target_level + '</span> <a class="bprof" href="https://www.torn.com/profiles.php?XID=' + x.target_id + '" target="_blank" rel="noopener" title="Profile">👤</a></div>' +
+            '<div class="bsub">' + dot(x.last) + ' ' + (x.state === "Okay" ? "Okay" : x.state) + ' · ' + (x.faction ? '🚩 ' + bDec(x.faction) : '🕊 solo') + (x.reason ? ' · “' + bDec(x.reason) + '”' : '') + '</div></div>' +
+            '<div class="bpay">$' + x.reward.toLocaleString() + (x.quantity > 1 ? ' <span>×' + x.quantity + '</span>' : '') + '</div></div>';
+        };
+        const ok = rows.filter(function (x) { return x.state === "Okay"; });
+        const na = rows.filter(function (x) { return x.state !== "Okay"; });
+        list.innerHTML =
+          '<div class="sksec">✅ Attackable now · ' + ok.length + (solo ? ' · solo only' : '') + '</div>' +
+          (ok.length ? ok.map(rowFn).join('') : '<div class="tdk-sub" style="padding:6px 12px">None attackable this second' + (solo ? ' (try unchecking “solo only”)' : '') + ' — see below or rescan.</div>') +
+          (na.length ? '<div class="sksec">⛔ In hospital / unavailable · ' + na.length + '</div>' + na.map(rowFn).join('') : '');
+      } catch (e) { list.innerHTML = '<div class="tdk-sub" style="padding:10px 12px">Bounty scan failed: ' + (e.message || e) + '</div>'; }
+    };
+    host.querySelector("#tdk-bscan").addEventListener("click", scan);
+    scan(); // auto-scan on open
+  }
   async function loadInv(key) {
     const now = Date.now();
     if (state.inv && now - state.invAt < 120000) return state.inv;
@@ -1434,6 +1504,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.36.0", d: "Aug 4, 2026", c: ["🎯 New Bounty tab: find collectible bounties you might actually win. Set a reward range ($50k–$250k default) + a max target level (defaults to your level), and it pulls the bounty board, keeps the lowest-level targets (your best shot), and shows each one's LIVE status (✅ attackable now vs ⛔ in hospital) and faction — with a 'solo only' toggle so you only see targets whose faction can't retaliate. Click a name to jump to the attack. Honest: level is a proxy, not stats — spy first if you can, and a loss just costs energy + a short hospital stay"] },
     { v: "1.35.1", d: "Aug 4, 2026", c: ["OC guard fix: while your Organized Crime is still RECRUITING, Torn's API reports a placeholder ready-time that's wrong (it jumps to the real value only once planning starts — which is why it briefly showed ~10h then corrected to match Torn's 2d). It no longer shows that misleading countdown or flags flights during recruiting — it just says 'recruiting, clear to travel'. Once planning begins, the real countdown + ⛔ flight flags kick in"] },
     { v: "1.35.0", d: "Aug 4, 2026", c: ["⏳ Restock estimate now shows the whole cycle: out-of-stock rows show '⏳ ~36m · +500' (next restock + typical batch size), and hovering breaks down the full cycle — 'restocks ~500 → sells out in ~18m → out ~1h before it returns'. So you can see how many each restock brings and how fast it sells out.", "Removed the Profit/ea column — it's redundant with 'Profit ×N' (which already respects your Cap). Want per-item profit? Just set Cap to 1"] },
     { v: "1.34.2", d: "Aug 4, 2026", c: ["🐞 Big Flip-finder fix: it was showing phantom flips (e.g. 'Bathrobe buy $1,000 → sell $11.7M'). Cause: it used the item's market_price as the buy price, but that field is Torn's stale LAST-TRADED value, not a live listing — for rarely-traded items it's fiction (Bathrobe last sold for $1,000; real sellers ask $19.5M). Now the buy price is the actual cheapest BAZAAR listing (a real current ask), so a 'flip' only shows when a real listing truly sits below a live buy-offer. Result: far fewer flips, but the ones shown are real (the phantoms — Bathrobe, Thimble, even Christmas Gnome — correctly vanish). Re-open 💱 Flip to rebuild the list"] },
@@ -1845,6 +1916,7 @@
           '<button class="tdk-btn2" id="tdk-flip" title="Quick flips — buy cheap, sell to the highest live trader">💱 Flip</button>' +
           '<button class="tdk-btn2" id="tdk-shop" title="Shop flips — Torn city-shop items worth more on the market">🏪 Shop</button>' +
           '<button class="tdk-btn2" id="tdk-stk" title="Stocks — your P&amp;L, benefit-block progress, buy-low scanner">📊 Stocks</button>' +
+          '<button class="tdk-btn2" id="tdk-bounty" title="Bounty planner — collectible bounties, lowest-level first">🎯 Bounty</button>' +
           '<button class="tdk-btn2 tdk-x" id="tdk-close" title="Close panel">✕</button>' +
         '</div>' +
         '<div class="tdk-h2">' +
@@ -1878,6 +1950,7 @@
     host.querySelector("#tdk-flip").addEventListener("click", openFlip);
     host.querySelector("#tdk-shop").addEventListener("click", openShopFlips);
     host.querySelector("#tdk-stk").addEventListener("click", openStocks);
+    host.querySelector("#tdk-bounty").addEventListener("click", openBounty);
     host.querySelector("#tdk-refresh").addEventListener("click", function () { if (state.view === "inv") { state.inv = null; renderInv(); } else refresh(); });
     host.querySelector("#tdk-cap").addEventListener("change", function (e) {
       state.cap = Math.max(1, parseInt(e.target.value, 10) || 23); GM_setValue("cap", state.cap);
