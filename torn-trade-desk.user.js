@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.38.3
+// @version      1.39.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -96,6 +96,7 @@
     return "$" + n;
   };
   const full$ = function (n) { return "$" + Math.round(n).toLocaleString("en-US"); };
+  const parseM = function (s) { const n = parseInt(String(s == null ? "" : s).replace(/[^0-9]/g, ""), 10); return isNaN(n) ? 0 : n; }; // "$835,076" → 835076
   const escAttr = function (s) { return String(s == null ? "" : s).replace(/"/g, "&quot;"); };
   function copyText(t) {
     try { if (typeof GM_setClipboard === "function") { GM_setClipboard(t, "text"); return; } } catch (e) { }
@@ -445,6 +446,17 @@
     .tdk-mkt{display:inline-block;vertical-align:middle}
     .tdk-mkt a{text-decoration:none;font-size:15px;margin-left:6px;cursor:pointer;filter:grayscale(.15)}
     .tdk-mkt a:hover{filter:none}
+    /* city-shop (shops.php) inline flip tags */
+    .tdk-shop-tag{margin-left:6px;font-size:11px;font-weight:700;padding:1px 5px;border-radius:5px;white-space:nowrap;vertical-align:middle}
+    .tdk-shop-tag.good{background:rgba(85,170,90,.18);color:#7ac67f;border:1px solid rgba(85,170,90,.4)}
+    .tdk-shop-tag.meh{background:transparent;color:#8f886f;font-weight:600}
+    /* Item Market (page.php?sid=ItemMarket) context banner + crossed-market flip tags */
+    .tdk-im-banner{flex:0 0 100%;width:100%;box-sizing:border-box;margin:0 0 8px;padding:8px 12px;background:#1b1a14;border:1px solid #d9b441;border-radius:8px;color:#d8d2bf;font-size:13px;line-height:1.5}
+    .tdk-im-banner b{color:#f0e7cf}
+    .tdk-im-banner .tdk-im-x{color:#7ac67f;font-weight:700}
+    .tdk-im-guard{cursor:pointer;font-size:15px;margin-right:4px;user-select:none}
+    .tdk-im-flip{outline:2px solid rgba(85,170,90,.55);outline-offset:-2px;border-radius:6px;background:rgba(85,170,90,.08)}
+    .tdk-im-ftag{margin-left:8px;font-size:11px;font-weight:800;color:#7ac67f;background:rgba(85,170,90,.16);border:1px solid rgba(85,170,90,.4);border-radius:5px;padding:1px 5px;white-space:nowrap}
     .tdk-tog{cursor:pointer;margin-left:6px;font-size:12px;opacity:.85}
     .tdk-tog:hover{opacity:1}
     .tdk-act{white-space:nowrap}
@@ -1554,6 +1566,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.39.0", d: "Aug 5, 2026", c: ["🛒 Item Market pages now annotate live: a context banner (market value · cheapest bazaar · top trader bid) with a 💰/🔒 sell-guard mirror (click to toggle keep⇄sell), and any listing priced BELOW the top live trader bid gets outlined green with a ⚡+profit tag — a crossed-market flip you can buy right there and trade for more", "🏬 City shops (shops.php) now show a 💰+spread flip tag on the shelf: each item compares its shop price to market value, so you can spot 'buy here, resell higher' straight off the shelf (muted 'mkt $X' on the rest)"] },
     { v: "1.38.3", d: "Aug 5, 2026", c: ["🎯 Bounty: hospital/jail targets now show 'out in ~18m' (their release countdown), and the unavailable list is sorted soonest-out first — so you can see who's about to be fair game and time your hit"] },
     { v: "1.38.2", d: "Aug 5, 2026", c: ["🔬 Build watcher fix: it was flagging ~40 'NEW' modules that were just existing Torn modules the watcher saw for the first time as you browsed (it only baselined off the first page). Now there's a 3-day cataloging window — first-sightings are quietly recorded (not alerts), and the 🆕 only fires for genuine code UPDATES (a bundle's hash changing) or truly new modules after the catalog settles. Existing installs get their noisy log auto-cleared once"] },
     { v: "1.38.1", d: "Aug 5, 2026", c: ["Bounty: fixed the ⚔ attack link (Torn retired loader.php — now uses page.php)", "Bounty now also filters New Player Protection: targets under 14 days old can't be attacked by you at all, so they move to a '🛡 new-player protected' section (shows days until they're fair game) instead of dangling in your attackable list"] },
@@ -2140,6 +2153,137 @@
       }).observe(document.body, { childList: true, subtree: true });
     }).catch(function () { });
   }
+  /* ---------- inline city-shop annotator (shops.php) — flags shop→market flips right on the shelf ----------
+     Legacy Torn UI (stable classes, itemid attr): each shelf item is span.item[itemid], inside .acc-title with a
+     sibling .price (BUY price text; data-sell = sellback). We look up market_value from the same items API the
+     board uses (state.itemMeta[id].mkt) and tag the spread. Clones from Torn's carousel each get their own tag
+     because we resolve .price relative to the item's own .acc-title box, never the shared #{id}-price global. */
+  const SHOP_PAGE = /\/shops\.php/i;
+  function annotateShopRows() {
+    const meta = state.itemMeta || {};
+    document.querySelectorAll('span.item[itemid]:not([data-tdk])').forEach(function (it) {
+      it.setAttribute("data-tdk", "1");
+      const id = +it.getAttribute("itemid"); if (!id) return;
+      const box = it.closest(".acc-title") || it.closest("li"); if (!box) return;
+      const pr = box.querySelector(".price"); if (!pr || box.querySelector(".tdk-shop-tag")) return;
+      const buy = parseM(pr.textContent);                 // shelf price text = what you PAY (data-sell is the sellback)
+      const m = meta[id] || {}, mkt = m.mkt || 0;
+      if (!(buy > 0) || !(mkt > 0)) return;
+      const spread = mkt - buy, marg = buy > 0 ? spread / buy : 0;
+      const good = spread > 0 && (spread >= 1000 || marg >= 0.5);
+      const tag = document.createElement("span");
+      tag.className = "tdk-shop-tag " + (good ? "good" : "meh");
+      if (good) {
+        tag.textContent = "💰+" + money(spread);
+        tag.title = "Market value " + full$(mkt) + " vs shop " + full$(buy) + " → flip +" + full$(spread) + " each (" + Math.round(marg * 100) + "%). Resell on the Item Market or direct-trade.";
+      } else {
+        tag.textContent = "mkt " + money(mkt);
+        tag.title = "Market value " + full$(mkt) + " · shop " + full$(buy) + " — no meaningful flip.";
+      }
+      pr.parentNode.insertBefore(tag, pr.nextSibling);
+    });
+  }
+  function annotateShopPage() {
+    if (!SHOP_PAGE.test(location.pathname)) return;
+    const key = GM_getValue("torn_key", ""); if (!key) return; // silent — never prompt from the page
+    loadResale(key).then(function () {
+      annotateShopRows();
+      let pending = false;
+      new MutationObserver(function () { if (pending) return; pending = true; requestAnimationFrame(function () { pending = false; annotateShopRows(); }); }).observe(document.body, { childList: true, subtree: true });
+    }).catch(function () { });
+  }
+
+  /* ---------- inline Item Market annotator (page.php?sid=ItemMarket) ----------
+     One item per view (id in the URL hash: itemID=206). React SPA + hashed classes, so anchor on the stable prefix:
+     rows = [class*="sellerRow"], the ask = its [class*="price"], seller = a[href*="profiles.php?XID="]. We add:
+       • a context banner (market value · cheapest bazaar · top trader bid) + a 💰/🔒 sell-guard mirror, and
+       • a crossed-market flip tag on any listing priced BELOW the top live trader bid (buy here → sell to them). */
+  const MARKET_PAGE = /sid=ItemMarket/i;
+  const imCtx = {}; // id → { mkt, bid, baz, at }
+  function marketItemId() { const m = (location.hash + location.search).match(/itemID=(\d+)/i); return m ? +m[1] : null; }
+  function marketCtx(id) {
+    if (imCtx[id] && Date.now() - imCtx[id].at < 120000) return Promise.resolve(imCtx[id]);
+    const meta = (state.itemMeta && state.itemMeta[id]) || {};
+    const ctx = { mkt: meta.mkt || 0, bid: 0, baz: 0, at: Date.now() };
+    const key = GM_getValue("w3b_key", "");
+    if (!key) { imCtx[id] = ctx; return Promise.resolve(ctx); }
+    return Promise.all([
+      gmGet("https://weav3r.dev/api/marketplace/" + id + "/traders?apiKey=" + encodeURIComponent(key), 15000)
+        .then(function (j) { const t = (j && j.traders) || []; if (t.length) ctx.bid = t[0].price; }).catch(function () { }),
+      gmGet("https://weav3r.dev/api/marketplace/" + id + "?apiKey=" + encodeURIComponent(key), 15000)
+        .then(function (j) { const L = ((j && j.listings) || []).filter(function (x) { return x.price > 0; }).sort(function (a, b) { return a.price - b.price; }); if (L.length) ctx.baz = L[0].price; }).catch(function () { })
+    ]).then(function () { imCtx[id] = ctx; return ctx; });
+  }
+  function marketDataRows() {
+    return [...document.querySelectorAll('[class*="sellerRow"]')].filter(function (r) {
+      const p = r.querySelector('[class*="price"]'); return p && /\$[\d,]/.test(p.textContent || "");
+    });
+  }
+  function ensureMarketBanner(id, ctx) {
+    if (document.getElementById("tdk-im-banner")) return;
+    const anchor = document.querySelector('[class*="sellerRow"]'); if (!anchor) return; // header row = top of the table
+    const meta = (state.itemMeta && state.itemMeta[id]) || {};
+    const name = meta.name || decodeURIComponent(((location.hash + location.search).match(/itemName=([^&]+)/i) || [])[1] || "").replace(/_/g, " ") || "item";
+    const sellable = effSellable(id, meta.type, meta.hasUse, false), ov = !!(state.ov && state.ov[id]);
+    const crossed = ctx.bid && ctx.baz && ctx.baz < ctx.bid;
+    const bar = document.createElement("div");
+    bar.id = "tdk-im-banner"; bar.className = "tdk-im-banner";
+    bar.innerHTML =
+      '<span class="tdk-im-guard ' + (sellable ? "sell" : "keep") + (ov ? " ovr" : "") + '" title="' + (sellable ? "Safe to sell" : "Held back — kept off the sell flow") + ' · click to toggle">' + (sellable ? "💰" : "🔒") + '</span>' +
+      '<b>' + name + '</b> · market ' + (ctx.mkt ? full$(ctx.mkt) : "—") + ' · cheapest bazaar ' + (ctx.baz ? full$(ctx.baz) : "—") + ' · top bid ' + (ctx.bid ? full$(ctx.bid) : "—") +
+      (crossed ? ' · <span class="tdk-im-x">⚡ crossed: bazaar &lt; top bid</span>' : "");
+    anchor.parentNode.insertBefore(bar, anchor);
+    const g = bar.querySelector(".tdk-im-guard");
+    if (g) g.addEventListener("click", function () {
+      toggleOverride(id, effSellable(id, meta.type, meta.hasUse, false));
+      const s = effSellable(id, meta.type, meta.hasUse, false);
+      this.textContent = s ? "💰" : "🔒";
+      this.className = "tdk-im-guard " + (s ? "sell" : "keep") + " ovr";
+    });
+  }
+  function annotateMarketRows(id, ctx) {
+    const rows = marketDataRows(); if (!rows.length) return;
+    ensureMarketBanner(id, ctx);
+    rows.forEach(function (r) {
+      if (r.getAttribute("data-tdk")) return;
+      r.setAttribute("data-tdk", "1");
+      const pe = r.querySelector('[class*="price"]'); if (!pe) return;
+      const ask = parseM(pe.textContent);
+      if (ctx.bid > 0 && ask > 0 && ask < ctx.bid) {
+        r.classList.add("tdk-im-flip");
+        const tag = document.createElement("span");
+        tag.className = "tdk-im-ftag";
+        tag.textContent = "⚡+" + money(ctx.bid - ask);
+        tag.title = "A live trader is buying at " + full$(ctx.bid) + " — buy this listing (" + full$(ask) + ") and sell to them for +" + full$(ctx.bid - ask) + " each (direct trade, no fee). Prices move fast — reconfirm.";
+        pe.appendChild(tag);
+      }
+    });
+  }
+  function annotateMarketPage() {
+    if (!MARKET_PAGE.test(location.search + location.hash)) return;
+    const key = GM_getValue("torn_key", "");
+    (key ? loadResale(key).catch(function () { }) : Promise.resolve()).then(function () {
+      let curId = null, pending = false;
+      const run = function () {
+        const id = marketItemId();
+        if (id !== curId) { // switched items (or first view): tear down the old annotations, refetch context
+          const b = document.getElementById("tdk-im-banner"); if (b) b.remove();
+          document.querySelectorAll('[class*="sellerRow"][data-tdk]').forEach(function (r) {
+            r.removeAttribute("data-tdk"); r.classList.remove("tdk-im-flip");
+            const t = r.querySelector(".tdk-im-ftag"); if (t) t.remove();
+          });
+          curId = id;
+          if (id != null) marketCtx(id).then(function (ctx) { if (marketItemId() === id) annotateMarketRows(id, ctx); });
+        } else if (id != null && imCtx[id]) {
+          annotateMarketRows(id, imCtx[id]); // same item, DOM re-rendered → (re)tag any fresh rows
+        }
+      };
+      run();
+      new MutationObserver(function () { if (pending) return; pending = true; requestAnimationFrame(function () { pending = false; run(); }); }).observe(document.body, { childList: true, subtree: true });
+      window.addEventListener("hashchange", run);
+    });
+  }
+
   // On trade.php: offer to fill the (required) description with the line you stashed by clicking ⇄ Trade.
   // Text-only + user-initiated; we NEVER add items, set money, or press Initiate Trade.
   const TRADE_PAGE = /\/trade\.php/;
@@ -2231,6 +2375,8 @@
 
   build();
   annotateItemsPage();
+  annotateShopPage();
+  annotateMarketPage();
   tradeDescHelper();
   scrapeTripBought();
   setTimeout(recordBuilds, 5000);                // snapshot the /builds/ bundles this page loaded
