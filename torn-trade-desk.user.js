@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.34.2
+// @version      1.35.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -211,17 +211,24 @@
     if (evChanged) { try { GM_setValue("stock_events", ev); } catch (e) { } }
     state._hist = hist; state._ev = ev; // cache for this render cycle
   }
-  // Predict the next restock from the recorded restock events: median interval between restocks + last restock time.
+  const med = function (arr) { if (!arr.length) return 0; const a = arr.slice().sort(function (x, y) { return x - y; }); return a[Math.floor(a.length / 2)]; };
+  // From recorded restock/sellout events, derive: full CYCLE (interval between restocks) + its parts — typical
+  // restock BATCH size, how long it takes to SELL OUT after a restock, and how long it sits OUT before restocking.
   function restockPredict(cc, id) {
     const ev = state._ev || (function () { try { return GM_getValue("stock_events", null) || {}; } catch (e) { return {}; } })();
     const rec = ev[cc + ":" + id]; if (!rec || !rec.rs || rec.rs.length < 2) return null;
-    const ts = rec.rs.map(function (e) { return e[0]; }).sort(function (a, b) { return a - b; });
+    const rs = rec.rs.slice().sort(function (a, b) { return a[0] - b[0]; }); // [[t, amount], …]
+    const ts = rs.map(function (e) { return e[0]; });
     const gaps = []; for (let i = 1; i < ts.length; i++) gaps.push(ts[i] - ts[i - 1]);
-    gaps.sort(function (a, b) { return a - b; });
-    const median = gaps[Math.floor(gaps.length / 2)];
-    const lastRs = ts[ts.length - 1], nextAt = lastRs + median;
-    const lastSo = (rec.so && rec.so.length) ? rec.so[rec.so.length - 1] : 0;
-    return { interval: median, lastRs: lastRs, nextAt: nextAt, n: ts.length, lastSo: lastSo };
+    const interval = med(gaps);                                             // full cycle: restock → … → next restock
+    const lastRs = ts[ts.length - 1], nextAt = lastRs + interval;
+    const batch = med(rs.map(function (e) { return e[1]; }).filter(function (a) { return a > 0; })); // typical restock size
+    const so = (rec.so || []).slice().sort(function (a, b) { return a - b; });
+    const durs = []; // time from a restock to the NEXT sellout = how long it stays in stock
+    so.forEach(function (st) { let pr = 0; for (let i = 0; i < ts.length; i++) { if (ts[i] < st) pr = ts[i]; else break; } if (pr) durs.push(st - pr); });
+    const selloutDur = med(durs);
+    const outDur = (interval && selloutDur && interval > selloutDur) ? interval - selloutDur : 0; // time spent OUT before restock
+    return { interval: interval, lastRs: lastRs, nextAt: nextAt, n: ts.length, lastSo: so.length ? so[so.length - 1] : 0, batch: batch, selloutDur: selloutDur, outDur: outDur, nSo: durs.length };
   }
   // Cross-tab background poll: a GM timestamp lock ensures only ONE fetch per interval across all open Torn tabs.
   const POLL_MS = 5 * 60 * 1000;
@@ -722,10 +729,16 @@
           sc = '<span class="tk-tr up" title="Restocked +' + tr.dq.toLocaleString() + ' since last sample">▲</span>' + sc;
         } // tiny +1/+2 on a high-stock item (YATA jitter / sell-back) → no arrow, not a restock
       }
-      const rp = restockPredict(x.cc, x.id); // predicted next restock from recorded restock events
+      const rp = restockPredict(x.cc, x.id); // predicted next restock + cycle breakdown from recorded events
       if (x.stock === 0 && rp) {
         const eta = rp.nextAt - Math.floor(Date.now() / 1000);
-        sc += ' <span class="rs-eta" title="Restocks about every ' + fmtDur(rp.interval) + ' (from ' + rp.n + ' seen). Last restock ' + new Date(rp.lastRs * 1000).toLocaleTimeString() + (rp.lastSo ? '; sold out ' + new Date(rp.lastSo * 1000).toLocaleTimeString() : '') + '">⏳ ' + (eta > 0 ? '~' + fmtDur(eta) : 'due') + '</span>';
+        const batchTxt = rp.batch ? ' · +' + rp.batch.toLocaleString() : '';
+        const tip = 'Cycle ~' + fmtDur(rp.interval) + ': restocks ~' + (rp.batch ? rp.batch.toLocaleString() : '?') +
+          (rp.selloutDur ? ' → sells out in ~' + fmtDur(rp.selloutDur) : '') +
+          (rp.outDur ? ' → out ~' + fmtDur(rp.outDur) + ' before it returns' : '') +
+          '. From ' + rp.n + ' restock' + (rp.n === 1 ? '' : 's') + (rp.nSo ? ' / ' + rp.nSo + ' sellout' + (rp.nSo === 1 ? '' : 's') : '') +
+          '. Last restock ' + new Date(rp.lastRs * 1000).toLocaleTimeString() + '.';
+        sc += ' <span class="rs-eta" title="' + tip + '">⏳ ' + (eta > 0 ? '~' + fmtDur(eta) : 'due') + batchTxt + '</span>';
       }
       const shortB = (!aff && cash != null && fill) ? '<span class="chip short">free +' + money(x.full - cash) + '</span>' : '';
       const cls = (aff ? "" : (fund ? (isTop ? "fund" : "") : "dim")) + (ocMiss ? " ocmiss" : "");
@@ -734,7 +747,7 @@
       return '<tr class="' + cls + '" data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '">' +
         '<td class="l"><span class="nm">' + x.name + mark + '</span><div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + (FLY[x.cc] ? fmtRt(FLY[x.cc].rt) + ' rt · ' : '') + ago(x.freshS) + ' old' + ocBadge + '</div></td>' +
         '<td class="mv">' + full$(x.buy) + '</td><td class="mv">' + full$(x.sell) + '</td>' +
-        '<td class="gd">' + full$(x.ppi) + '</td><td class="gd">' + money(x.ppi * cap) + '</td><td>' + sc + '</td>' +
+        '<td class="gd">' + money(x.ppi * cap) + '</td><td>' + sc + '</td>' +
         '<td class="mv">' + money(x.full) + shortB + '</td>' +
         '<td class="ppm">$' + x.ppm.toLocaleString() + '</td></tr>';
     }).join("");
@@ -1414,6 +1427,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.35.0", d: "Aug 4, 2026", c: ["⏳ Restock estimate now shows the whole cycle: out-of-stock rows show '⏳ ~36m · +500' (next restock + typical batch size), and hovering breaks down the full cycle — 'restocks ~500 → sells out in ~18m → out ~1h before it returns'. So you can see how many each restock brings and how fast it sells out.", "Removed the Profit/ea column — it's redundant with 'Profit ×N' (which already respects your Cap). Want per-item profit? Just set Cap to 1"] },
     { v: "1.34.2", d: "Aug 4, 2026", c: ["🐞 Big Flip-finder fix: it was showing phantom flips (e.g. 'Bathrobe buy $1,000 → sell $11.7M'). Cause: it used the item's market_price as the buy price, but that field is Torn's stale LAST-TRADED value, not a live listing — for rarely-traded items it's fiction (Bathrobe last sold for $1,000; real sellers ask $19.5M). Now the buy price is the actual cheapest BAZAAR listing (a real current ask), so a 'flip' only shows when a real listing truly sits below a live buy-offer. Result: far fewer flips, but the ones shown are real (the phantoms — Bathrobe, Thimble, even Christmas Gnome — correctly vanish). Re-open 💱 Flip to rebuild the list"] },
     { v: "1.34.1", d: "Aug 4, 2026", c: ["Added an '⬇ Export restock data' button in the changelog window (click the version). It copies all your recorded restock/stock-change data (with item names) to the clipboard — paste it to Claude and say 'analyze the restock data' to turn the collected observations into a real restock-timing model. This is how the browser-side data reaches the analysis"] },
     { v: "1.34.0", d: "Aug 4, 2026", c: ["Now capturing the RAW stock-increase stream (every +N with its size) unclassified, so we can learn each item's real restock pattern from real data instead of assuming. Why: the Torn wiki confirms (a) selling items back to a foreign shop increases its stock — so a +1 can be a real sell-back, not jitter — and (b) restocks happen 'regularly or irregularly', not only after hitting 0. So a +N can't be perfectly labeled a restock from the number alone; the ⏳ prediction stays a provisional estimate (batch/refill signals) while the data builds. No visible change — this is groundwork for a data-driven restock model over the next few days"] },
@@ -1841,7 +1855,7 @@
         '<div class="tdk-oc" id="tdk-oc" style="display:none"></div>' +
         '<div class="tdk-filter" id="tdk-filter"></div>' +
         '<div class="tdk-best" id="tdk-best"><div class="l">Best play</div><div class="p">—</div></div>' +
-        '<table class="tdk"><thead><tr><th class="l">Item</th><th class="so" data-sort="buy">Buy</th><th class="so" data-sort="sell">Resale</th><th class="so" data-sort="ppi">Profit/ea</th><th id="tdk-th-full" class="so" data-sort="fullprofit" title="Total profit for a full load (profit/ea × cap), before airfare">Profit ×' + state.cap + '</th><th class="so" data-sort="stock">Stock</th><th class="so" data-sort="full">Load</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
+        '<table class="tdk"><thead><tr><th class="l">Item</th><th class="so" data-sort="buy">Buy</th><th class="so" data-sort="sell">Resale</th><th id="tdk-th-full" class="so" data-sort="fullprofit" title="Total profit for a full load (profit/ea × cap), before airfare. Set Cap to 1 to see per-item profit.">Profit ×' + state.cap + '</th><th class="so" data-sort="stock">Stock</th><th class="so" data-sort="full">Load</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
         '<div class="tdk-mug" id="tdk-mug"></div>' +
       '</div>' +
       '<div id="tdk-inv" style="display:none"></div>';
