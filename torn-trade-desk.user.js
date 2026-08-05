@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.37.0
+// @version      1.37.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -506,6 +506,8 @@
     .bnty .bsub{font-size:11px;color:#a49c88;margin-top:2px}
     .bnty .bpay{color:#4cc281;font-weight:800;font-family:ui-monospace,monospace;white-space:nowrap}
     .bnty .bpay span{color:#928b78;font-size:10px}
+    .bnty .bhide{background:none;border:1px solid #3a3729;color:#928b78;border-radius:6px;padding:2px 5px;cursor:pointer;font-size:11px;line-height:1}
+    .bnty .bhide:hover{border-color:#e5615c;color:#e5615c;background:#241717}
     .tdk-cp{background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:5px 8px;cursor:pointer;font-size:12px;white-space:nowrap}
     .tdk-cp:hover{background:#332a15}
     .tdk-filldesc{display:block;margin:6px 0;background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:8px 11px;font-weight:700;cursor:pointer;font-size:12px;max-width:100%;text-align:left;white-space:normal;line-height:1.35}
@@ -1182,8 +1184,9 @@
         const all = []; pages.forEach(function (j) { if (j && j.bounties) all.push.apply(all, j.bounties); });
         const inR = all.filter(function (x) { return x.reward >= mn && x.reward <= mx && x.target_level <= ml; });
         const byT = {}; inR.forEach(function (x) { if (!byT[x.target_id] || x.reward > byT[x.target_id].reward) byT[x.target_id] = x; });
-        const cand = Object.keys(byT).map(function (k) { return byT[k]; }).sort(function (a, b) { return a.target_level - b.target_level; }).slice(0, 36);
-        if (!cand.length) { list.innerHTML = '<div class="tdk-sub" style="padding:10px 12px">No bounties in $' + mn.toLocaleString() + '–$' + mx.toLocaleString() + ' at ≤ lvl ' + ml + '. Widen the range.</div>'; return; }
+        let block; try { block = GM_getValue("bounty_block", null) || {}; } catch (e) { block = {}; } // targets you've hidden (e.g. stat-built traps that beat you)
+        const cand = Object.keys(byT).map(function (k) { return byT[k]; }).filter(function (x) { return !block[x.target_id]; }).sort(function (a, b) { return a.target_level - b.target_level; }).slice(0, 36);
+        if (!cand.length) { list.innerHTML = '<div class="tdk-sub" style="padding:10px 12px">No bounties in $' + mn.toLocaleString() + '–$' + mx.toLocaleString() + ' at ≤ lvl ' + ml + (Object.keys(block).length ? ' (' + Object.keys(block).length + ' hidden)' : '') + '. Widen the range.</div>'; return; }
         list.innerHTML = '<div class="tdk-sub" style="padding:6px 12px">Checking status + faction for ' + cand.length + ' targets…</div>';
         await Promise.all(cand.map(function (x) {
           return gmGet("https://api.torn.com/user/" + x.target_id + "/?selections=profile&key=" + encodeURIComponent(key)).then(function (p) {
@@ -1198,14 +1201,28 @@
           return '<div class="bnty' + (x.state === "Okay" ? "" : " na") + '"><div class="bmain"><div class="bn">' +
             '<a href="https://www.torn.com/loader.php?sid=attack&user2ID=' + x.target_id + '" target="_blank" rel="noopener" title="Attack ' + x.target_name + '">⚔ ' + x.target_name + '</a> <span class="bl">L' + x.target_level + '</span> <a class="bprof" href="https://www.torn.com/profiles.php?XID=' + x.target_id + '" target="_blank" rel="noopener" title="Profile">👤</a></div>' +
             '<div class="bsub">' + dot(x.last) + ' ' + (x.state === "Okay" ? "Okay" : x.state) + ' · ' + (x.faction ? '🚩 ' + bDec(x.faction) : '🕊 solo') + (x.reason ? ' · “' + bDec(x.reason) + '”' : '') + '</div></div>' +
-            '<div class="bpay">$' + x.reward.toLocaleString() + (x.quantity > 1 ? ' <span>×' + x.quantity + '</span>' : '') + '</div></div>';
+            '<div class="bpay">$' + x.reward.toLocaleString() + (x.quantity > 1 ? ' <span>×' + x.quantity + '</span>' : '') + '</div>' +
+            '<button class="bhide" data-id="' + x.target_id + '" data-name="' + String(x.target_name).replace(/"/g, "") + '" title="Avoid — hide this target from all future scans (too strong / beat you)">🚫</button></div>';
         };
         const ok = rows.filter(function (x) { return x.state === "Okay"; });
         const na = rows.filter(function (x) { return x.state !== "Okay"; });
+        const blkN = Object.keys(block).length;
         list.innerHTML =
           '<div class="sksec">✅ Attackable now · ' + ok.length + (solo ? ' · solo only' : '') + '</div>' +
           (ok.length ? ok.map(rowFn).join('') : '<div class="tdk-sub" style="padding:6px 12px">None attackable this second' + (solo ? ' (try unchecking “solo only”)' : '') + ' — see below or rescan.</div>') +
-          (na.length ? '<div class="sksec">⛔ In hospital / unavailable · ' + na.length + '</div>' + na.map(rowFn).join('') : '');
+          (na.length ? '<div class="sksec">⛔ In hospital / unavailable · ' + na.length + '</div>' + na.map(rowFn).join('') : '') +
+          (blkN ? '<div class="tdk-sub" style="padding:8px 12px">🚫 ' + blkN + ' target' + (blkN === 1 ? '' : 's') + ' hidden. <a class="tdk-sett-link" id="tdk-bclear">clear all</a></div>' : '');
+        list.querySelectorAll(".bhide").forEach(function (b) {
+          b.addEventListener("click", function (e) {
+            e.stopPropagation(); e.preventDefault();
+            let blk; try { blk = GM_getValue("bounty_block", null) || {}; } catch (er) { blk = {}; }
+            blk[this.getAttribute("data-id")] = { name: this.getAttribute("data-name") || "", at: Date.now() };
+            try { GM_setValue("bounty_block", blk); } catch (er) { }
+            const row = this.closest(".bnty"); if (row) row.remove();
+          });
+        });
+        const cl = list.querySelector("#tdk-bclear");
+        if (cl) cl.addEventListener("click", function () { try { GM_setValue("bounty_block", {}); } catch (er) { } scan(); });
       } catch (e) { list.innerHTML = '<div class="tdk-sub" style="padding:10px 12px">Bounty scan failed: ' + (e.message || e) + '</div>'; }
     };
     host.querySelector("#tdk-bscan").addEventListener("click", scan);
@@ -1509,6 +1526,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.37.1", d: "Aug 5, 2026", c: ["🎯 Bounty tab: each target now has a 🚫 button to hide it from ALL future scans — for the stat-built traps that one-shot you despite a low level (looking at you, Tilted). Hidden targets are remembered; a 'N hidden · clear all' link at the bottom lets you reset. Level really is only a proxy for beatability, so this lets you curate a personal do-not-attack list"] },
     { v: "1.37.0", d: "Aug 5, 2026", c: ["🔬 Torn build watcher (for bug-bounty hunting): quietly notes the /builds/ module bundles each page loads and flags when a NEW module ships or a bundle's code changes — a 🆕 badge appears on the version chip, and clicking it (the changelog) lists the changes, newest first. Fresh code = least-scrutinized = best bug-bounty odds, so this tells you when to be early. Purely read-only (it just watches what already loaded); the point is to DISCLOSE to Torn, never exploit"] },
     { v: "1.36.0", d: "Aug 4, 2026", c: ["🎯 New Bounty tab: find collectible bounties you might actually win. Set a reward range ($50k–$250k default) + a max target level (defaults to your level), and it pulls the bounty board, keeps the lowest-level targets (your best shot), and shows each one's LIVE status (✅ attackable now vs ⛔ in hospital) and faction — with a 'solo only' toggle so you only see targets whose faction can't retaliate. Click a name to jump to the attack. Honest: level is a proxy, not stats — spy first if you can, and a loss just costs energy + a short hospital stay"] },
     { v: "1.35.1", d: "Aug 4, 2026", c: ["OC guard fix: while your Organized Crime is still RECRUITING, Torn's API reports a placeholder ready-time that's wrong (it jumps to the real value only once planning starts — which is why it briefly showed ~10h then corrected to match Torn's 2d). It no longer shows that misleading countdown or flags flights during recruiting — it just says 'recruiting, clear to travel'. Once planning begins, the real countdown + ⛔ flight flags kick in"] },
