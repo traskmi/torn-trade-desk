@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.38.2
+// @version      1.38.3
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -512,6 +512,7 @@
     .bnty.trap{opacity:.6}
     .bnty .btrap{color:#e5615c;font-weight:700}
     .bnty .bprot2{color:#9fc7f0}
+    .bnty .bout{color:#e2933f}
     .tdk-cp{background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:5px 8px;cursor:pointer;font-size:12px;white-space:nowrap}
     .tdk-cp:hover{background:#332a15}
     .tdk-filldesc{display:block;margin:6px 0;background:#2a2413;border:1px solid #d9b441;color:#d9b441;border-radius:8px;padding:8px 11px;font-weight:700;cursor:pointer;font-size:12px;max-width:100%;text-align:left;white-space:normal;line-height:1.35}
@@ -1207,6 +1208,7 @@
         await Promise.all(cand.map(function (x) {
           return gmGet("https://api.torn.com/user/" + x.target_id + "/?selections=profile,personalstats&key=" + encodeURIComponent(key)).then(function (p) {
             x.state = (p && p.status && p.status.state) || "?"; x.last = (p && p.last_action && p.last_action.status) || "?";
+            x.until = (p && p.status && p.status.until) || 0; // hospital/jail release timestamp
             x.faction = (p && p.faction && p.faction.faction_id) ? (p.faction.faction_name || "faction") : null;
             x.age = (p && p.age) || 0; const ps = (p && p.personalstats) || {};
             x.defw = ps.defendswon || 0; x.xan = ps.xantaken || 0; x.nw = ps.networth || 0; x.aw = ps.attackswon || 0;
@@ -1217,17 +1219,19 @@
         let rows = cand;
         if (solo) rows = rows.filter(function (x) { return !x.faction; });
         const dot = function (s) { return s === "Online" ? "🟢" : s === "Idle" ? "🟡" : "⚫"; };
+        const nowS = Math.floor(Date.now() / 1000);
         const rowFn = function (x) {
+          const stTxt = x.state === "Okay" ? "Okay" : x.state + (x.until > nowS ? ' <span class="bout">· out in ' + fmtDur(x.until - nowS) + '</span>' : ''); // hospital/jail release countdown
           return '<div class="bnty' + (x.state === "Okay" ? "" : " na") + (x.trap ? " trap" : "") + '"><div class="bmain"><div class="bn">' +
             '<a href="https://www.torn.com/page.php?sid=attack&user2ID=' + x.target_id + '" target="_blank" rel="noopener" title="Attack ' + x.target_name + '">⚔ ' + x.target_name + '</a> <span class="bl">L' + x.target_level + '</span> <a class="bprof" href="https://www.torn.com/profiles.php?XID=' + x.target_id + '" target="_blank" rel="noopener" title="Profile">👤</a></div>' +
-            '<div class="bsub">' + dot(x.last) + ' ' + (x.state === "Okay" ? "Okay" : x.state) + ' · ' + (x.faction ? '🚩 ' + bDec(x.faction) : '🕊 solo') + (x.trap ? ' · <span class="btrap">⚠ ' + x.trap + '</span>' : (x.prot ? ' · <span class="bprot2">🛡 protected — attackable in ' + (14 - x.age) + 'd</span>' : (x.reason ? ' · “' + bDec(x.reason) + '”' : ''))) + '</div></div>' +
+            '<div class="bsub">' + dot(x.last) + ' ' + stTxt + ' · ' + (x.faction ? '🚩 ' + bDec(x.faction) : '🕊 solo') + (x.trap ? ' · <span class="btrap">⚠ ' + x.trap + '</span>' : (x.prot ? ' · <span class="bprot2">🛡 protected — attackable in ' + (14 - x.age) + 'd</span>' : (x.reason ? ' · “' + bDec(x.reason) + '”' : ''))) + '</div></div>' +
             '<div class="bpay">$' + x.reward.toLocaleString() + (x.quantity > 1 ? ' <span>×' + x.quantity + '</span>' : '') + '</div>' +
             '<button class="bhide" data-id="' + x.target_id + '" data-name="' + String(x.target_name).replace(/"/g, "") + '" title="Avoid — hide this target from all future scans (too strong / beat you)">🚫</button></div>';
         };
         const safe = rows.filter(function (x) { return !x.trap; }), traps = rows.filter(function (x) { return x.trap; });
         const prot = safe.filter(function (x) { return x.prot; });                        // <14 days = New Player Protection, can't attack
         const ok = safe.filter(function (x) { return !x.prot && x.state === "Okay"; });    // genuinely attackable
-        const na = safe.filter(function (x) { return !x.prot && x.state !== "Okay"; });    // in hospital / unavailable
+        const na = safe.filter(function (x) { return !x.prot && x.state !== "Okay"; }).sort(function (a, b) { return (a.until || 9e15) - (b.until || 9e15); }); // in hospital / unavailable, soonest-out first
         const blkN = Object.keys(block).length;
         list.innerHTML =
           '<div class="sksec">✅ Attackable now · ' + ok.length + (solo ? ' · solo only' : '') + '</div>' +
@@ -1550,6 +1554,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.38.3", d: "Aug 5, 2026", c: ["🎯 Bounty: hospital/jail targets now show 'out in ~18m' (their release countdown), and the unavailable list is sorted soonest-out first — so you can see who's about to be fair game and time your hit"] },
     { v: "1.38.2", d: "Aug 5, 2026", c: ["🔬 Build watcher fix: it was flagging ~40 'NEW' modules that were just existing Torn modules the watcher saw for the first time as you browsed (it only baselined off the first page). Now there's a 3-day cataloging window — first-sightings are quietly recorded (not alerts), and the 🆕 only fires for genuine code UPDATES (a bundle's hash changing) or truly new modules after the catalog settles. Existing installs get their noisy log auto-cleared once"] },
     { v: "1.38.1", d: "Aug 5, 2026", c: ["Bounty: fixed the ⚔ attack link (Torn retired loader.php — now uses page.php)", "Bounty now also filters New Player Protection: targets under 14 days old can't be attacked by you at all, so they move to a '🛡 new-player protected' section (shows days until they're fair game) instead of dangling in your attackable list"] },
     { v: "1.38.0", d: "Aug 5, 2026", c: ["🛡 Bounty tab now AUTO-HIDES stat-built traps. Since the API won't show battle stats, it reads each target's public personal stats and flags the tells — thousands of xanax taken, tens of thousands of 'defends won' (people who attacked them and LOST), billions in net worth, or a decade-old account still stuck at level 5-6. Those drop into a dimmed '⚠ likely stat-builds — don't attack' section with the reason shown, so a level-6 monster like Tilted (40k defends won) or Wimp_Lo (50k) can't lure you in. Real newbies (≈0 xanax, 0 defends won) stay in your attackable list"] },
