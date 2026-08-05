@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.43.0
+// @version      1.44.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -503,6 +503,8 @@
     .tdk-upbar{display:flex;align-items:center;gap:10px;margin:2px 0 10px;flex-wrap:wrap}
     .tdk-upbar2{margin-top:-6px}
     .tdk-upd{font-size:12px;color:#928b78}
+    .tdk-impbox{display:flex;gap:8px;align-items:flex-start;margin:-4px 0 10px}
+    .tdk-impbox textarea{flex:1;min-width:0;height:64px;resize:vertical;background:#201e17;border:1px solid #3a3729;color:#ece7d8;border-radius:8px;padding:7px 9px;font-family:ui-monospace,monospace;font-size:11px}
     .tdk-upd b{color:#d9b441;font-family:ui-monospace,monospace}
     .tdk-upd a{color:#d9b441;text-decoration:none;border-bottom:1px dotted #d9b441}
     .tdk-upd a:hover{color:#f0cf6b}
@@ -1654,6 +1656,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.44.0", d: "Aug 5, 2026", c: ["⬆ Import (next to ⬇ Export in this window): paste a previously exported blob to restore all your restock + seasonal data after a Tampermonkey/cache wipe — or seed a brand-new install from someone else’s export so they don’t start from zero. Events merge by timestamp (safe to re-import); the seasonal aggregate is adopted wholesale when your local data is empty, and a signature guard stops a re-imported blob from double-counting"] },
     { v: "1.43.0", d: "Aug 5, 2026", c: ["📅 Started banking SEASONAL sell-rate data (persistent, never pruned): every selling interval is logged into a day-of-week × hour bucket (TCT), so down the road we can build a real model that predicts arrival stock differently for a quiet Sunday morning vs a busy weeknight. It just collects quietly now — raw stock history only lives 48h, so we had to start accumulating this compact aggregate to ever have the weekend/weekday history. The ⬇ Export button now includes it (shows how many buckets are banked)"] },
     { v: "1.42.1", d: "Aug 5, 2026", c: ["🛬 Landing prediction now estimates the sell-rate from ALL recorded history — a time-weighted average over every selling interval, not just the last 2 samples — so the “sells out in ~X” / ↻fresh / ⚠gone calls get steadier and keep improving as more data accrues (the ▲/▼ arrows still reflect the latest sample). Tooltip shows the avg rate + how many intervals it’s based on"] },
     { v: "1.42.0", d: "Aug 5, 2026", c: ["🛬 New “Landing” column: predicts the stock state when you'd touch down if you flew there RIGHT NOW — combines your one-way flight time (travel method), the current buy-rate, and the restock cycle. Shows ✓ stocked / ◑ partial / ↻ fresh (restocks before you land) / ⚠ gone (sells out before you land) / ✗ out / ? (not enough history). Hover for the reasoning + timing. Answers “will it be out-and-restocked by the time I get there?” — no longer only shows restock info when an item is currently out"] },
@@ -2033,6 +2036,39 @@
       }).catch(function (e) { out.innerHTML = '<span class="serr">W3B test failed: ' + e.message + ' — check the key</span>'; });
     });
   }
+  // Feed an exported blob back in — restores collected data after a Tampermonkey/cache wipe, or seeds a fresh
+  // install from someone else's export. Events merge by timestamp (idempotent — safe to re-import). The seasonal
+  // aggregate can't dedup (it's pre-summed), so: adopt wholesale when local is empty (the restore/seed case), else
+  // SUM but skip a blob we've already imported (signature guard) so a double-import doesn't double-count.
+  function importRestockData(text) {
+    let p; try { p = JSON.parse(text); } catch (e) { return { err: "That isn’t valid JSON — copy the whole ⬇ Export blob." }; }
+    if (!p || p.kind !== "tdk-restock-export") return { err: "Not a Trade Desk export (missing kind)." };
+    const inEv = p.events || {}, inSea = p.seasonal || {};
+    let imports; try { imports = GM_getValue("tdk_imports", []) || []; } catch (e) { imports = []; }
+    const sig = (function (s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h + ":" + s.length; })(text);
+    const dup = imports.indexOf(sig) >= 0;
+    // events: union with timestamp dedup
+    let ev; try { ev = GM_getValue("stock_events", null) || {}; } catch (e) { ev = {}; }
+    let evItems = 0;
+    Object.keys(inEv).forEach(function (k) {
+      const src = inEv[k], dst = ev[k] || (ev[k] = { rs: [], so: [], up: [], q: null, max: 0 });
+      const merge = function (dArr, sArr, keyFn) { const seen = {}; (dArr || []).forEach(function (e) { seen[keyFn(e)] = 1; }); (sArr || []).forEach(function (e) { if (!seen[keyFn(e)]) { dArr.push(e); seen[keyFn(e)] = 1; } }); };
+      merge(dst.rs, src.rs, function (e) { return e[0]; }); merge(dst.so, src.so, function (t) { return t; });
+      if (src.up) { dst.up = dst.up || []; merge(dst.up, src.up, function (e) { return e[0]; }); }
+      dst.rs.sort(function (a, b) { return a[0] - b[0]; }); dst.so.sort(function (a, b) { return a - b; }); if (dst.up) dst.up.sort(function (a, b) { return a[0] - b[0]; });
+      dst.max = Math.max(dst.max || 0, src.max || 0); if (dst.q == null) dst.q = src.q; evItems++;
+    });
+    // seasonal: adopt if empty, else sum (unless this exact blob was already imported)
+    let sea; try { sea = GM_getValue("stock_seasonal", null) || {}; } catch (e) { sea = {}; }
+    const seaEmpty = Object.keys(sea).length === 0; let seaBuckets = 0, seaMode;
+    if (seaEmpty) { seaMode = "loaded"; Object.keys(inSea).forEach(function (k) { sea[k] = {}; Object.keys(inSea[k]).forEach(function (b) { sea[k][b] = inSea[k][b].slice(); seaBuckets++; }); }); }
+    else if (dup) { seaMode = "skipped (already imported)"; }
+    else { seaMode = "merged"; Object.keys(inSea).forEach(function (k) { const dk = sea[k] || (sea[k] = {}); Object.keys(inSea[k]).forEach(function (b) { const s = inSea[k][b], d = dk[b] || (dk[b] = [0, 0, 0]); d[0] += s[0] || 0; d[1] += s[1] || 0; d[2] += s[2] || 0; seaBuckets++; }); }); }
+    try { GM_setValue("stock_events", ev); GM_setValue("stock_seasonal", sea); } catch (e) { }
+    if (!dup) { imports.push(sig); if (imports.length > 50) imports.shift(); try { GM_setValue("tdk_imports", imports); } catch (e) { } }
+    state._ev = ev; state._seasonal = sea;
+    return { evItems: evItems, seaBuckets: seaBuckets, seaMode: seaMode };
+  }
   function openChangelog() {
     const bx = host.querySelector("#tdk-buyers");
     const ovCount = Object.keys(state.ov).length;
@@ -2050,7 +2086,8 @@
     bx.classList.add("open");
     bx.innerHTML = '<div class="tdk-bh"><div class="tt">Changelog<small> — Torn Trade Desk</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
       '<div class="tdk-upbar"><button class="tdk-btn2" id="tdk-updbtn" title="Check GitHub for a newer version">🔄 Check for updates</button><span class="tdk-upd" id="tdk-upd">v' + curVersion() + '</span></div>' +
-      '<div class="tdk-upbar tdk-upbar2"><button class="tdk-btn2" id="tdk-exp-restock" title="Copy your recorded restock/stock data to the clipboard — paste it to Claude to analyze restock patterns">⬇ Export restock data</button><span class="tdk-upd" id="tdk-exp-msg"></span></div>' +
+      '<div class="tdk-upbar tdk-upbar2"><button class="tdk-btn2" id="tdk-exp-restock" title="Copy your recorded restock/stock + seasonal data to the clipboard — paste it to Claude to analyze, or save it as a backup">⬇ Export</button><button class="tdk-btn2" id="tdk-imp-restock" title="Paste a previously exported blob to restore your data after a Tampermonkey/cache wipe — or seed a fresh install from someone else’s export">⬆ Import</button><span class="tdk-upd" id="tdk-exp-msg"></span></div>' +
+      '<div class="tdk-impbox" id="tdk-impbox" style="display:none"><textarea id="tdk-imp-ta" spellcheck="false" placeholder="Paste the exported JSON here, then Load…"></textarea><button class="tdk-btn2" id="tdk-imp-go">Load</button></div>' +
       (ovCount ? '<div class="tdk-upbar tdk-upbar2"><button class="tdk-btn2" id="tdk-ovreset" title="Clear every keep/sell-ok override you\'ve set">↺ Reset ' + ovCount + ' override' + (ovCount > 1 ? 's' : '') + '</button></div>' : '') +
       bsec +
       CHANGELOG.map(function (e) {
@@ -2074,7 +2111,17 @@
       let buckets = 0; Object.keys(sead).forEach(function (k) { buckets += Object.keys(sead[k]).length; });
       const payload = { kind: "tdk-restock-export", version: curVersion(), at: Math.floor(Date.now() / 1000), fields: "events[cc:id]={rs:[[t,amount]] restocks, so:[t] sellouts, up:[[t,dq,prevQ]] RAW increases, max, q}; seasonal[cc:id]={bucket→[soldQty,seconds,samples]}, bucket = UTC(dayOfWeek 0=Sun..6)*24 + hourOfDay(0..23)", names: names, events: evd, seasonal: sead };
       copyText(JSON.stringify(payload));
-      const m = bx.querySelector("#tdk-exp-msg"); if (m) m.textContent = "Copied " + Object.keys(evd).length + " items · " + buckets + " seasonal buckets — paste to Claude";
+      const m = bx.querySelector("#tdk-exp-msg"); if (m) m.textContent = "Copied " + Object.keys(evd).length + " items · " + buckets + " seasonal buckets — paste to Claude or save as backup";
+    });
+    const ib = bx.querySelector("#tdk-imp-restock");
+    if (ib) ib.addEventListener("click", function () { const box = bx.querySelector("#tdk-impbox"); if (box) { box.style.display = box.style.display === "none" ? "block" : "none"; const ta = bx.querySelector("#tdk-imp-ta"); if (ta && box.style.display !== "none") ta.focus(); } });
+    const ig = bx.querySelector("#tdk-imp-go");
+    if (ig) ig.addEventListener("click", function () {
+      const ta = bx.querySelector("#tdk-imp-ta"), m = bx.querySelector("#tdk-exp-msg");
+      const res = importRestockData((ta && ta.value || "").trim());
+      if (res.err) { if (m) m.innerHTML = '<span style="color:#e5615c">' + res.err + '</span>'; return; }
+      if (m) m.textContent = "Imported ✓ " + res.evItems + " items · " + res.seaBuckets + " buckets (" + res.seaMode + ")";
+      if (ta) ta.value = "";
     });
     try { GM_setValue("build_seen_at", Date.now()); } catch (e) { } updateBuildBadge(); // opening the changelog marks build changes as seen
     bindClose(bx);
