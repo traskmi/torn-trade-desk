@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.41.0
+// @version      1.42.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -262,6 +262,40 @@
     let maxQ = 0; for (let i = 0; i < arr.length; i++) if (arr[i][1] > maxQ) maxQ = arr[i][1];
     return { dq: dq, perMin: dq / (Math.max(60, b[0] - a[0]) / 60), prev: a[1], maxQ: maxQ };
   }
+  // "Landing" prediction: if you flew to this item's country RIGHT NOW, what's the stock when you touch down?
+  // Combines your one-way flight time (travel method), the current buy-rate (stockTrend) and the restock cycle
+  // (restockPredict). Honest — returns an "?" outlook when there isn't enough history. Timestamps are epoch seconds.
+  function arrivalOutlook(x) {
+    if (!FLY[x.cc]) return null;
+    const nowS = Math.floor(Date.now() / 1000);
+    let arr;
+    if (state.travelWhere === "abroad" && x.cc === state.loc) arr = nowS;                                          // already standing there
+    else if (state.travelWhere === "flying" && x.cc === state.flyTo && state.arrivalTs) arr = state.arrivalTs;     // en route to it
+    else arr = nowS + Math.round(rtOf(x.cc) / 2) * 60;                                                             // one-way from Torn, your method
+    const landIn = arr - nowS, landTxt = landIn <= 30 ? "you arrive" : "you land in ~" + fmtDur(landIn);
+    const cap = state.cap, st = x.stock;
+    const rp = restockPredict(x.cc, x.id), tr = stockTrend(x.cc, x.id);
+    const rate = (tr && tr.dq < 0) ? Math.abs(tr.perMin) : 0;                                                      // qty/min being bought (0 if rising/unknown)
+    let outAt = Infinity;
+    if (st <= 0) outAt = nowS; else if (rate > 0) outAt = nowS + (st / rate) * 60;
+    let nextRs = null;
+    if (rp && rp.nextAt) { nextRs = rp.nextAt; if (rp.interval > 0) { let g = 0; while (nextRs < nowS && g++ < 1000) nextRs += rp.interval; } } // roll a stale prediction to the next future cycle
+    const rsAfterOut = (st > 0 && outAt < Infinity && rp && rp.outDur) ? outAt + rp.outDur : null;                 // the restock that follows THIS stock selling out
+    const dur = function (s) { return fmtDur(Math.max(0, Math.round(s))); };
+    const src = rp ? " (from " + rp.n + " restock" + (rp.n === 1 ? "" : "s") + ")" : "";
+    if (st > 0 && (rate <= 0 || outAt > arr)) {                                                                    // in stock and it lasts until you land
+      if (st >= cap) return { cls: "good", txt: "✓ stocked", tip: "In stock (" + st.toLocaleString() + ") and expected to still be stocked when " + landTxt + "." + (rate > 0 ? " Selling ~" + Math.round(rate) + "/min." : "") };
+      return { cls: "good", txt: "◑ " + st, tip: st.toLocaleString() + " in stock — under your Cap " + cap + " (partial load), but likely still there when " + landTxt + "." };
+    }
+    if (st <= 0) {                                                                                                 // out right now
+      if (nextRs && nextRs <= arr) return { cls: "good", txt: "↻ fresh", tip: "Out now, predicted to restock" + (rp.batch ? " ~+" + rp.batch.toLocaleString() : "") + " about " + dur(arr - nextRs) + " before " + landTxt + " — a fresh batch waiting" + src + "." };
+      if (nextRs) return { cls: "bad", txt: "✗ out", tip: "Out now; predicted restock is ~" + dur(nextRs - arr) + " AFTER " + landTxt + " — still empty on arrival" + src + "." };
+      return { cls: "unk", txt: "✗ out ?", tip: "Out now, and not enough restock history to predict the next one yet." };
+    }
+    const cand = rsAfterOut || nextRs;                                                                             // in stock now, but selling out before you land
+    if (cand && cand <= arr) return { cls: "good", txt: "↻ fresh", tip: st.toLocaleString() + " now, selling ~" + Math.round(rate) + "/min → sells out ~" + dur(outAt - nowS) + " from now, then predicted to restock before " + landTxt + " — fresh on arrival" + src + "." };
+    return { cls: "warn", txt: "⚠ gone", tip: st.toLocaleString() + " now, selling ~" + Math.round(rate) + "/min → likely sold out ~" + dur(outAt - nowS) + " from now, with no restock predicted before " + landTxt + ". Buy now or expect empty shelves." };
+  }
   /* ---------- Faction OC flight guard: don't fly past your Organized Crime's ready time ----------
      v2/user/organizedcrime WORKS while abroad/hospital (unlike the Items page), so we can warn even when Torn
      hides the OC from you in-country. ready_at = planning completes → crime becomes executable; you must be in
@@ -401,6 +435,10 @@
     table.tdk td{padding:9px 14px;border-bottom:1px solid #211f18;text-align:right;white-space:nowrap;
       font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}
     table.tdk td.mv{color:#ded7c5}
+    table.tdk td.ldc{padding-left:8px;padding-right:8px}
+    table.tdk th.ld{cursor:default}
+    .ld{font-weight:700;white-space:nowrap;font-size:11px}
+    .ld-good{color:#5cbb81}.ld-warn{color:#e2933f}.ld-bad{color:#e5615c}.ld-unk{color:#6f6a5a}
     table.tdk td.num{color:#c3bda9}
     table.tdk td.l{font-family:system-ui,sans-serif}
     table.tdk tr.dim td{opacity:.82}
@@ -806,10 +844,12 @@
       const mark = (aff && fill) ? '<span class="star" title="Affordable now & fully in stock — a clean pick">★</span>' : (isTop ? '<span class="star" title="Best funded play — over budget, but reachable by selling stocks (see the banner up top)">💰</span>' : '');
       const ocBadge = ocMiss ? '<span class="oc-x" title="Round trip ' + (FLY[x.cc] ? fmtRt(rtOf(x.cc)) : '?') + (g.secs <= 0 ? ' — your OC is ready NOW, don’t fly' : ' exceeds your OC (ready in ' + fmtDur(g.secs) + ') — you’d miss it') + '">⛔ OC</span>' : '';
       const rtTxt = FLY[x.cc] ? '<span title="' + (travelMult() < 1 ? travelLabel() + ' · base ' + fmtRt(FLY[x.cc].rt) : 'Standard round trip') + '">' + fmtRt(rtOf(x.cc)) + ' rt</span> · ' : '';
+      const ol = arrivalOutlook(x); // Landing prediction: stock state when you'd touch down if you flew now
       return '<tr class="' + cls + '" data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '">' +
         '<td class="l"><span class="nm">' + x.name + mark + '</span><div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + rtTxt + ago(x.freshS) + ' old' + ocBadge + '</div></td>' +
         '<td class="mv">' + full$(x.buy) + '</td><td class="mv">' + full$(x.sell) + '</td>' +
         '<td class="gd">' + money(x.ppi * cap) + '</td><td>' + sc + '</td>' +
+        '<td class="ldc">' + (ol ? '<span class="ld ld-' + ol.cls + '" title="' + escAttr(ol.tip) + '">' + ol.txt + '</span>' : '<span class="ld ld-unk">·</span>') + '</td>' +
         '<td class="mv">' + money(x.full) + shortB + '</td>' +
         '<td class="ppm">$' + x.ppm.toLocaleString() + '</td></tr>';
     }).join("");
@@ -1585,6 +1625,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.42.0", d: "Aug 5, 2026", c: ["🛬 New “Landing” column: predicts the stock state when you'd touch down if you flew there RIGHT NOW — combines your one-way flight time (travel method), the current buy-rate, and the restock cycle. Shows ✓ stocked / ◑ partial / ↻ fresh (restocks before you land) / ⚠ gone (sells out before you land) / ✗ out / ? (not enough history). Hover for the reasoning + timing. Answers “will it be out-and-restocked by the time I get there?” — no longer only shows restock info when an item is currently out"] },
     { v: "1.41.0", d: "Aug 5, 2026", c: ["🔬 Build watcher — killed the false alarms: it now only flags a hash it has NEVER seen (a bundle bouncing back to an earlier hash is a flap from browsing different pages, not fresh code), debounces repeat changes of the same module (shows ×N), and stops badging legacy “-old” bundles like header-old that Torn is retiring. One-time purge of the header-old flap noise already logged. Fresh-code alerts now show a short hash so you can tell real drops apart"] },
     { v: "1.40.1", d: "Aug 5, 2026", c: ["✈ Travel auto-detect now works for real: reads your Torn property (verified API shape — checks modifications.airstrip & staff.pilot as 0/1 flags, keyed to your actual residence, and catches a Private Island you RENT), and auto-applies Airstrip −30% once on load if you have it. Fixed a false-positive where the first cut matched the word 'airstrip' even when you didn't have one"] },
     { v: "1.40.0", d: "Aug 5, 2026", c: ["✈ Renamed 💰 Fund → ✈ Travel and it now uses YOUR real flight time: pick your method in ⚙ Settings (Standard / Airstrip −30% [Private Island + Pilot] / WLT −50% / Business Class −70%, + optional −25% 'Mailing Yourself Abroad' book) and the whole board re-times — accurate $/min, the ≤time filter, the OC flight-guard, and the shown round-trips all match your setup (verified vs the Torn wiki; ±3% game variance)", "Auto-detect: ⚙ Settings reads your Torn property and offers one-click 'Use Airstrip −30%' if it finds an Airstrip + Pilot", "Cap now auto-grows to your true carry max the moment you open the travel page (e.g. after adding the Airstrip+Pilot's +items) — never shrinks it"] },
@@ -2126,7 +2167,7 @@
         '<div class="tdk-oc" id="tdk-oc" style="display:none"></div>' +
         '<div class="tdk-filter" id="tdk-filter"></div>' +
         '<div class="tdk-best" id="tdk-best"><div class="l">Best play</div><div class="p">—</div></div>' +
-        '<table class="tdk"><thead><tr><th class="l">Item</th><th class="so" data-sort="buy">Buy</th><th class="so" data-sort="sell">Resale</th><th id="tdk-th-full" class="so" data-sort="fullprofit" title="Total profit for a full load (profit/ea × cap), before airfare. Set Cap to 1 to see per-item profit.">Profit ×' + state.cap + '</th><th class="so" data-sort="stock">Stock</th><th class="so" data-sort="full">Load</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
+        '<table class="tdk"><thead><tr><th class="l">Item</th><th class="so" data-sort="buy">Buy</th><th class="so" data-sort="sell">Resale</th><th id="tdk-th-full" class="so" data-sort="fullprofit" title="Total profit for a full load (profit/ea × cap), before airfare. Set Cap to 1 to see per-item profit.">Profit ×' + state.cap + '</th><th class="so" data-sort="stock">Stock</th><th class="ld" title="Predicted stock when you touch down if you flew there from Torn right now — from your flight time, the current buy-rate, and the restock cycle">Landing</th><th class="so" data-sort="full">Load</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
         '<div class="tdk-mug" id="tdk-mug"></div>' +
       '</div>' +
       '<div id="tdk-inv" style="display:none"></div>';
