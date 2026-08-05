@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.42.0
+// @version      1.42.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -262,6 +262,20 @@
     let maxQ = 0; for (let i = 0; i < arr.length; i++) if (arr[i][1] > maxQ) maxQ = arr[i][1];
     return { dq: dq, perMin: dq / (Math.max(60, b[0] - a[0]) / 60), prev: a[1], maxQ: maxQ };
   }
+  // Sustained buy-rate from the FULL recorded history (not just the last 2 samples): time-weighted average over
+  // EVERY downward (selling) segment — restock jumps (up) and flat spans are excluded, so the denominator is
+  // "time actually spent selling". Steadier than stockTrend, and it keeps improving as more history accrues.
+  function buyRate(cc, id) {
+    const hist = state._hist || (function () { try { return GM_getValue("stock_hist", null) || {}; } catch (e) { return {}; } })();
+    const arr = hist[cc + ":" + id]; if (!arr || arr.length < 2) return null;
+    let sold = 0, secs = 0, nSeg = 0;
+    for (let i = 1; i < arr.length; i++) {
+      const dq = arr[i][1] - arr[i - 1][1], dt = arr[i][0] - arr[i - 1][0];
+      if (dq < 0 && dt > 0) { sold += -dq; secs += dt; nSeg++; }   // a selling interval
+    }
+    if (sold <= 0 || secs <= 0) return null;
+    return { perMin: sold / (secs / 60), sold: sold, sellMin: secs / 60, nSeg: nSeg };
+  }
   // "Landing" prediction: if you flew to this item's country RIGHT NOW, what's the stock when you touch down?
   // Combines your one-way flight time (travel method), the current buy-rate (stockTrend) and the restock cycle
   // (restockPredict). Honest — returns an "?" outlook when there isn't enough history. Timestamps are epoch seconds.
@@ -274,17 +288,19 @@
     else arr = nowS + Math.round(rtOf(x.cc) / 2) * 60;                                                             // one-way from Torn, your method
     const landIn = arr - nowS, landTxt = landIn <= 30 ? "you arrive" : "you land in ~" + fmtDur(landIn);
     const cap = state.cap, st = x.stock;
-    const rp = restockPredict(x.cc, x.id), tr = stockTrend(x.cc, x.id);
-    const rate = (tr && tr.dq < 0) ? Math.abs(tr.perMin) : 0;                                                      // qty/min being bought (0 if rising/unknown)
+    const rp = restockPredict(x.cc, x.id);
+    const br = buyRate(x.cc, x.id), tr = stockTrend(x.cc, x.id);
+    const rate = br ? br.perMin : ((tr && tr.dq < 0) ? Math.abs(tr.perMin) : 0);                                   // sustained sell velocity from ALL history; last-2 fallback if too little data
     let outAt = Infinity;
     if (st <= 0) outAt = nowS; else if (rate > 0) outAt = nowS + (st / rate) * 60;
     let nextRs = null;
     if (rp && rp.nextAt) { nextRs = rp.nextAt; if (rp.interval > 0) { let g = 0; while (nextRs < nowS && g++ < 1000) nextRs += rp.interval; } } // roll a stale prediction to the next future cycle
     const rsAfterOut = (st > 0 && outAt < Infinity && rp && rp.outDur) ? outAt + rp.outDur : null;                 // the restock that follows THIS stock selling out
     const dur = function (s) { return fmtDur(Math.max(0, Math.round(s))); };
+    const rTxt = Math.round(rate) + "/min" + (br ? " avg (" + br.nSeg + " intervals)" : "");                        // sustained avg when from full history, else last-2
     const src = rp ? " (from " + rp.n + " restock" + (rp.n === 1 ? "" : "s") + ")" : "";
     if (st > 0 && (rate <= 0 || outAt > arr)) {                                                                    // in stock and it lasts until you land
-      if (st >= cap) return { cls: "good", txt: "✓ stocked", tip: "In stock (" + st.toLocaleString() + ") and expected to still be stocked when " + landTxt + "." + (rate > 0 ? " Selling ~" + Math.round(rate) + "/min." : "") };
+      if (st >= cap) return { cls: "good", txt: "✓ stocked", tip: "In stock (" + st.toLocaleString() + ") and expected to still be stocked when " + landTxt + "." + (rate > 0 ? " Selling ~" + rTxt + "." : "") };
       return { cls: "good", txt: "◑ " + st, tip: st.toLocaleString() + " in stock — under your Cap " + cap + " (partial load), but likely still there when " + landTxt + "." };
     }
     if (st <= 0) {                                                                                                 // out right now
@@ -293,8 +309,8 @@
       return { cls: "unk", txt: "✗ out ?", tip: "Out now, and not enough restock history to predict the next one yet." };
     }
     const cand = rsAfterOut || nextRs;                                                                             // in stock now, but selling out before you land
-    if (cand && cand <= arr) return { cls: "good", txt: "↻ fresh", tip: st.toLocaleString() + " now, selling ~" + Math.round(rate) + "/min → sells out ~" + dur(outAt - nowS) + " from now, then predicted to restock before " + landTxt + " — fresh on arrival" + src + "." };
-    return { cls: "warn", txt: "⚠ gone", tip: st.toLocaleString() + " now, selling ~" + Math.round(rate) + "/min → likely sold out ~" + dur(outAt - nowS) + " from now, with no restock predicted before " + landTxt + ". Buy now or expect empty shelves." };
+    if (cand && cand <= arr) return { cls: "good", txt: "↻ fresh", tip: st.toLocaleString() + " now, selling ~" + rTxt + " → sells out ~" + dur(outAt - nowS) + " from now, then predicted to restock before " + landTxt + " — fresh on arrival" + src + "." };
+    return { cls: "warn", txt: "⚠ gone", tip: st.toLocaleString() + " now, selling ~" + rTxt + " → likely sold out ~" + dur(outAt - nowS) + " from now, with no restock predicted before " + landTxt + ". Buy now or expect empty shelves." };
   }
   /* ---------- Faction OC flight guard: don't fly past your Organized Crime's ready time ----------
      v2/user/organizedcrime WORKS while abroad/hospital (unlike the Items page), so we can warn even when Torn
@@ -1625,6 +1641,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.42.1", d: "Aug 5, 2026", c: ["🛬 Landing prediction now estimates the sell-rate from ALL recorded history — a time-weighted average over every selling interval, not just the last 2 samples — so the “sells out in ~X” / ↻fresh / ⚠gone calls get steadier and keep improving as more data accrues (the ▲/▼ arrows still reflect the latest sample). Tooltip shows the avg rate + how many intervals it’s based on"] },
     { v: "1.42.0", d: "Aug 5, 2026", c: ["🛬 New “Landing” column: predicts the stock state when you'd touch down if you flew there RIGHT NOW — combines your one-way flight time (travel method), the current buy-rate, and the restock cycle. Shows ✓ stocked / ◑ partial / ↻ fresh (restocks before you land) / ⚠ gone (sells out before you land) / ✗ out / ? (not enough history). Hover for the reasoning + timing. Answers “will it be out-and-restocked by the time I get there?” — no longer only shows restock info when an item is currently out"] },
     { v: "1.41.0", d: "Aug 5, 2026", c: ["🔬 Build watcher — killed the false alarms: it now only flags a hash it has NEVER seen (a bundle bouncing back to an earlier hash is a flap from browsing different pages, not fresh code), debounces repeat changes of the same module (shows ×N), and stops badging legacy “-old” bundles like header-old that Torn is retiring. One-time purge of the header-old flap noise already logged. Fresh-code alerts now show a short hash so you can tell real drops apart"] },
     { v: "1.40.1", d: "Aug 5, 2026", c: ["✈ Travel auto-detect now works for real: reads your Torn property (verified API shape — checks modifications.airstrip & staff.pilot as 0/1 flags, keyed to your actual residence, and catches a Private Island you RENT), and auto-applies Airstrip −30% once on load if you have it. Fixed a false-positive where the first cut matched the word 'airstrip' even when you didn't have one"] },
