@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.44.0
+// @version      1.45.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -11,6 +11,8 @@
 // @connect      api.torn.com
 // @connect      weav3r.dev
 // @connect      raw.githubusercontent.com
+// @connect      script.google.com
+// @connect      script.googleusercontent.com
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -242,9 +244,37 @@
   const med = function (arr) { if (!arr.length) return 0; const a = arr.slice().sort(function (x, y) { return x - y; }); return a[Math.floor(a.length / 2)]; };
   // From recorded restock/sellout events, derive: full CYCLE (interval between restocks) + its parts — typical
   // restock BATCH size, how long it takes to SELL OUT after a restock, and how long it sits OUT before restocking.
-  function restockPredict(cc, id) {
+  // ---------- shared central dataset (optional): a Google Apps Script polls YATA 24/7 and serves the authoritative
+  // events+seasonal history, so every user (incl. brand-new) gets full coverage without collecting it themselves.
+  // Foreign stock is GLOBAL, so one poller suffices — the client just READS it and prefers it per-item (fresher /
+  // 24-7) over its own thinner local record; local is the offline fallback. See shared-collector.gs + Settings URL.
+  let _sharedCache; // session cache of GM "shared_data"
+  function sharedFresh() {
+    let synced = 0; try { synced = GM_getValue("shared_synced_at", 0) || 0; } catch (e) { }
+    if (!synced || Date.now() - synced > 4 * 86400 * 1000) return null;   // stale (>4d) → ignore, use local
+    if (_sharedCache === undefined) { try { _sharedCache = GM_getValue("shared_data", null); } catch (e) { _sharedCache = null; } }
+    return _sharedCache;
+  }
+  function evRecord(cc, id) { // events record, shared-preferred per item
+    const key = cc + ":" + id, sd = sharedFresh();
+    if (sd && sd.events && sd.events[key]) return sd.events[key];
     const ev = state._ev || (function () { try { return GM_getValue("stock_events", null) || {}; } catch (e) { return {}; } })();
-    const rec = ev[cc + ":" + id]; if (!rec || !rec.rs || rec.rs.length < 2) return null;
+    return ev[key];
+  }
+  function syncShared(manual, cb) {
+    const url = GM_getValue("shared_url", "");
+    if (!url) { if (cb) cb({ err: "No shared feed URL set (⚙ Settings)." }); return; }
+    gmGet(url, 30000).then(function (j) {
+      if (!j || j.kind !== "tdk-restock-export") { if (cb) cb({ err: "That URL didn’t return Trade Desk data." }); return; }
+      try { GM_setValue("shared_data", { at: j.at, events: j.events || {}, seasonal: j.seasonal || {} }); GM_setValue("shared_synced_at", Date.now()); } catch (e) { }
+      _sharedCache = undefined; // force reload next read
+      let items = Object.keys(j.events || {}).length, buckets = 0; const s = j.seasonal || {}; Object.keys(s).forEach(function (k) { buckets += Object.keys(s[k]).length; });
+      if (state.rows && state.rows.length) render();
+      if (cb) cb({ items: items, buckets: buckets, at: j.at });
+    }).catch(function (e) { if (cb) cb({ err: (e.message || e) }); });
+  }
+  function restockPredict(cc, id) {
+    const rec = evRecord(cc, id); if (!rec || !rec.rs || rec.rs.length < 2) return null;
     const rs = rec.rs.slice().sort(function (a, b) { return a[0] - b[0]; }); // [[t, amount], …]
     const ts = rs.map(function (e) { return e[0]; });
     const gaps = []; for (let i = 1; i < ts.length; i++) gaps.push(ts[i] - ts[i - 1]);
@@ -1656,6 +1686,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.45.0", d: "Aug 5, 2026", c: ["🌐 Shared data feed (optional): point ⚙ Settings → “Shared data feed URL” at a central Google Apps Script that polls YATA 24/7 (code = shared-collector.gs in the repo, you deploy it once under your own Google account), and the board reads the authoritative restock history from it — so restock ETAs & the Landing column work from day one instead of waiting weeks to self-collect. Because foreign stock is global, one poller covers everyone; the client prefers the shared record per-item and falls back to your local data offline. ⤓ Sync shared button + a light once-a-day auto-sync"] },
     { v: "1.44.0", d: "Aug 5, 2026", c: ["⬆ Import (next to ⬇ Export in this window): paste a previously exported blob to restore all your restock + seasonal data after a Tampermonkey/cache wipe — or seed a brand-new install from someone else’s export so they don’t start from zero. Events merge by timestamp (safe to re-import); the seasonal aggregate is adopted wholesale when your local data is empty, and a signature guard stops a re-imported blob from double-counting"] },
     { v: "1.43.0", d: "Aug 5, 2026", c: ["📅 Started banking SEASONAL sell-rate data (persistent, never pruned): every selling interval is logged into a day-of-week × hour bucket (TCT), so down the road we can build a real model that predicts arrival stock differently for a quiet Sunday morning vs a busy weeknight. It just collects quietly now — raw stock history only lives 48h, so we had to start accumulating this compact aggregate to ever have the weekend/weekday history. The ⬇ Export button now includes it (shows how many buckets are banked)"] },
     { v: "1.42.1", d: "Aug 5, 2026", c: ["🛬 Landing prediction now estimates the sell-rate from ALL recorded history — a time-weighted average over every selling interval, not just the last 2 samples — so the “sells out in ~X” / ↻fresh / ⚠gone calls get steadier and keep improving as more data accrues (the ▲/▼ arrows still reflect the latest sample). Tooltip shows the avg rate + how many intervals it’s based on"] },
@@ -1994,6 +2025,9 @@
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-tbook"' + (state.travelBook ? ' checked' : '') + '> Book “Mailing Yourself Abroad” active <small>(−25% for 31 days, stacks)</small></label></div>' +
         '<div id="tdk-set-teff" class="ssub"></div>' +
         '<div id="tdk-set-tdetect" class="ssub"></div>' +
+        '<div class="sl" style="margin-top:16px">🌐 Shared data feed <small>— optional: a central YATA collector (Google Apps Script) so you get 24/7 restock history without collecting it all yourself</small></div>' +
+        '<div class="srow"><input id="tdk-set-shared" type="text" spellcheck="false" placeholder="Apps Script /exec URL" value="' + esc(GM_getValue("shared_url", "")) + '"><button class="tdk-btn2" id="tdk-set-sharedsync">Save &amp; Sync</button></div>' +
+        '<div id="tdk-set-sharedmsg" class="ssub"></div>' +
         '<div class="sl" style="margin-top:14px">Need a key? <a class="prof" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Torn → Settings → API Keys</a>. Note: the 📦 Bag needs Torn’s inventory API, which is temporarily disabled during Torn’s inventory migration — no key fixes that until Torn restores it.</div>' +
       '</div>';
     bindClose(bx);
@@ -2010,6 +2044,15 @@
     if (bChk) bChk.addEventListener("change", function () { state.travelBook = this.checked; applyTravelChange(true); });
     updateTravelEff();
     detectTravelProp(); // fills #tdk-set-tdetect from your Torn property (Airstrip + Pilot), and auto-applies once
+    const ss = host.querySelector("#tdk-set-sharedsync"), sMsg = host.querySelector("#tdk-set-sharedmsg");
+    const syncedAt = (function () { try { return GM_getValue("shared_synced_at", 0); } catch (e) { return 0; } })();
+    if (sMsg && syncedAt) sMsg.textContent = "Last synced " + new Date(syncedAt).toLocaleString();
+    if (ss) ss.addEventListener("click", function () {
+      const u = host.querySelector("#tdk-set-shared").value.trim(); GM_setValue("shared_url", u);
+      if (!u) { if (sMsg) sMsg.textContent = "Cleared — using only your local data."; return; }
+      if (sMsg) sMsg.textContent = "Syncing…";
+      syncShared(true, function (r) { if (!sMsg) return; sMsg.innerHTML = r.err ? '<span class="serr">' + r.err + '</span>' : "Synced ✓ " + r.items + " items · " + r.buckets + " buckets · feed updated " + new Date((r.at || 0) * 1000).toLocaleString(); });
+    });
     host.querySelector("#tdk-set-test").addEventListener("click", function () {
       const k = host.querySelector("#tdk-set-torn").value.trim(), out = host.querySelector("#tdk-set-out");
       if (!k) { out.textContent = "Enter a Torn key first."; return; }
@@ -2086,7 +2129,7 @@
     bx.classList.add("open");
     bx.innerHTML = '<div class="tdk-bh"><div class="tt">Changelog<small> — Torn Trade Desk</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
       '<div class="tdk-upbar"><button class="tdk-btn2" id="tdk-updbtn" title="Check GitHub for a newer version">🔄 Check for updates</button><span class="tdk-upd" id="tdk-upd">v' + curVersion() + '</span></div>' +
-      '<div class="tdk-upbar tdk-upbar2"><button class="tdk-btn2" id="tdk-exp-restock" title="Copy your recorded restock/stock + seasonal data to the clipboard — paste it to Claude to analyze, or save it as a backup">⬇ Export</button><button class="tdk-btn2" id="tdk-imp-restock" title="Paste a previously exported blob to restore your data after a Tampermonkey/cache wipe — or seed a fresh install from someone else’s export">⬆ Import</button><span class="tdk-upd" id="tdk-exp-msg"></span></div>' +
+      '<div class="tdk-upbar tdk-upbar2"><button class="tdk-btn2" id="tdk-exp-restock" title="Copy your recorded restock/stock + seasonal data to the clipboard — paste it to Claude to analyze, or save it as a backup">⬇ Export</button><button class="tdk-btn2" id="tdk-imp-restock" title="Paste a previously exported blob to restore your data after a Tampermonkey/cache wipe — or seed a fresh install from someone else’s export">⬆ Import</button><button class="tdk-btn2" id="tdk-sync-shared" title="Fetch the shared central dataset now (set the feed URL in ⚙ Settings)">⤓ Sync shared</button><span class="tdk-upd" id="tdk-exp-msg"></span></div>' +
       '<div class="tdk-impbox" id="tdk-impbox" style="display:none"><textarea id="tdk-imp-ta" spellcheck="false" placeholder="Paste the exported JSON here, then Load…"></textarea><button class="tdk-btn2" id="tdk-imp-go">Load</button></div>' +
       (ovCount ? '<div class="tdk-upbar tdk-upbar2"><button class="tdk-btn2" id="tdk-ovreset" title="Clear every keep/sell-ok override you\'ve set">↺ Reset ' + ovCount + ' override' + (ovCount > 1 ? 's' : '') + '</button></div>' : '') +
       bsec +
@@ -2122,6 +2165,11 @@
       if (res.err) { if (m) m.innerHTML = '<span style="color:#e5615c">' + res.err + '</span>'; return; }
       if (m) m.textContent = "Imported ✓ " + res.evItems + " items · " + res.seaBuckets + " buckets (" + res.seaMode + ")";
       if (ta) ta.value = "";
+    });
+    const sy = bx.querySelector("#tdk-sync-shared");
+    if (sy) sy.addEventListener("click", function () {
+      const m = bx.querySelector("#tdk-exp-msg"); if (m) m.textContent = "Syncing shared…";
+      syncShared(true, function (r) { if (!m) return; m.innerHTML = r.err ? '<span style="color:#e5615c">' + r.err + '</span>' : "Shared synced ✓ " + r.items + " items · " + r.buckets + " buckets"; });
     });
     try { GM_setValue("build_seen_at", Date.now()); } catch (e) { } updateBuildBadge(); // opening the changelog marks build changes as seen
     bindClose(bx);
@@ -2643,6 +2691,7 @@
   setTimeout(recordBuilds, 5000);                // snapshot the /builds/ bundles this page loaded
   setInterval(recordBuilds, 60 * 1000);          // catch SPA-loaded chunks + hash changes as you browse
   setTimeout(autoDetectTravelOnce, 9000);        // one-time: read your property → auto-set Airstrip −30% if you have it
+  setTimeout(function () { try { if (GM_getValue("shared_url", "") && Date.now() - (GM_getValue("shared_synced_at", 0) || 0) > 12 * 3600 * 1000) syncShared(false); } catch (e) { } }, 15000); // refresh the shared feed at most ~twice a day
   setTimeout(checkInvStatus, 8000);              // first check shortly after load
   setInterval(checkInvStatus, 15 * 60 * 1000);   // then quietly every 15 min — lights the Bag when Torn restores inventory
   setTimeout(pollStocks, 12000);                 // seed the restock history soon after load
