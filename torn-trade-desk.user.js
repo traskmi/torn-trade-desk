@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.35.0
+// @version      1.35.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -263,7 +263,11 @@
   }
   function ocGuard() { // seconds until you must be back in Torn for the OC (null if none pending)
     const oc = state.oc; if (!oc || !oc.readyAt) return null;
-    return { name: oc.name, secs: oc.readyAt - Math.floor(Date.now() / 1000) };
+    // While Recruiting, the API's ready_at is a PROVISIONAL placeholder (verified Aug 4 2026: it read ~10h during
+    // Recruiting, then jumped +48h to the real value once Planning began — matching Torn/TornTools). Don't trust it
+    // or flag flights until Planning starts; the deadline is days off during Recruiting anyway.
+    const provisional = String(oc.status || "").toLowerCase() === "recruiting";
+    return { name: oc.name, secs: oc.readyAt - Math.floor(Date.now() / 1000), status: oc.status, provisional: provisional };
   }
   function fmtDur(secs) { // ticks down to the second under an hour so the OC banner visibly counts
     secs = Math.max(0, secs | 0);
@@ -646,7 +650,10 @@
     const g = ocGuard();
     if (!g) { el.style.display = "none"; el.innerHTML = ""; return; }
     el.style.display = "";
-    if (g.secs <= 0) {
+    if (g.provisional) { // Recruiting — API ready_at is a placeholder; don't show a misleading countdown or flag flights
+      el.className = "tdk-oc";
+      el.innerHTML = '⏰ <b>OC “' + g.name + '”</b> is recruiting — the real ready deadline is set once planning starts (days off; you’re clear to travel for now).';
+    } else if (g.secs <= 0) {
       el.className = "tdk-oc danger";
       el.innerHTML = '⛔ <b>OC “' + g.name + '” is ready now</b> — don’t travel. You must be in Torn (not flying/hospital) or you’ll block the crime.';
     } else {
@@ -715,7 +722,7 @@
       const aff = cash == null || x.full <= cash;
       const fill = x.stock >= cap;
       const isTop = topOver && x === topOver;
-      const ocMiss = g && FLY[x.cc] && (g.secs <= 0 || FLY[x.cc].rt * 60 >= g.secs); // round-trip (min→sec) vs time-to-ready
+      const ocMiss = g && !g.provisional && FLY[x.cc] && (g.secs <= 0 || FLY[x.cc].rt * 60 >= g.secs); // round-trip (min→sec) vs time-to-ready; skip while Recruiting (ready_at provisional)
       let sc = x.stock === 0 ? '<span class="chip c-out">out</span>'
         : x.stock < cap ? '<span class="chip c-low">only ' + x.stock + '</span>'
           : '<span class="chip c-ok">' + x.stock.toLocaleString() + '</span>';
@@ -1427,6 +1434,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.35.1", d: "Aug 4, 2026", c: ["OC guard fix: while your Organized Crime is still RECRUITING, Torn's API reports a placeholder ready-time that's wrong (it jumps to the real value only once planning starts — which is why it briefly showed ~10h then corrected to match Torn's 2d). It no longer shows that misleading countdown or flags flights during recruiting — it just says 'recruiting, clear to travel'. Once planning begins, the real countdown + ⛔ flight flags kick in"] },
     { v: "1.35.0", d: "Aug 4, 2026", c: ["⏳ Restock estimate now shows the whole cycle: out-of-stock rows show '⏳ ~36m · +500' (next restock + typical batch size), and hovering breaks down the full cycle — 'restocks ~500 → sells out in ~18m → out ~1h before it returns'. So you can see how many each restock brings and how fast it sells out.", "Removed the Profit/ea column — it's redundant with 'Profit ×N' (which already respects your Cap). Want per-item profit? Just set Cap to 1"] },
     { v: "1.34.2", d: "Aug 4, 2026", c: ["🐞 Big Flip-finder fix: it was showing phantom flips (e.g. 'Bathrobe buy $1,000 → sell $11.7M'). Cause: it used the item's market_price as the buy price, but that field is Torn's stale LAST-TRADED value, not a live listing — for rarely-traded items it's fiction (Bathrobe last sold for $1,000; real sellers ask $19.5M). Now the buy price is the actual cheapest BAZAAR listing (a real current ask), so a 'flip' only shows when a real listing truly sits below a live buy-offer. Result: far fewer flips, but the ones shown are real (the phantoms — Bathrobe, Thimble, even Christmas Gnome — correctly vanish). Re-open 💱 Flip to rebuild the list"] },
     { v: "1.34.1", d: "Aug 4, 2026", c: ["Added an '⬇ Export restock data' button in the changelog window (click the version). It copies all your recorded restock/stock-change data (with item names) to the clipboard — paste it to Claude and say 'analyze the restock data' to turn the collected observations into a real restock-timing model. This is how the browser-side data reaches the analysis"] },
