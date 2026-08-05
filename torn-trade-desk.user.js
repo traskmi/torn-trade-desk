@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.39.0
+// @version      1.40.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -61,8 +61,21 @@
   }
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false) };
   const fmtRt = function (min) { const h = Math.floor(min / 60), m = min % 60; return (h ? h + "h" : "") + (m ? m + "m" : "") || "0m"; };
+  /* ---------- travel-time method: multiplier on FLY[].rt (base = Standard). Verified wiki.torn.com/wiki/Travel
+     Aug 5 2026 (Cayman 33→23→17→10 min): Airstrip=70% of Standard (a property Airstrip + Pilot), WLT benefit=50%,
+     Business Class=30%. Book "Mailing Yourself Abroad" stacks an extra −25% (×0.75) for 31 days. ±3% flight variance,
+     so this is close-not-exact. Uniform across destinations → the $/min RANK is unchanged; what it fixes is the
+     absolute $/min, the ≤Xh time filter, the OC flight guard, and the shown fly times. ---------- */
+  const TRAVEL_METHODS = { std: { mult: 1.00, label: "Standard", short: "Standard" }, air: { mult: 0.70, label: "Airstrip · Private Island + Pilot (−30%)", short: "Airstrip −30%" }, wlt: { mult: 0.50, label: "WLT benefit (−50%)", short: "WLT −50%" }, biz: { mult: 0.30, label: "Business Class ticket (−70%)", short: "Business −70%" } };
+  function travelMult() { const m = TRAVEL_METHODS[state.travelMethod] || TRAVEL_METHODS.std; return m.mult * (state.travelBook ? 0.75 : 1); }
+  function rtOf(cc) { const f = FLY[cc]; return f ? Math.max(1, Math.round(f.rt * travelMult())) : 0; } // effective round-trip minutes for the user's method
+  function travelLabel() { const m = (TRAVEL_METHODS[state.travelMethod] || TRAVEL_METHODS.std).short; return m + (state.travelBook ? " +book" : ""); }
+  function recomputePpm() { // re-price every row's $/min + full load (after a Cap or travel-method change) and re-rank
+    (state.rows || []).forEach(function (x) { const f = FLY[x.cc]; if (!f) return; x.ppm = Math.round((x.ppi * state.cap - f.fare) / rtOf(x.cc)); x.full = x.buy * state.cap; });
+    state.rows.sort(function (a, b) { return b.ppm - a.ppm; });
+  }
   const TIME_OPTS = [[0, "⏱ Any time"], [60, "≤ 1h"], [90, "≤ 1½h"], [120, "≤ 2h"], [180, "≤ 3h"], [240, "≤ 4h"], [360, "≤ 6h"], [480, "≤ 8h"], [600, "≤ 10h"]];
 
   /* ---------- helpers ---------- */
@@ -312,7 +325,7 @@
           const ppi = sell - it.cost;
           if (ppi <= 0) return;
           const cap = state.cap;
-          const ppm = Math.round((ppi * cap - f.fare) / f.rt);
+          const ppm = Math.round((ppi * cap - f.fare) / rtOf(cc));
           rows.push({ id: it.id, name: it.name, cc: cc, country: f.name, buy: it.cost, sell: sell, stock: it.quantity, ppi: ppi, ppm: ppm, full: it.cost * cap, freshS: state.updates[cc] });
         });
       });
@@ -537,6 +550,11 @@
     .tdk-set .ssub{font-size:12px;color:#928b78;margin-top:6px;line-height:1.55}
     .tdk-set .ssub b{color:#d9b441}
     .tdk-set .serr{color:#e5615c}
+    .tdk-set select{flex:1;min-width:0;background:#201e17;border:1px solid #3a3729;color:#ece7d8;border-radius:8px;padding:7px 9px;font-size:12px}
+    .tdk-set .scheck{display:flex;align-items:center;gap:7px;font-size:12px;color:#c3bda9;cursor:pointer}
+    .tdk-set .scheck input{flex:0 0 auto;min-width:0;width:15px;height:15px;accent-color:#d9b441}
+    .tdk-set .scheck small{color:#928b78}
+    .tdk-set .ssub a.prof{color:#d9b441;text-decoration:none;border-bottom:1px dotted #4a4536}
     .tdk-happy .hreset{font-size:14px;font-weight:700;color:#8fe6b3;background:#16241c;border:1px solid #2f5e46;border-radius:9px;padding:8px 11px;margin-bottom:8px}
     .tdk-happy .hreset.soon{color:#f0b3ad;background:#2c1614;border-color:#7a4a44}
     .tdk-happy .hsec{font-size:12px;color:#c3bda9;margin:8px 0 4px;font-weight:700}
@@ -708,13 +726,13 @@
     const capTh = host.querySelector("#tdk-th-full"); if (capTh) capTh.textContent = "Profit ×" + cap; // keep the full-load header in sync with Cap
     const fbtn = host.querySelector("#tdk-fund"); if (fbtn) fbtn.className = "tdk-btn2" + (fund ? " on" : "");
     let rows = state.filter === "all" ? state.rows : state.rows.filter(function (x) { return x.cc === state.filter; });
-    if (state.maxTrip) rows = rows.filter(function (x) { return FLY[x.cc] && FLY[x.cc].rt <= state.maxTrip; }); // round-trip time budget
+    if (state.maxTrip) rows = rows.filter(function (x) { return FLY[x.cc] && rtOf(x.cc) <= state.maxTrip; }); // round-trip time budget (effective time for your travel method)
     const best = rows.find(function (x) { return (cash == null || x.full <= cash) && x.stock >= cap; });
     const alt = best ? null : rows.find(function (x) { return x.stock > 0; }); // rows are sorted by ppm desc
     // Only surface a "funded" play you could ACTUALLY reach by liquidating stocks (cash + stock value).
     const topOver = rows.find(function (x) { return x.stock >= cap && cash != null && x.full > cash && x.full <= funds && (!best || x.ppm > best.ppm); });
     const b = host.querySelector("#tdk-best");
-    const loc = (state.filter === "all" ? "" : " · " + FLY[state.filter].name) + (cash != null ? " · " + money(cash) : "");
+    const loc = (state.filter === "all" ? "" : " · " + FLY[state.filter].name) + (cash != null ? " · " + money(cash) : "") + (travelMult() < 1 ? " · ✈ " + travelLabel() : "");
     let html;
     if (best) {
       html = '<div class="l">Best now' + loc + '</div>' +
@@ -758,7 +776,7 @@
       const aff = cash == null || x.full <= cash;
       const fill = x.stock >= cap;
       const isTop = topOver && x === topOver;
-      const ocMiss = g && !g.provisional && FLY[x.cc] && (g.secs <= 0 || FLY[x.cc].rt * 60 >= g.secs); // round-trip (min→sec) vs time-to-ready; skip while Recruiting (ready_at provisional)
+      const ocMiss = g && !g.provisional && FLY[x.cc] && (g.secs <= 0 || rtOf(x.cc) * 60 >= g.secs); // effective round-trip (min→sec) vs time-to-ready; skip while Recruiting (ready_at provisional)
       let sc = x.stock === 0 ? '<span class="chip c-out">out</span>'
         : x.stock < cap ? '<span class="chip c-low">only ' + x.stock + '</span>'
           : '<span class="chip c-ok">' + x.stock.toLocaleString() + '</span>';
@@ -786,9 +804,10 @@
       const shortB = (!aff && cash != null && fill) ? '<span class="chip short">free +' + money(x.full - cash) + '</span>' : '';
       const cls = (aff ? "" : (fund ? (isTop ? "fund" : "") : "dim")) + (ocMiss ? " ocmiss" : "");
       const mark = (aff && fill) ? '<span class="star" title="Affordable now & fully in stock — a clean pick">★</span>' : (isTop ? '<span class="star" title="Best funded play — over budget, but reachable by selling stocks (see the banner up top)">💰</span>' : '');
-      const ocBadge = ocMiss ? '<span class="oc-x" title="Round trip ' + (FLY[x.cc] ? fmtRt(FLY[x.cc].rt) : '?') + (g.secs <= 0 ? ' — your OC is ready NOW, don’t fly' : ' exceeds your OC (ready in ' + fmtDur(g.secs) + ') — you’d miss it') + '">⛔ OC</span>' : '';
+      const ocBadge = ocMiss ? '<span class="oc-x" title="Round trip ' + (FLY[x.cc] ? fmtRt(rtOf(x.cc)) : '?') + (g.secs <= 0 ? ' — your OC is ready NOW, don’t fly' : ' exceeds your OC (ready in ' + fmtDur(g.secs) + ') — you’d miss it') + '">⛔ OC</span>' : '';
+      const rtTxt = FLY[x.cc] ? '<span title="' + (travelMult() < 1 ? travelLabel() + ' · base ' + fmtRt(FLY[x.cc].rt) : 'Standard round trip') + '">' + fmtRt(rtOf(x.cc)) + ' rt</span> · ' : '';
       return '<tr class="' + cls + '" data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '">' +
-        '<td class="l"><span class="nm">' + x.name + mark + '</span><div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + (FLY[x.cc] ? fmtRt(FLY[x.cc].rt) + ' rt · ' : '') + ago(x.freshS) + ' old' + ocBadge + '</div></td>' +
+        '<td class="l"><span class="nm">' + x.name + mark + '</span><div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + rtTxt + ago(x.freshS) + ' old' + ocBadge + '</div></td>' +
         '<td class="mv">' + full$(x.buy) + '</td><td class="mv">' + full$(x.sell) + '</td>' +
         '<td class="gd">' + money(x.ppi * cap) + '</td><td>' + sc + '</td>' +
         '<td class="mv">' + money(x.full) + shortB + '</td>' +
@@ -1566,6 +1585,7 @@
     } catch (e) { /* keep last known state */ }
   }
   const CHANGELOG = [
+    { v: "1.40.0", d: "Aug 5, 2026", c: ["✈ Renamed 💰 Fund → ✈ Travel and it now uses YOUR real flight time: pick your method in ⚙ Settings (Standard / Airstrip −30% [Private Island + Pilot] / WLT −50% / Business Class −70%, + optional −25% 'Mailing Yourself Abroad' book) and the whole board re-times — accurate $/min, the ≤time filter, the OC flight-guard, and the shown round-trips all match your setup (verified vs the Torn wiki; ±3% game variance)", "Auto-detect: ⚙ Settings reads your Torn property and offers one-click 'Use Airstrip −30%' if it finds an Airstrip + Pilot", "Cap now auto-grows to your true carry max the moment you open the travel page (e.g. after adding the Airstrip+Pilot's +items) — never shrinks it"] },
     { v: "1.39.0", d: "Aug 5, 2026", c: ["🛒 Item Market pages now annotate live: a context banner (market value · cheapest bazaar · top trader bid) with a 💰/🔒 sell-guard mirror (click to toggle keep⇄sell), and any listing priced BELOW the top live trader bid gets outlined green with a ⚡+profit tag — a crossed-market flip you can buy right there and trade for more", "🏬 City shops (shops.php) now show a 💰+spread flip tag on the shelf: each item compares its shop price to market value, so you can spot 'buy here, resell higher' straight off the shelf (muted 'mkt $X' on the rest)"] },
     { v: "1.38.3", d: "Aug 5, 2026", c: ["🎯 Bounty: hospital/jail targets now show 'out in ~18m' (their release countdown), and the unavailable list is sorted soonest-out first — so you can see who's about to be fair game and time your hit"] },
     { v: "1.38.2", d: "Aug 5, 2026", c: ["🔬 Build watcher fix: it was flagging ~40 'NEW' modules that were just existing Torn modules the watcher saw for the first time as you browsed (it only baselined off the first page). Now there's a 3-day cataloging window — first-sightings are quietly recorded (not alerts), and the 🆕 only fires for genuine code UPDATES (a bundle's hash changing) or truly new modules after the catalog settles. Existing installs get their noisy log auto-cleared once"] },
@@ -1804,6 +1824,44 @@
       updateReset();
     }, 1000);
   }
+  // Auto-detect the user's flight method from their Torn property: an Airstrip (property modification) + Pilot
+  // (staff) → the Airstrip −30% method. Defensive about the exact API shape (flatten + case-insensitive match) until
+  // verified against a real `user/?selections=properties` payload — it REPORTS what it found and offers one-click
+  // apply rather than silently overriding a manual pick.
+  function detectTravelProp() {
+    const el = host.querySelector("#tdk-set-tdetect"); if (!el) return;
+    const key = GM_getValue("torn_key", "");
+    if (!key) { el.innerHTML = "Add a Torn key above to auto-detect your Private Island / Airstrip / Pilot."; return; }
+    el.textContent = "🔍 Checking your property…";
+    gmGet("https://api.torn.com/user/?selections=properties&key=" + encodeURIComponent(key)).then(function (j) {
+      if (!j || j.error) { el.innerHTML = '<span class="serr">Couldn’t read properties: ' + ((j && j.error && j.error.error) || "no data") + '</span> — pick your method manually above.'; return; }
+      const props = j.properties || {};
+      const list = Array.isArray(props) ? props : Object.values(props);
+      if (!list.length) { el.innerHTML = "No properties returned — pick your method manually above."; return; }
+      const blob = function (v) { try { return JSON.stringify(v == null ? "" : v).toLowerCase(); } catch (e) { return String(v).toLowerCase(); } };
+      // current residence = the property flagged current/staying; else the Private Island; else the first
+      const cur = list.find(function (p) { return /current|staying|residence/.test(blob(p.status)); })
+        || list.find(function (p) { return /private island/.test(blob(p.property) + blob(p.property_type)); })
+        || list[0];
+      const hay = blob(cur.modifications) + " " + blob(cur.staff) + " " + blob(cur);
+      const hasAir = /airstrip/.test(hay), hasPilot = /pilot/.test(hay);
+      const pname = (cur.property || "your property");
+      if (hasAir) {
+        el.innerHTML = "Detected: <b>" + pname + "</b> · Airstrip ✓" + (hasPilot ? " · Pilot ✓" : " · Pilot ？") +
+          " → Airstrip <b>−30%</b>. " + (state.travelMethod === "air" ? "<b>Active.</b>" : '<a href="#" id="tdk-tapply" class="prof">Use it</a>');
+        const ap = host.querySelector("#tdk-tapply");
+        if (ap) ap.addEventListener("click", function (e) {
+          e.preventDefault(); state.travelMethod = "air"; GM_setValue("travelMethod", "air");
+          const sel = host.querySelector("#tdk-set-tmethod"); if (sel) sel.value = "air";
+          if (state.rows && state.rows.length) recomputePpm();
+          const eff = host.querySelector("#tdk-set-teff"); if (eff) { const pct = Math.round((1 - travelMult()) * 100); eff.innerHTML = "Effective flight time: <b>−" + pct + "%</b> vs Standard · ±3% Torn variance"; }
+          detectTravelProp(); render();
+        });
+      } else {
+        el.innerHTML = "Current property: <b>" + pname + "</b> — no Airstrip found (so Standard flight time). Add an Airstrip + Pilot in-game for −30%, or pick a method manually.";
+      }
+    }).catch(function (e) { el.innerHTML = '<span class="serr">Detect failed: ' + (e.message || e) + '</span> — pick manually above.'; });
+  }
   function openSettings() {
     const bx = host.querySelector("#tdk-buyers");
     bx.classList.add("open");
@@ -1817,6 +1875,13 @@
         '<div class="srow"><input id="tdk-set-w3b" type="text" spellcheck="false" placeholder="W3B key" value="' + esc(GM_getValue("w3b_key", "")) + '"><button class="tdk-btn2" id="tdk-set-w3btest">Test</button></div>' +
         '<div class="srow"><button class="tdk-btn2" id="tdk-set-save">Save keys</button><span id="tdk-set-msg" class="ssub"></span></div>' +
         '<div id="tdk-set-out" class="ssub"></div>' +
+        '<div class="sl" style="margin-top:16px">✈ Travel method <small>— sets your real flight time so $/min, the ≤time filter &amp; the OC guard match your setup</small></div>' +
+        '<div class="srow"><select id="tdk-set-tmethod">' +
+          Object.keys(TRAVEL_METHODS).map(function (k) { return '<option value="' + k + '"' + (state.travelMethod === k ? ' selected' : '') + '>' + TRAVEL_METHODS[k].label + '</option>'; }).join("") +
+        '</select></div>' +
+        '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-tbook"' + (state.travelBook ? ' checked' : '') + '> Book “Mailing Yourself Abroad” active <small>(−25% for 31 days, stacks)</small></label></div>' +
+        '<div id="tdk-set-teff" class="ssub"></div>' +
+        '<div id="tdk-set-tdetect" class="ssub"></div>' +
         '<div class="sl" style="margin-top:14px">Need a key? <a class="prof" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Torn → Settings → API Keys</a>. Note: the 📦 Bag needs Torn’s inventory API, which is temporarily disabled during Torn’s inventory migration — no key fixes that until Torn restores it.</div>' +
       '</div>';
     bindClose(bx);
@@ -1826,6 +1891,24 @@
       state.inv = null; state.resale = null; state.itemMeta = null; state.cash = null; state.stocks = null;
       host.querySelector("#tdk-set-msg").textContent = " Saved ✓ — caches cleared, hit Refresh";
     });
+    // ✈ Travel method: persist + live-re-price the board (no refetch needed — just re-time the existing rows)
+    const effLine = function () {
+      const el = host.querySelector("#tdk-set-teff"); if (!el) return;
+      const pct = Math.round((1 - travelMult()) * 100);
+      const ex = FLY.uae ? " · UAE " + fmtRt(FLY.uae.rt) + " → " + fmtRt(rtOf("uae")) : "";
+      el.innerHTML = pct > 0 ? "Effective flight time: <b>−" + pct + "%</b> vs Standard" + ex + " · ±3% Torn variance" : "Standard flight times" + ex;
+    };
+    const applyTravel = function () {
+      GM_setValue("travelMethod", state.travelMethod); GM_setValue("travelBook", state.travelBook);
+      if (state.rows && state.rows.length) recomputePpm();
+      effLine(); render();
+    };
+    const mSel = host.querySelector("#tdk-set-tmethod");
+    if (mSel) mSel.addEventListener("change", function () { state.travelMethod = this.value; applyTravel(); });
+    const bChk = host.querySelector("#tdk-set-tbook");
+    if (bChk) bChk.addEventListener("change", function () { state.travelBook = this.checked; applyTravel(); });
+    effLine();
+    detectTravelProp(); // fills #tdk-set-tdetect from your Torn property (Airstrip + Pilot), if a key is set
     host.querySelector("#tdk-set-test").addEventListener("click", function () {
       const k = host.querySelector("#tdk-set-torn").value.trim(), out = host.querySelector("#tdk-set-out");
       if (!k) { out.textContent = "Enter a Torn key first."; return; }
@@ -1988,7 +2071,7 @@
         '<div class="tdk-h">' +
           '<div class="t">Trade Desk<small>Torn · $/min · <span class="tdk-ver" id="tdk-ver" title="View changelog">v' + (typeof GM_info !== "undefined" && GM_info.script ? GM_info.script.version : "") + '</span></small></div><div class="sp"></div>' +
           '<button class="tdk-btn2" id="tdk-invbtn" title="Toggle your sellable-junk inventory">📦 Bag</button>' +
-          '<button class="tdk-btn2" id="tdk-fund" title="Show top plays even if over budget — reminds you to free up cash first">💰 Fund</button>' +
+          '<button class="tdk-btn2" id="tdk-fund" title="Travel board — best $/min plays for YOUR flight time (Private Island/Airstrip/Pilot), plus over-budget plays with how to fund them from stocks">✈ Travel</button>' +
           '<button class="tdk-btn2" id="tdk-happy" title="Happy-jump calculator — max happy, best order &amp; reset timer">😊 Happy</button>' +
           '<button class="tdk-btn2" id="tdk-flip" title="Quick flips — buy cheap, sell to the highest live trader">💱 Flip</button>' +
           '<button class="tdk-btn2" id="tdk-shop" title="Shop flips — Torn city-shop items worth more on the market">🏪 Shop</button>' +
@@ -2031,7 +2114,7 @@
     host.querySelector("#tdk-refresh").addEventListener("click", function () { if (state.view === "inv") { state.inv = null; renderInv(); } else refresh(); });
     host.querySelector("#tdk-cap").addEventListener("change", function (e) {
       state.cap = Math.max(1, parseInt(e.target.value, 10) || 23); GM_setValue("cap", state.cap);
-      if (state.rows.length) { state.rows.forEach(function (x) { const f = FLY[x.cc]; x.ppm = Math.round((x.ppi * state.cap - f.fare) / f.rt); x.full = x.buy * state.cap; }); state.rows.sort(function (a, b) { return b.ppm - a.ppm; }); render(); }
+      if (state.rows.length) { recomputePpm(); render(); }
     });
     host.querySelector("#tdk-filter").addEventListener("click", function (e) {
       const c = e.target.closest(".tdk-fc"); if (!c) return;
@@ -2329,6 +2412,14 @@
       if (m) { n = +m[1]; cap = +m[2]; }
       else { const ul = document.querySelector('ul[aria-label*="Inventory"]'); const al = ul && ul.getAttribute("aria-label"); const am = al && al.match(/(\d+)\s+item/i); if (am) { n = +am[1]; cap = state.cap || 23; } }
       if (n == null) return;
+      // The travel page's "N / NN" max (only trust NN from the explicit regex, not the aria-label fallback) is your
+      // TRUE carry capacity — bump Cap up to it when it grows (e.g. after adding the Airstrip+Pilot). Never shrink.
+      if (m && cap > (state.cap || 0)) {
+        state.cap = cap; GM_setValue("cap", cap);
+        const ci = host && host.querySelector("#tdk-cap"); if (ci) ci.value = cap;
+        if (state.rows && state.rows.length) recomputePpm();
+        render();
+      }
       const prev = GM_getValue("trip_bought", null);
       if (!prev || prev.n !== n || prev.cap !== cap) { GM_setValue("trip_bought", { n: n, cap: cap, at: Date.now() }); renderHomeBar(); }
     };
