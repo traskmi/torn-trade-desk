@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.45.0
+// @version      1.46.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -38,26 +38,20 @@
     uae: { name: "UAE", rt: 514, fare: 64000 },
     sou: { name: "South Africa", rt: 564, fare: 80000 }
   };
-  // Torn's status/travel destination strings → our country codes (so we can auto-filter to where you're standing).
   const DEST_CC = { mexico: "mex", cayman: "cay", "cayman islands": "cay", canada: "can", hawaii: "haw", "united kingdom": "uni", uk: "uni", britain: "uni", argentina: "arg", switzerland: "swi", japan: "jap", china: "chi", uae: "uae", "united arab emirates": "uae", "south africa": "sou" };
   function destCC(dest) { return dest ? (DEST_CC[String(dest).toLowerCase().trim()] || null) : null; }
-  // Are you standing in a foreign store right now? travel.destination names the country even while hospitalized abroad
-  // (state "Hospital", dest "Canada", time_left 0). Rule out in-flight ("Traveling" / time_left>0) and home ("Okay").
-  // Verified live Aug 2 2026: Abroad-ok→state "Abroad"; Abroad-hospital→"Hospital"+"In a Canadian hospital"; both dest="Canada",time_left 0.
   function detectLoc(j) {
     if (!j || !j.status || !j.travel) return null;
     const st = j.status.state;
-    if (st === "Traveling" || st === "Okay") return null; // in flight, or home & fine
-    if (j.travel.time_left > 0) return null;               // still in transit
-    return destCC(j.travel.destination);                   // Canada/Mexico/… → cc; Torn/empty → null (home)
+    if (st === "Traveling" || st === "Okay") return null;
+    if (j.travel.time_left > 0) return null;
+    return destCC(j.travel.destination);
   }
-  // Tri-state on top of detectLoc's verified rules: are you home (in Torn), in flight, or landed abroad?
-  // "home" is where detectLoc collapses to null-but-not-flying — we split it out so it's a first-class state.
   function detectTravel(j) {
     if (!j || !j.status || !j.travel) return { where: "unknown", cc: null };
     const st = j.status.state, tl = j.travel.time_left || 0;
     if (st === "Traveling" || tl > 0) return { where: "flying", cc: destCC(j.travel.destination), arriveIn: tl };
-    const cc = detectLoc(j);           // abroad → cc; home → null (flying already ruled out above)
+    const cc = detectLoc(j);
     if (cc) return { where: "abroad", cc: cc };
     return { where: "home", cc: null };
   }
@@ -65,16 +59,12 @@
   /* ---------- state ---------- */
   const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false) };
   const fmtRt = function (min) { const h = Math.floor(min / 60), m = min % 60; return (h ? h + "h" : "") + (m ? m + "m" : "") || "0m"; };
-  /* ---------- travel-time method: multiplier on FLY[].rt (base = Standard). Verified wiki.torn.com/wiki/Travel
-     Aug 5 2026 (Cayman 33→23→17→10 min): Airstrip=70% of Standard (a property Airstrip + Pilot), WLT benefit=50%,
-     Business Class=30%. Book "Mailing Yourself Abroad" stacks an extra −25% (×0.75) for 31 days. ±3% flight variance,
-     so this is close-not-exact. Uniform across destinations → the $/min RANK is unchanged; what it fixes is the
-     absolute $/min, the ≤Xh time filter, the OC flight guard, and the shown fly times. ---------- */
+
   const TRAVEL_METHODS = { std: { mult: 1.00, label: "Standard", short: "Standard" }, air: { mult: 0.70, label: "Airstrip · Private Island + Pilot (−30%)", short: "Airstrip −30%" }, wlt: { mult: 0.50, label: "WLT benefit (−50%)", short: "WLT −50%" }, biz: { mult: 0.30, label: "Business Class ticket (−70%)", short: "Business −70%" } };
   function travelMult() { const m = TRAVEL_METHODS[state.travelMethod] || TRAVEL_METHODS.std; return m.mult * (state.travelBook ? 0.75 : 1); }
-  function rtOf(cc) { const f = FLY[cc]; return f ? Math.max(1, Math.round(f.rt * travelMult())) : 0; } // effective round-trip minutes for the user's method
+  function rtOf(cc) { const f = FLY[cc]; return f ? Math.max(1, Math.round(f.rt * travelMult())) : 0; }
   function travelLabel() { const m = (TRAVEL_METHODS[state.travelMethod] || TRAVEL_METHODS.std).short; return m + (state.travelBook ? " +book" : ""); }
-  function recomputePpm() { // re-price every row's $/min + full load (after a Cap or travel-method change) and re-rank
+  function recomputePpm() {
     (state.rows || []).forEach(function (x) { const f = FLY[x.cc]; if (!f) return; x.ppm = Math.round((x.ppi * state.cap - f.fare) / rtOf(x.cc)); x.full = x.buy * state.cap; });
     state.rows.sort(function (a, b) { return b.ppm - a.ppm; });
   }
@@ -111,19 +101,18 @@
     return "$" + n;
   };
   const full$ = function (n) { return "$" + Math.round(n).toLocaleString("en-US"); };
-  const parseM = function (s) { const n = parseInt(String(s == null ? "" : s).replace(/[^0-9]/g, ""), 10); return isNaN(n) ? 0 : n; }; // "$835,076" → 835076
+  const parseM = function (s) { const n = parseInt(String(s == null ? "" : s).replace(/[^0-9]/g, ""), 10); return isNaN(n) ? 0 : n; };
   const escAttr = function (s) { return String(s == null ? "" : s).replace(/"/g, "&quot;"); };
   function copyText(t) {
     try { if (typeof GM_setClipboard === "function") { GM_setClipboard(t, "text"); return; } } catch (e) { }
     try { if (navigator.clipboard) navigator.clipboard.writeText(t); } catch (e) { }
   }
-  function mkTradeLine(nm, q, p, net) { // trade description cap is 155
+  function mkTradeLine(nm, q, p, net) {
     let s = nm + " ×" + q + " @ $" + p.toLocaleString() + "/ea = $" + (p * q).toLocaleString();
     if (typeof net === "number") s += " · net " + (net >= 0 ? "+" : "−") + "$" + Math.abs(net).toLocaleString();
     return s.slice(0, 155);
   }
-  function stashTrade(nm, q, p, uid) { try { GM_setValue("pending_trade", { line: mkTradeLine(nm, q, p), uid: uid || 0, at: Date.now() }); } catch (e) { } } // stashed line stays net-free (it's what the buyer sees)
-  // Buy cost for net-profit math: the YATA foreign shop price from the current board, if this item is a known travel-trade good.
+  function stashTrade(nm, q, p, uid) { try { GM_setValue("pending_trade", { line: mkTradeLine(nm, q, p), uid: uid || 0, at: Date.now() }); } catch (e) { } }
   function buyCostOf(id) { const r = (state.rows || []).find(function (x) { return x.id == id; }); return r ? r.buy : null; }
   const ago = function (secs) {
     if (secs == null) return "?";
@@ -152,47 +141,34 @@
       const j = await gmGet("https://api.torn.com/user/?selections=money,networth,basic,travel&key=" + encodeURIComponent(key));
       if (j && typeof j.money_onhand === "number") state.cash = j.money_onhand;
       if (j && j.networth && typeof j.networth.stockmarket === "number") state.stocks = j.networth.stockmarket;
-      if (j && typeof j.level === "number") state.myLevel = j.level; // for the Bounty tab's beatability context
+      if (j && typeof j.level === "number") state.myLevel = j.level;
       const tw = detectTravel(j);
-      state.travelWhere = tw.where;             // home | flying | abroad | unknown
-      state.loc = tw.where === "abroad" ? tw.cc : null; // preserve existing semantics: abroad cc, else null (drives auto-focus)
-      state.flyTo = tw.where === "flying" ? (tw.cc || null) : null; // destination cc while in transit (null when flying home)
-      state.flyEta = tw.where === "flying" ? (tw.arriveIn || 0) : null; // seconds until landing
-      state.arrivalTs = (j && j.travel && j.travel.timestamp) || 0;    // arrival time → 15s landing-immunity countdown
+      state.travelWhere = tw.where;
+      state.loc = tw.where === "abroad" ? tw.cc : null;
+      state.flyTo = tw.where === "flying" ? (tw.cc || null) : null;
+      state.flyEta = tw.where === "flying" ? (tw.arriveIn || 0) : null;
+      state.arrivalTs = (j && j.travel && j.travel.timestamp) || 0;
     } catch (e) { /* non-fatal */ }
   }
-  // The country to auto-focus the board on: where you're standing (abroad) OR, while flying out, your destination
-  // — so you can plan the buy mid-flight. Flying home (no foreign dest) or at home → null → All.
   function focusCC() { return state.loc || (state.travelWhere === "flying" ? state.flyTo : null) || null; }
-  // Auto-focus, but only re-apply when the focus country actually changes, so a chip you pick yourself sticks
-  // until you move to a new leg (land abroad, take off toward a country, or fly home → back to All).
   function applyLocationFilter() {
     const f = focusCC();
     if (f !== state.lastLoc) { state.lastLoc = f; state.filter = f || "all"; }
   }
-  /* ---------- restock history (foundation for stock-trend + landing prediction) ----------
-     YATA gives only current quantity + a per-country update ts — no velocity. So we record snapshots
-     ourselves (keyed cc:id), deduped by YATA's update ts, and derive trend/restock cadence from them.
-     Stored in GM "stock_hist" = { "cc:id": [[updateTs, quantity], …] }. */
-  const HIST_MAX = 576, HIST_AGE = 48 * 3600; // ~2 days at the 5-min poll cadence; both caps now align at 48h
-  // Durable EVENT log (survives the 48h snapshot window) so we can learn restock cadence over days:
-  // GM "stock_events" = { "cc:id": { rs:[[t,amount],…], so:[t,…], q:lastQty } } — rs=restocks, so=sellouts.
-  const EV_MAX = 80, EV_AGE = 30 * 86400; // keep ~80 events / 30 days per item
-  // A REAL restock vs YATA jitter/sell-back, judged against the item's TYPICAL stock (maxQ = max ever seen):
-  //  • low-stock/rare items (maxQ≤10, e.g. ArmaLite/Gold Laptop that live at 0–1): a refill from sold-out is real
-  //    even if it's just 0→1 — that IS their batch.
-  //  • normal items (carry hundreds/thousands): a real restock is a batch refill from empty (≥5) or a jump that at
-  //    least doubles stock — so a +1 on an item sitting at 84 is jitter, not a restock.
+
+  const HIST_MAX = 576, HIST_AGE = 48 * 3600;
+  const EV_MAX = 80, EV_AGE = 30 * 86400;
+
   function isRealRestock(dq, prevQ, maxQ) {
     if (dq <= 0) return false;
-    if ((maxQ || 0) <= 10) return prevQ === 0;          // rare/low-stock: 0→any = restock
-    return prevQ === 0 ? dq >= 5 : (dq >= prevQ && dq >= 5); // normal: batch refill or a doubling
+    if ((maxQ || 0) <= 10) return prevQ === 0;
+    return prevQ === 0 ? dq >= 5 : (dq >= prevQ && dq >= 5);
   }
   function recordStocks(yata) {
     if (!yata || !yata.stocks) return;
     let hist; try { hist = GM_getValue("stock_hist", null) || {}; } catch (e) { hist = {}; }
     let ev; try { ev = GM_getValue("stock_events", null) || {}; } catch (e) { ev = {}; }
-    let sea; try { sea = GM_getValue("stock_seasonal", null) || {}; } catch (e) { sea = {}; } // persistent, NEVER pruned
+    let sea; try { sea = GM_getValue("stock_seasonal", null) || {}; } catch (e) { sea = {}; }
     const now = Math.floor(Date.now() / 1000), cutoff = now - HIST_AGE, evCut = now - EV_AGE;
     let changed = false, evChanged = false, seaChanged = false;
     Object.keys(yata.stocks).forEach(function (cc) {
@@ -201,35 +177,27 @@
       (block.stocks || block).forEach(function (it) {
         const key = cc + ":" + it.id, arr = hist[key] || (hist[key] = []);
         const last = arr[arr.length - 1];
-        if (last && last[0] === upd) return;                 // YATA hasn't refreshed this country since last point
+        if (last && last[0] === upd) return;
         const prevT = last ? last[0] : null, prevQ = last ? last[1] : null, q = it.quantity;
         arr.push([upd, q]); changed = true;
-        while (arr.length && arr[0][0] < cutoff) arr.shift(); // prune by age
-        if (arr.length > HIST_MAX) arr.splice(0, arr.length - HIST_MAX); // then by count
-        // Event detection off the qty change between consecutive points.
+        while (arr.length && arr[0][0] < cutoff) arr.shift();
+        if (arr.length > HIST_MAX) arr.splice(0, arr.length - HIST_MAX);
         if (prevQ != null) {
           const rec = ev[key] || (ev[key] = { rs: [], so: [], q: null, max: 0, up: [] });
-          rec.max = Math.max(rec.max || 0, prevQ, q);      // running peak stock → tells rare (0–1) items from common (thousands)
+          rec.max = Math.max(rec.max || 0, prevQ, q);
           const dq = q - prevQ;
-          // SEASONAL sell-rate bank (persistent, NEVER pruned): attribute each selling interval's sold-qty + seconds
-          // to a day-of-week × hour bucket (TCT = UTC), so a future model can predict depletion over the ACTUAL
-          // arrival window (weekend/night pace differs). stock_hist is pruned at 48h → we must accumulate this now.
           if (dq < 0 && prevT != null) {
             const dt = upd - prevT;
-            if (dt > 0 && dt <= 3600) {                     // skip long browser-closed gaps (unreliable rate)
-              const d = new Date(((prevT + upd) / 2) * 1000), b = d.getUTCDay() * 24 + d.getUTCHours(); // midpoint → 0..167
-              const sk = sea[key] || (sea[key] = {}), cell = sk[b] || (sk[b] = [0, 0, 0]);               // [soldQty, seconds, samples]
+            if (dt > 0 && dt <= 3600) {
+              const d = new Date(((prevT + upd) / 2) * 1000), b = d.getUTCDay() * 24 + d.getUTCHours();
+              const sk = sea[key] || (sea[key] = {}), cell = sk[b] || (sk[b] = [0, 0, 0]);
               cell[0] += -dq; cell[1] += dt; cell[2] += 1; seaChanged = true;
             }
           }
-          // RAW increase stream — EVERY +N with its size + prior qty, UNfiltered (sellbacks + jitter + restocks all).
-          // Wiki-confirmed: sell-backs increase stock, and restocks are regular/irregular batches — so a +N can't be
-          // classified as "restock" from the number alone. Capture raw now; characterize empirically after a few days.
           if (dq > 0) { (rec.up || (rec.up = [])).push([upd, dq, prevQ]); evChanged = true; }
-          if (isRealRestock(dq, prevQ, rec.max)) { rec.rs.push([upd, dq]); evChanged = true; } // PROVISIONAL "real restock" (batch/doubling) — feeds the ⏳ estimate for now
-          else if (prevQ > 0 && q === 0) { rec.so.push(upd); evChanged = true; }        // just sold out
+          if (isRealRestock(dq, prevQ, rec.max)) { rec.rs.push([upd, dq]); evChanged = true; }
+          else if (prevQ > 0 && q === 0) { rec.so.push(upd); evChanged = true; }
           rec.q = q;
-          // prune events by age + count
           rec.rs = rec.rs.filter(function (e) { return e[0] >= evCut; }); if (rec.rs.length > EV_MAX) rec.rs.splice(0, rec.rs.length - EV_MAX);
           rec.so = rec.so.filter(function (t) { return t >= evCut; }); if (rec.so.length > EV_MAX) rec.so.splice(0, rec.so.length - EV_MAX);
           if (rec.up) { rec.up = rec.up.filter(function (e) { return e[0] >= evCut; }); if (rec.up.length > 200) rec.up.splice(0, rec.up.length - 200); }
@@ -239,64 +207,67 @@
     if (changed) { try { GM_setValue("stock_hist", hist); } catch (e) { } }
     if (evChanged) { try { GM_setValue("stock_events", ev); } catch (e) { } }
     if (seaChanged) { try { GM_setValue("stock_seasonal", sea); } catch (e) { } }
-    state._hist = hist; state._ev = ev; state._seasonal = sea; // cache for this render cycle
+    state._hist = hist; state._ev = ev; state._seasonal = sea;
   }
   const med = function (arr) { if (!arr.length) return 0; const a = arr.slice().sort(function (x, y) { return x - y; }); return a[Math.floor(a.length / 2)]; };
-  // From recorded restock/sellout events, derive: full CYCLE (interval between restocks) + its parts — typical
-  // restock BATCH size, how long it takes to SELL OUT after a restock, and how long it sits OUT before restocking.
-  // ---------- shared central dataset (optional): a Google Apps Script polls YATA 24/7 and serves the authoritative
-  // events+seasonal history, so every user (incl. brand-new) gets full coverage without collecting it themselves.
-  // Foreign stock is GLOBAL, so one poller suffices — the client just READS it and prefers it per-item (fresher /
-  // 24-7) over its own thinner local record; local is the offline fallback. See shared-collector.gs + Settings URL.
-  let _sharedCache; // session cache of GM "shared_data"
+
+  let _sharedCache;
   function sharedFresh() {
     let synced = 0; try { synced = GM_getValue("shared_synced_at", 0) || 0; } catch (e) { }
-    if (!synced || Date.now() - synced > 4 * 86400 * 1000) return null;   // stale (>4d) → ignore, use local
+    if (!synced || Date.now() - synced > 4 * 86400 * 1000) return null;
     if (_sharedCache === undefined) { try { _sharedCache = GM_getValue("shared_data", null); } catch (e) { _sharedCache = null; } }
     return _sharedCache;
   }
-  function evRecord(cc, id) { // events record, shared-preferred per item
+  function evRecord(cc, id) {
     const key = cc + ":" + id, sd = sharedFresh();
     if (sd && sd.events && sd.events[key]) return sd.events[key];
     const ev = state._ev || (function () { try { return GM_getValue("stock_events", null) || {}; } catch (e) { return {}; } })();
     return ev[key];
   }
+  function seasonalRecord(cc, id) {
+    const key = cc + ":" + id, sd = sharedFresh();
+    if (sd && sd.seasonal && sd.seasonal[key]) return sd.seasonal[key];
+    const sea = state._seasonal || (function () { try { return GM_getValue("stock_seasonal", null) || {}; } catch (e) { return {}; } })();
+    return sea[key];
+  }
+
   function syncShared(manual, cb) {
     const url = GM_getValue("shared_url", "");
     if (!url) { if (cb) cb({ err: "No shared feed URL set (⚙ Settings)." }); return; }
     gmGet(url, 30000).then(function (j) {
       if (!j || j.kind !== "tdk-restock-export") { if (cb) cb({ err: "That URL didn’t return Trade Desk data." }); return; }
       try { GM_setValue("shared_data", { at: j.at, events: j.events || {}, seasonal: j.seasonal || {} }); GM_setValue("shared_synced_at", Date.now()); } catch (e) { }
-      _sharedCache = undefined; // force reload next read
+      _sharedCache = undefined;
       let items = Object.keys(j.events || {}).length, buckets = 0; const s = j.seasonal || {}; Object.keys(s).forEach(function (k) { buckets += Object.keys(s[k]).length; });
       if (state.rows && state.rows.length) render();
       if (cb) cb({ items: items, buckets: buckets, at: j.at });
     }).catch(function (e) { if (cb) cb({ err: (e.message || e) }); });
   }
+
   function restockPredict(cc, id) {
     const rec = evRecord(cc, id); if (!rec || !rec.rs || rec.rs.length < 2) return null;
-    const rs = rec.rs.slice().sort(function (a, b) { return a[0] - b[0]; }); // [[t, amount], …]
+    const rs = rec.rs.slice().sort(function (a, b) { return a[0] - b[0]; });
     const ts = rs.map(function (e) { return e[0]; });
     const gaps = []; for (let i = 1; i < ts.length; i++) gaps.push(ts[i] - ts[i - 1]);
-    const interval = med(gaps);                                             // full cycle: restock → … → next restock
+    const interval = med(gaps);
     const lastRs = ts[ts.length - 1], nextAt = lastRs + interval;
-    const batch = med(rs.map(function (e) { return e[1]; }).filter(function (a) { return a > 0; })); // typical restock size
+    const batch = med(rs.map(function (e) { return e[1]; }).filter(function (a) { return a > 0; }));
     const so = (rec.so || []).slice().sort(function (a, b) { return a - b; });
-    const durs = []; // time from a restock to the NEXT sellout = how long it stays in stock
+    const durs = [];
     so.forEach(function (st) { let pr = 0; for (let i = 0; i < ts.length; i++) { if (ts[i] < st) pr = ts[i]; else break; } if (pr) durs.push(st - pr); });
     const selloutDur = med(durs);
-    const outDur = (interval && selloutDur && interval > selloutDur) ? interval - selloutDur : 0; // time spent OUT before restock
+    const outDur = (interval && selloutDur && interval > selloutDur) ? interval - selloutDur : 0;
     return { interval: interval, lastRs: lastRs, nextAt: nextAt, n: ts.length, lastSo: so.length ? so[so.length - 1] : 0, batch: batch, selloutDur: selloutDur, outDur: outDur, nSo: durs.length };
   }
-  // Cross-tab background poll: a GM timestamp lock ensures only ONE fetch per interval across all open Torn tabs.
+
   const POLL_MS = 5 * 60 * 1000;
   function pollStocks() {
     let last = 0; try { last = GM_getValue("stock_poll_at", 0); } catch (e) { }
-    if (Date.now() - last < POLL_MS - 4000) return;          // another tab polled recently
-    try { GM_setValue("stock_poll_at", Date.now()); } catch (e) { } // claim the slot before fetching
+    if (Date.now() - last < POLL_MS - 4000) return;
+    try { GM_setValue("stock_poll_at", Date.now()); } catch (e) { }
     gmGet("https://yata.yt/api/v1/travel/export/", 30000).then(recordStocks).catch(function () { });
   }
-  // Short-term trend from the last two recorded points: ▲ restocked / ▼ being bought / null if <2 points or flat.
+
   function stockTrend(cc, id) {
     const hist = state._hist || (function () { try { return GM_getValue("stock_hist", null) || {}; } catch (e) { return {}; } })();
     const arr = hist[cc + ":" + id]; if (!arr || arr.length < 2) return null;
@@ -305,61 +276,98 @@
     let maxQ = 0; for (let i = 0; i < arr.length; i++) if (arr[i][1] > maxQ) maxQ = arr[i][1];
     return { dq: dq, perMin: dq / (Math.max(60, b[0] - a[0]) / 60), prev: a[1], maxQ: maxQ };
   }
-  // Sustained buy-rate from the FULL recorded history (not just the last 2 samples): time-weighted average over
-  // EVERY downward (selling) segment — restock jumps (up) and flat spans are excluded, so the denominator is
-  // "time actually spent selling". Steadier than stockTrend, and it keeps improving as more history accrues.
+
   function buyRate(cc, id) {
     const hist = state._hist || (function () { try { return GM_getValue("stock_hist", null) || {}; } catch (e) { return {}; } })();
     const arr = hist[cc + ":" + id]; if (!arr || arr.length < 2) return null;
     let sold = 0, secs = 0, nSeg = 0;
     for (let i = 1; i < arr.length; i++) {
       const dq = arr[i][1] - arr[i - 1][1], dt = arr[i][0] - arr[i - 1][0];
-      if (dq < 0 && dt > 0) { sold += -dq; secs += dt; nSeg++; }   // a selling interval
+      if (dq < 0 && dt > 0) { sold += -dq; secs += dt; nSeg++; }
     }
     if (sold <= 0 || secs <= 0) return null;
     return { perMin: sold / (secs / 60), sold: sold, sellMin: secs / 60, nSeg: nSeg };
   }
-  // "Landing" prediction: if you flew to this item's country RIGHT NOW, what's the stock when you touch down?
-  // Combines your one-way flight time (travel method), the current buy-rate (stockTrend) and the restock cycle
-  // (restockPredict). Honest — returns an "?" outlook when there isn't enough history. Timestamps are epoch seconds.
+
+  /* ---------- Day-of-Week × Hour Seasonal Depletion Engine (v1.46.0) ---------- */
+  function simulatedDepletion(x, startTs, landTs) {
+    const sea = seasonalRecord(x.cc, x.id);
+    const flightSecs = landTs - startTs;
+    if (flightSecs <= 0) return { estStock: x.stock, confidence: "high", minSamples: 99 };
+    
+    let curStock = x.stock;
+    let t = startTs;
+    let minSamplesSeen = Infinity;
+    let missingBuckets = 0;
+
+    // Simulate flight window hour by hour
+    while (t < landTs && curStock > 0) {
+      const nextHour = Math.min(landTs, (Math.floor(t / 3600) + 1) * 3600);
+      const dt = nextHour - t;
+      const d = new Date(t * 1000);
+      const bucket = d.getUTCDay() * 24 + d.getUTCHours();
+      const cell = sea ? sea[bucket] : null;
+
+      let ratePerMin = 0;
+      if (cell && cell[1] > 0 && cell[2] >= 1) {
+        ratePerMin = cell[0] / (cell[1] / 60); // soldQty / minutes spent selling
+        minSamplesSeen = Math.min(minSamplesSeen, cell[2]);
+      } else {
+        missingBuckets++;
+      }
+
+      curStock -= ratePerMin * (dt / 60);
+      t = nextHour;
+    }
+
+    curStock = Math.max(0, Math.round(curStock));
+    let conf = "high";
+    if (missingBuckets > 0 || minSamplesSeen < 3) conf = "low";
+    return { estStock: curStock, confidence: conf, minSamples: minSamplesSeen === Infinity ? 0 : minSamplesSeen };
+  }
+
   function arrivalOutlook(x) {
     if (!FLY[x.cc]) return null;
     const nowS = Math.floor(Date.now() / 1000);
     let arr;
-    if (state.travelWhere === "abroad" && x.cc === state.loc) arr = nowS;                                          // already standing there
-    else if (state.travelWhere === "flying" && x.cc === state.flyTo && state.arrivalTs) arr = state.arrivalTs;     // en route to it
-    else arr = nowS + Math.round(rtOf(x.cc) / 2) * 60;                                                             // one-way from Torn, your method
+    if (state.travelWhere === "abroad" && x.cc === state.loc) arr = nowS;
+    else if (state.travelWhere === "flying" && x.cc === state.flyTo && state.arrivalTs) arr = state.arrivalTs;
+    else arr = nowS + Math.round(rtOf(x.cc) / 2) * 60;
+
     const landIn = arr - nowS, landTxt = landIn <= 30 ? "you arrive" : "you land in ~" + fmtDur(landIn);
     const cap = state.cap, st = x.stock;
     const rp = restockPredict(x.cc, x.id);
     const br = buyRate(x.cc, x.id), tr = stockTrend(x.cc, x.id);
-    const rate = br ? br.perMin : ((tr && tr.dq < 0) ? Math.abs(tr.perMin) : 0);                                   // sustained sell velocity from ALL history; last-2 fallback if too little data
-    let outAt = Infinity;
-    if (st <= 0) outAt = nowS; else if (rate > 0) outAt = nowS + (st / rate) * 60;
-    let nextRs = null;
-    if (rp && rp.nextAt) { nextRs = rp.nextAt; if (rp.interval > 0) { let g = 0; while (nextRs < nowS && g++ < 1000) nextRs += rp.interval; } } // roll a stale prediction to the next future cycle
-    const rsAfterOut = (st > 0 && outAt < Infinity && rp && rp.outDur) ? outAt + rp.outDur : null;                 // the restock that follows THIS stock selling out
+    const rate = br ? br.perMin : ((tr && tr.dq < 0) ? Math.abs(tr.perMin) : 0);
+
+    const sim = simulatedDepletion(x, nowS, arr);
     const dur = function (s) { return fmtDur(Math.max(0, Math.round(s))); };
-    const rTxt = Math.round(rate) + "/min" + (br ? " avg (" + br.nSeg + " intervals)" : "");                        // sustained avg when from full history, else last-2
-    const src = rp ? " (from " + rp.n + " restock" + (rp.n === 1 ? "" : "s") + ")" : "";
-    if (st > 0 && (rate <= 0 || outAt > arr)) {                                                                    // in stock and it lasts until you land
-      if (st >= cap) return { cls: "good", txt: "✓ stocked", tip: "In stock (" + st.toLocaleString() + ") and expected to still be stocked when " + landTxt + "." + (rate > 0 ? " Selling ~" + rTxt + "." : "") };
-      return { cls: "good", txt: "◑ " + st, tip: st.toLocaleString() + " in stock — under your Cap " + cap + " (partial load), but likely still there when " + landTxt + "." };
+
+    if (sim.confidence === "low" && (!br || br.nSeg < 2)) {
+      return { cls: "unk", txt: st > 0 ? "◑ " + sim.estStock : "✗ out ?", tip: "Low seasonal data for this arrival window. Current stock " + st.toLocaleString() + " → projected ~" + sim.estStock.toLocaleString() + " on touchdown." };
     }
-    if (st <= 0) {                                                                                                 // out right now
-      if (nextRs && nextRs <= arr) return { cls: "good", txt: "↻ fresh", tip: "Out now, predicted to restock" + (rp.batch ? " ~+" + rp.batch.toLocaleString() : "") + " about " + dur(arr - nextRs) + " before " + landTxt + " — a fresh batch waiting" + src + "." };
-      if (nextRs) return { cls: "bad", txt: "✗ out", tip: "Out now; predicted restock is ~" + dur(nextRs - arr) + " AFTER " + landTxt + " — still empty on arrival" + src + "." };
-      return { cls: "unk", txt: "✗ out ?", tip: "Out now, and not enough restock history to predict the next one yet." };
+
+    if (st > 0 && sim.estStock >= cap) {
+      return { cls: "good", txt: "✓ stocked", tip: "In stock (" + st.toLocaleString() + ") and seasonal model projects ~" + sim.estStock.toLocaleString() + " when " + landTxt + "." };
     }
-    const cand = rsAfterOut || nextRs;                                                                             // in stock now, but selling out before you land
-    if (cand && cand <= arr) return { cls: "good", txt: "↻ fresh", tip: st.toLocaleString() + " now, selling ~" + rTxt + " → sells out ~" + dur(outAt - nowS) + " from now, then predicted to restock before " + landTxt + " — fresh on arrival" + src + "." };
-    return { cls: "warn", txt: "⚠ gone", tip: st.toLocaleString() + " now, selling ~" + rTxt + " → likely sold out ~" + dur(outAt - nowS) + " from now, with no restock predicted before " + landTxt + ". Buy now or expect empty shelves." };
+    if (st > 0 && sim.estStock > 0) {
+      return { cls: "good", txt: "◑ " + sim.estStock, tip: "Projected ~" + sim.estStock.toLocaleString() + " on touchdown — under your Cap " + cap + " (partial load)." };
+    }
+
+    // Depleted or out
+    let nextRs = null;
+    if (rp && rp.nextAt) { nextRs = rp.nextAt; if (rp.interval > 0) { let g = 0; while (nextRs < nowS && g++ < 1000) nextRs += rp.interval; } }
+    
+    if (st <= 0) {
+      if (nextRs && nextRs <= arr) return { cls: "good", txt: "↻ fresh", tip: "Out now, but predicted restock" + (rp.batch ? " ~+" + rp.batch.toLocaleString() : "") + " about " + dur(arr - nextRs) + " before " + landTxt + "." };
+      if (nextRs) return { cls: "bad", txt: "✗ out", tip: "Out now; predicted restock is ~" + dur(nextRs - arr) + " AFTER " + landTxt + "." };
+      return { cls: "unk", txt: "✗ out ?", tip: "Out now, and not enough restock history to predict the next batch." };
+    }
+
+    if (nextRs && nextRs <= arr) return { cls: "good", txt: "↻ fresh", tip: "Sells out mid-flight, but a fresh restock is predicted before " + landTxt + "." };
+    return { cls: "warn", txt: "⚠ gone", tip: "Seasonal model projects stock selling out before " + landTxt + " with no restock expected prior." };
   }
-  /* ---------- Faction OC flight guard: don't fly past your Organized Crime's ready time ----------
-     v2/user/organizedcrime WORKS while abroad/hospital (unlike the Items page), so we can warn even when Torn
-     hides the OC from you in-country. ready_at = planning completes → crime becomes executable; you must be in
-     Torn (not Traveling/Hospital/Jail) or you BLOCK the whole crime. So a round trip longer than time-to-ready
-     = you'd miss it. */
+
   async function loadOC(key) {
     try {
       const j = await gmGet("https://api.torn.com/v2/user/organizedcrime?key=" + encodeURIComponent(key));
@@ -367,31 +375,28 @@
       const st = oc ? String(oc.status || "").toLowerCase() : "";
       if (!oc || oc.executed_at || (oc.expired_at && oc.expired_at < nowS) || ["successful", "failure", "failed", "expired", "completed"].indexOf(st) !== -1) { state.oc = null; return; }
       state.oc = { name: oc.name, status: oc.status, readyAt: oc.ready_at || 0 };
-    } catch (e) { /* non-fatal — keep last known */ }
+    } catch (e) { /* non-fatal */ }
   }
-  function ocGuard() { // seconds until you must be back in Torn for the OC (null if none pending)
+  function ocGuard() {
     const oc = state.oc; if (!oc || !oc.readyAt) return null;
-    // While Recruiting, the API's ready_at is a PROVISIONAL placeholder (verified Aug 4 2026: it read ~10h during
-    // Recruiting, then jumped +48h to the real value once Planning began — matching Torn/TornTools). Don't trust it
-    // or flag flights until Planning starts; the deadline is days off during Recruiting anyway.
     const provisional = String(oc.status || "").toLowerCase() === "recruiting";
     return { name: oc.name, secs: oc.readyAt - Math.floor(Date.now() / 1000), status: oc.status, provisional: provisional };
   }
-  function fmtDur(secs) { // ticks down to the second under an hour so the OC banner visibly counts
+  function fmtDur(secs) {
     secs = Math.max(0, secs | 0);
     const d = Math.floor(secs / 86400), h = Math.floor(secs % 86400 / 3600), m = Math.floor(secs % 3600 / 60), s = secs % 60;
     return d ? d + "d " + h + "h" : h ? h + "h " + m + "m" : m ? m + "m " + s + "s" : s + "s";
   }
-  function mmss(secs) { // in-flight countdown: "Hh Mm" over an hour, else "M:SS"
+  function mmss(secs) {
     secs = Math.max(0, secs | 0);
     const h = Math.floor(secs / 3600), m = Math.floor(secs % 3600 / 60), s = secs % 60;
     return h ? h + "h " + m + "m" : m + ":" + (s < 10 ? "0" : "") + s;
   }
   let landTimer = null;
-  function armLandingRefresh() { // schedule a one-shot refresh at arrival so the immunity timer starts on its own
+  function armLandingRefresh() {
     if (landTimer) { clearTimeout(landTimer); landTimer = null; }
     if (state.travelWhere === "flying" && state.flyEta > 0) {
-      landTimer = setTimeout(function () { landTimer = null; refresh(); }, (state.flyEta + 2) * 1000); // +2s so we're truly landed
+      landTimer = setTimeout(function () { landTimer = null; refresh(); }, (state.flyEta + 2) * 1000);
     }
   }
   async function refresh() {
@@ -404,8 +409,8 @@
         loadResale(key)
       ]);
       await loadCash(key);
-      await loadOC(key); // faction OC deadline (works even while abroad, unlike the Items page)
-      recordStocks(yata); // snapshot every item's stock into the rolling history
+      await loadOC(key);
+      recordStocks(yata);
       const nowS = Math.floor(Date.now() / 1000);
       const rows = [];
       state.updates = {};
@@ -424,18 +429,18 @@
       });
       rows.sort(function (a, b) { return b.ppm - a.ppm; });
       state.rows = rows;
-      state.foreignIds = new Set(); Object.values(yata.stocks).forEach(function (b) { (b.stocks || []).forEach(function (it) { state.foreignIds.add(it.id); }); }); // to exclude travel items from Shop Flips
-      applyLocationFilter(); // auto-focus the board on the country you're standing in
+      state.foreignIds = new Set(); Object.values(yata.stocks).forEach(function (b) { (b.stocks || []).forEach(function (it) { state.foreignIds.add(it.id); }); });
+      applyLocationFilter();
       render();
       const flyNote = state.flyTo && FLY[state.flyTo]
         ? " · ✈ heading to " + FLY[state.flyTo].name + (state.flyEta ? " · land in " + fmtRt(Math.ceil(state.flyEta / 60)) : "") + " — planning ahead"
-        : " · ✈ In flight"; // flying home (no foreign dest) → generic
+        : " · ✈ In flight";
       const locNote = state.travelWhere === "abroad" && FLY[state.loc] ? " · 📍 you're in " + FLY[state.loc].name
         : state.travelWhere === "home" ? " · 🏠 Home"
           : state.travelWhere === "flying" ? flyNote
             : "";
       setStatus("Updated " + new Date().toLocaleTimeString() + locNote);
-      armLandingRefresh(); // if in flight, auto-refresh right when we land (fires the immunity timer without a manual refresh)
+      armLandingRefresh();
     } catch (e) {
       const msg = e.message || "";
       const isYata = e.url && e.url.indexOf("yata.yt") !== -1;
@@ -558,11 +563,9 @@
     .tdk-mkt{display:inline-block;vertical-align:middle}
     .tdk-mkt a{text-decoration:none;font-size:15px;margin-left:6px;cursor:pointer;filter:grayscale(.15)}
     .tdk-mkt a:hover{filter:none}
-    /* city-shop (shops.php) inline flip tags */
     .tdk-shop-tag{margin-left:6px;font-size:11px;font-weight:700;padding:1px 5px;border-radius:5px;white-space:nowrap;vertical-align:middle}
     .tdk-shop-tag.good{background:rgba(85,170,90,.18);color:#7ac67f;border:1px solid rgba(85,170,90,.4)}
     .tdk-shop-tag.meh{background:transparent;color:#8f886f;font-weight:600}
-    /* Item Market (page.php?sid=ItemMarket) context banner + crossed-market flip tags */
     .tdk-im-banner{flex:0 0 100%;width:100%;box-sizing:border-box;margin:0 0 8px;padding:8px 12px;background:#1b1a14;border:1px solid #d9b441;border-radius:8px;color:#d8d2bf;font-size:13px;line-height:1.5}
     .tdk-im-banner b{color:#f0e7cf}
     .tdk-im-banner .tdk-im-x{color:#7ac67f;font-weight:700}
@@ -654,7 +657,7 @@
     .tdk-set .scheck input{flex:0 0 auto;min-width:0;width:15px;height:15px;accent-color:#d9b441}
     .tdk-set .scheck small{color:#928b78}
     .tdk-set .ssub a.prof{color:#d9b441;text-decoration:none;border-bottom:1px dotted #4a4536}
-    .tdk-happy .hreset{font-size:14px;font-weight:700;color:#8fe6b3;background:#16241c;border:1px solid #2f5e46;border-radius:9px;padding:8px 11px;margin-bottom:8px}
+    .tdk-happy .hreset{font-size:14px;font-weight:700;color:#8fe6b3;background:#16241c;border:1px solid #2f5e46;border-radius:99px;padding:8px 11px;margin-bottom:8px}
     .tdk-happy .hreset.soon{color:#f0b3ad;background:#2c1614;border-color:#7a4a44}
     .tdk-happy .hsec{font-size:12px;color:#c3bda9;margin:8px 0 4px;font-weight:700}
     .tdk-happy .hsec small{color:#928b78;font-weight:400}
@@ -736,24 +739,21 @@
     const chips = [["all", "All"]].concat(present.map(function (cc) { return [cc, FLY[cc].name]; }));
     const timeSel = '<select class="tdk-tsel" id="tdk-tsel" title="Only show destinations within this round-trip time">' +
       TIME_OPTS.map(function (o) { return '<option value="' + o[0] + '"' + (state.maxTrip === o[0] ? " selected" : "") + '>' + o[1] + "</option>"; }).join("") + "</select>";
-    const heading = state.travelWhere === "flying" ? state.flyTo : null; // where you're headed (pre-focus while flying)
+    const heading = state.travelWhere === "flying" ? state.flyTo : null;
     host.querySelector("#tdk-filter").innerHTML = chips.map(function (c) {
-      const here = c[0] === state.loc;          // the country you're currently standing in
-      const toHere = c[0] === heading && !here; // your in-flight destination
+      const here = c[0] === state.loc;
+      const toHere = c[0] === heading && !here;
       const mark = here ? "📍 " : toHere ? "✈ " : "";
       const cls = here ? " here" : toHere ? " heading" : "";
       const tip = here ? ' title="You\'re here now"' : toHere ? ' title="Heading here — plan your buy before you land"' : "";
       return '<span class="tdk-fc' + (state.filter === c[0] ? " on" : "") + cls + '" data-cc="' + c[0] + '"' + tip + '>' + mark + c[1] + '</span>';
     }).join("") + timeSel;
   }
-  // Home / sell-side helper bar: abroad → "fly home to sell" nudge; home → your sellable-haul summary + a jump
-  // straight to the Bag. Flying/unknown → hidden. The haul value comes from the scraped counts (API-down safe).
+
   function renderHomeBar() {
     const el = host.querySelector("#tdk-homebar"); if (!el) return;
     const w = state.travelWhere, travelUrl = "https://www.torn.com/page.php?sid=travel";
     if (w === "abroad") {
-      // Use Torn's OWN trip counter scraped from the travel page ("purchased N / 23") — the only reliable read of
-      // this trip's haul while abroad (inventory API down + Items page blocked in-country). Never fabricate a total.
       const tb = GM_getValue("trip_bought", null);
       const cap = (tb && tb.cap) || state.cap || 23;
       const n = tb ? tb.n : null;
@@ -764,7 +764,7 @@
         el.style.display = ""; el.className = "tdk-homebar abroad";
         el.innerHTML = '🛍️ <b>0/' + cap + '</b> bought — fill your slots here, then return to Torn to sell.<a class="hb-go" href="' + travelUrl + '">🛒 Buy</a>';
       } else {
-        el.style.display = "none"; el.innerHTML = ""; // no trip data yet (open the travel page once) — don't guess
+        el.style.display = "none"; el.innerHTML = "";
       }
     } else if (w === "home") {
       const h = haulSummary();
@@ -779,31 +779,30 @@
       el.style.display = "none"; el.innerHTML = "";
     }
   }
-  // 15-second landing-immunity countdown (Torn: you can't be attacked for 15s after you land, abroad or home).
-  // Ticks live off the last-known arrival time; only shows right after a fresh landing.
+
   function renderImmunity() {
     const el = host && host.querySelector("#tdk-immunity"); if (!el) return;
     const arr = state.arrivalTs || 0, now = Math.floor(Date.now() / 1000);
     if (!arr) { el.style.display = "none"; el.innerHTML = ""; return; }
     const toLand = arr - now, rem = (arr + 15) - now;
-    if (state.travelWhere === "flying" && toLand > 0) { // in-flight: live countdown; auto-refresh is armed for landing
+    if (state.travelWhere === "flying" && toLand > 0) {
       el.style.display = ""; el.className = "tdk-imm fly";
       el.innerHTML = '✈ <b>Landing in ' + mmss(toLand) + '</b> — panel auto-refreshes on arrival to start your 15s immunity timer.';
-    } else if (rem > 0) { // landed (now ≥ arrival): 15s immunity window (shows even before the auto-refresh confirms)
+    } else if (rem > 0) {
       el.style.display = ""; el.className = "tdk-imm active";
       el.innerHTML = '🛡️ <b>Immunity: ' + rem + 's</b> — can’t be attacked. Buy / shelter cash in stocks / re-fly NOW.';
-    } else if (rem > -12 && state.travelWhere !== "flying") { // brief "you're exposed now" reminder just after it lapses
+    } else if (rem > -12 && state.travelWhere !== "flying") {
       el.style.display = ""; el.className = "tdk-imm gone";
       el.innerHTML = '⚠️ <b>Immunity ended — you’re exposed.</b> Only wallet cash is muggable — shelter it in stocks.';
     } else { el.style.display = "none"; el.innerHTML = ""; }
   }
-  // OC flight guard banner (works even abroad, where Torn hides the OC from you).
+
   function renderOC() {
     const el = host.querySelector("#tdk-oc"); if (!el) return;
     const g = ocGuard();
     if (!g) { el.style.display = "none"; el.innerHTML = ""; return; }
     el.style.display = "";
-    if (g.provisional) { // Recruiting — API ready_at is a placeholder; don't show a misleading countdown or flag flights
+    if (g.provisional) {
       el.className = "tdk-oc";
       el.innerHTML = '⏰ <b>OC “' + g.name + '”</b> is recruiting — the real ready deadline is set once planning starts (days off; you’re clear to travel for now).';
     } else if (g.secs <= 0) {
@@ -814,6 +813,7 @@
       el.innerHTML = '⏰ <b>OC “' + g.name + '”</b> ready in <b>' + fmtDur(g.secs) + '</b>. Flights with a round trip longer than that are flagged ⛔ below — you must be back in Torn for it.';
     }
   }
+
   function render() {
     const cap = state.cap, cash = state.cash, fund = state.fund;
     const stocks = state.stocks || 0, funds = cash == null ? null : cash + stocks;
@@ -822,13 +822,12 @@
     renderHomeBar();
     renderOC();
     renderImmunity();
-    const capTh = host.querySelector("#tdk-th-full"); if (capTh) capTh.textContent = "Profit ×" + cap; // keep the full-load header in sync with Cap
+    const capTh = host.querySelector("#tdk-th-full"); if (capTh) capTh.textContent = "Profit ×" + cap;
     const fbtn = host.querySelector("#tdk-fund"); if (fbtn) fbtn.className = "tdk-btn2" + (fund ? " on" : "");
     let rows = state.filter === "all" ? state.rows : state.rows.filter(function (x) { return x.cc === state.filter; });
-    if (state.maxTrip) rows = rows.filter(function (x) { return FLY[x.cc] && rtOf(x.cc) <= state.maxTrip; }); // round-trip time budget (effective time for your travel method)
+    if (state.maxTrip) rows = rows.filter(function (x) { return FLY[x.cc] && rtOf(x.cc) <= state.maxTrip; });
     const best = rows.find(function (x) { return (cash == null || x.full <= cash) && x.stock >= cap; });
-    const alt = best ? null : rows.find(function (x) { return x.stock > 0; }); // rows are sorted by ppm desc
-    // Only surface a "funded" play you could ACTUALLY reach by liquidating stocks (cash + stock value).
+    const alt = best ? null : rows.find(function (x) { return x.stock > 0; });
     const topOver = rows.find(function (x) { return x.stock >= cap && cash != null && x.full > cash && x.full <= funds && (!best || x.ppm > best.ppm); });
     const b = host.querySelector("#tdk-best");
     const loc = (state.filter === "all" ? "" : " · " + FLY[state.filter].name) + (cash != null ? " · " + money(cash) : "") + (travelMult() < 1 ? " · ✈ " + travelLabel() : "");
@@ -862,24 +861,23 @@
     b.innerHTML = html;
 
     const body = host.querySelector("#tdk-body");
-    // "Best" card above uses profit order (rows); the table can be re-sorted by any column header.
     const sm = state.sort || "ppm";
     const disp = rows.slice();
-    if (sm === "stock") disp.sort(function (a, b) { return ((a.stock > 0 ? 0 : 1) - (b.stock > 0 ? 0 : 1)) || (b.ppm - a.ppm); }); // available first, then $/min
+    if (sm === "stock") disp.sort(function (a, b) { return ((a.stock > 0 ? 0 : 1) - (b.stock > 0 ? 0 : 1)) || (b.ppm - a.ppm); });
     else if (sm === "ppm") disp.sort(function (a, b) { return b.ppm - a.ppm; });
-    else if (sm === "fullprofit") disp.sort(function (a, b) { return b.ppi - a.ppi; }); // ppi×cap order == ppi order (cap is constant)
+    else if (sm === "fullprofit") disp.sort(function (a, b) { return b.ppi - a.ppi; });
     else disp.sort(function (a, b) { return (b[sm] || 0) - (a[sm] || 0); });
     host.querySelectorAll("#tdk-board th.so").forEach(function (th) { th.classList.toggle("on", th.getAttribute("data-sort") === sm); });
-    const g = ocGuard(); // OC deadline — flights whose round trip exceeds it would make you miss the crime
+    const g = ocGuard();
     body.innerHTML = disp.map(function (x) {
       const aff = cash == null || x.full <= cash;
       const fill = x.stock >= cap;
       const isTop = topOver && x === topOver;
-      const ocMiss = g && !g.provisional && FLY[x.cc] && (g.secs <= 0 || rtOf(x.cc) * 60 >= g.secs); // effective round-trip (min→sec) vs time-to-ready; skip while Recruiting (ready_at provisional)
+      const ocMiss = g && !g.provisional && FLY[x.cc] && (g.secs <= 0 || rtOf(x.cc) * 60 >= g.secs);
       let sc = x.stock === 0 ? '<span class="chip c-out">out</span>'
         : x.stock < cap ? '<span class="chip c-low">only ' + x.stock + '</span>'
           : '<span class="chip c-ok">' + x.stock.toLocaleString() + '</span>';
-      const tr = stockTrend(x.cc, x.id); // ▲ real restock / ▼ selling since last recorded sample (small +1 jitter shows nothing)
+      const tr = stockTrend(x.cc, x.id);
       if (tr) {
         const rate = Math.abs(Math.round(tr.perMin));
         if (tr.dq < 0) {
@@ -887,9 +885,9 @@
           sc = '<span class="tk-tr dn" title="Sold ' + Math.abs(tr.dq).toLocaleString() + ' since last sample (~' + rate + '/min)' + soEta + '">▼</span>' + sc;
         } else if (isRealRestock(tr.dq, tr.prev, tr.maxQ)) {
           sc = '<span class="tk-tr up" title="Restocked +' + tr.dq.toLocaleString() + ' since last sample">▲</span>' + sc;
-        } // tiny +1/+2 on a high-stock item (YATA jitter / sell-back) → no arrow, not a restock
+        }
       }
-      const rp = restockPredict(x.cc, x.id); // predicted next restock + cycle breakdown from recorded events
+      const rp = restockPredict(x.cc, x.id);
       if (x.stock === 0 && rp) {
         const eta = rp.nextAt - Math.floor(Date.now() / 1000);
         const batchTxt = rp.batch ? ' · +' + rp.batch.toLocaleString() : '';
@@ -905,7 +903,7 @@
       const mark = (aff && fill) ? '<span class="star" title="Affordable now & fully in stock — a clean pick">★</span>' : (isTop ? '<span class="star" title="Best funded play — over budget, but reachable by selling stocks (see the banner up top)">💰</span>' : '');
       const ocBadge = ocMiss ? '<span class="oc-x" title="Round trip ' + (FLY[x.cc] ? fmtRt(rtOf(x.cc)) : '?') + (g.secs <= 0 ? ' — your OC is ready NOW, don’t fly' : ' exceeds your OC (ready in ' + fmtDur(g.secs) + ') — you’d miss it') + '">⛔ OC</span>' : '';
       const rtTxt = FLY[x.cc] ? '<span title="' + (travelMult() < 1 ? travelLabel() + ' · base ' + fmtRt(FLY[x.cc].rt) : 'Standard round trip') + '">' + fmtRt(rtOf(x.cc)) + ' rt</span> · ' : '';
-      const ol = arrivalOutlook(x); // Landing prediction: stock state when you'd touch down if you flew now
+      const ol = arrivalOutlook(x);
       return '<tr class="' + cls + '" data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '">' +
         '<td class="l"><span class="nm">' + x.name + mark + '</span><div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + rtTxt + ago(x.freshS) + ' old' + ocBadge + '</div></td>' +
         '<td class="mv">' + full$(x.buy) + '</td><td class="mv">' + full$(x.sell) + '</td>' +
@@ -939,7 +937,6 @@
     try {
       const j = await gmGet("https://weav3r.dev/api/marketplace/" + id + "/traders?apiKey=" + encodeURIComponent(key));
       const traders = (j.traders || []).slice(0, 6);
-      // Best-effort online lookup: each buyer's public last_action.status via the Torn API.
       const tkey = GM_getValue("torn_key", ""), status = {};
       if (tkey && traders.length) {
         await Promise.all(traders.map(function (t) {
@@ -950,7 +947,6 @@
       }
       const dot = function (s) { return STATUS_DOT[s] || "❔"; };
       const tradeUrl = function (pid) { return "https://www.torn.com/trade.php#step=start&userID=" + pid; };
-      // Traders arrive price-sorted, so the first online (else idle) is the best offer from someone around.
       const bestOn = traders.find(function (t) { return status[t.player_id] === "Online"; }) ||
         traders.find(function (t) { return status[t.player_id] === "Idle"; });
       const head = '<div class="tdk-bh"><div class="tt">Buyers · ' + name + '<small> — ' + (j.total_count || traders.length) + ' buying' + (tkey ? ' · online first' : '') + '</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>';
@@ -960,12 +956,12 @@
       const rank = function (t) { const s = status[t.player_id]; return s === "Online" ? 0 : s === "Idle" ? 1 : s === "Offline" ? 3 : 2; };
       const sorted = traders.map(function (t, i) { return { t: t, i: i }; })
         .sort(function (a, b) { return (rank(a.t) - rank(b.t)) || (a.i - b.i); }).map(function (x) { return x.t; });
-      let owned = 0, ownedStale = false; // how many of this item the user holds
+      let owned = 0, ownedStale = false;
       if (tkey) { try { const inv = await loadInv(tkey); if (inv.length) { const f = inv.find(function (it) { return (it.ID || it.id || it.item_id) == id; }); owned = f ? (f.quantity || 0) : 0; } } catch (e) { } }
-      if (!owned) { const c = GM_getValue("inv_counts", null); if (c && c.map && c.map[id] != null) { owned = c.map[id]; ownedStale = true; } } // DOM-scraped fallback while API is down
+      if (!owned) { const c = GM_getValue("inv_counts", null); if (c && c.map && c.map[id] != null) { owned = c.map[id]; ownedStale = true; } }
       const q0 = owned > 0 ? owned : Math.max(1, state.cap || 1);
-      const buyCost = buyCostOf(id); // null unless this is a known travel-trade good on the current board
-      const btText = function (price, qty) { // running total + net (after buy cost) for one buyer
+      const buyCost = buyCostOf(id);
+      const btText = function (price, qty) {
         let s = "= $" + (price * qty).toLocaleString();
         if (buyCost != null) { const net = (price - buyCost) * qty; s += ' · <span class="netp' + (net < 0 ? " neg" : "") + '">net ' + (net >= 0 ? "+" : "−") + "$" + Math.abs(net).toLocaleString() + "</span>"; }
         return s;
@@ -1000,7 +996,6 @@
           setTimeout(function () { self.textContent = old; }, 1200);
         });
       });
-      // Stash the trade line when a ⇄ Trade / ⚡ link is clicked, so trade.php can offer to fill the description.
       bx.querySelectorAll("a.tdk-trade, a.tdk-bestonline").forEach(function (a) {
         a.addEventListener("click", function () {
           const p = +this.getAttribute("data-price"), uid = +this.getAttribute("data-uid");
@@ -1012,10 +1007,7 @@
       bindClose(bx);
     }
   }
-  // ---------- Flip finder: buy cheap (Item Market / bazaar) → sell to the highest live trader ----------
-  // Two-stage: (1) ONE whole-market call to shortlist undervalued items (cheapest buy well below bazaar avg),
-  // (2) real trader buy-offers for just the shortlist, ranked by actual buy→sell profit. Click a row → the
-  // buyers popover to see who's online + ⚡ trade. Reuses the #tdk-buyers overlay like Happy/Settings do.
+
   async function openFlip() {
     const bx = host.querySelector("#tdk-buyers");
     bx.classList.add("open");
@@ -1026,30 +1018,23 @@
     if (!key) { setTitle("a W3B key is needed (⚙ Settings)"); return; }
     const note = bx.querySelector("#tdk-flip-note");
     try {
-      // Stage 1 — whole market → shortlist LIQUID, AFFORDABLE items to spend trader-calls on. We can't see live
-      // buy-offers in bulk, and bazaar_average lies (it's avg ask, not what a buyer pays), so we rank by price
-      // DISPERSION between venues (a cheap ask vs a pricier one) — where transient mispricings actually surface.
       const mk = await gmGet("https://weav3r.dev/api/marketplace?apiKey=" + encodeURIComponent(key), 30000);
       const items = (mk && mk.items) || [];
-      const cashCeil = (state.cash && state.cash > 0) ? state.cash : 50e6; // only flips you can actually afford
+      const cashCeil = (state.cash && state.cash > 0) ? state.cash : 50e6;
       const LIQ = 8, SHORTLIST = 30;
       const cand = [];
       items.forEach(function (it) {
-        if (!it || it.item_id <= 0) return;                              // skip sets (negative ids)
-        // BUY price = cheapest BAZAAR listing (a real current ask). NEVER market_price — that field is Torn's stale
-        // last-TRADED value, which for rarely-traded items (e.g. Bathrobe: last sale $1,000, real asks $19.5M) is
-        // pure fiction and produced phantom flips.
+        if (!it || it.item_id <= 0) return;
         const buy = it.lowest_price;
-        if (!(buy > 0) || (it.total_bazaars || 0) < LIQ) return;         // need a real bazaar ask + liquidity
-        if (buy > cashCeil) return;                                      // within your budget
+        if (!(buy > 0) || (it.total_bazaars || 0) < LIQ) return;
+        if (buy > cashCeil) return;
         const ref = Math.max(it.bazaar_average || 0, buy);
         cand.push({ id: it.item_id, name: it.item_name, buy: buy, disp: ref > buy ? (ref - buy) / buy : 0 });
       });
-      cand.sort(function (a, b) { return b.disp - a.disp; });            // most-dispersed (likeliest crossed) first
+      cand.sort(function (a, b) { return b.disp - a.disp; });
       const short = cand.slice(0, SHORTLIST);
       if (!short.length) { note.textContent = "No affordable, liquid items to check right now."; setTitle("nothing to scan"); return; }
       note.textContent = "Checking live buy-offers for " + short.length + " liquid, affordable items…";
-      // Stage 2 — real highest buy-offer per shortlisted item (traders arrive price-desc → [0] is the best sell).
       const flips = [];
       await Promise.all(short.map(function (c) {
         return gmGet("https://weav3r.dev/api/marketplace/" + c.id + "/traders?apiKey=" + encodeURIComponent(key), 20000)
@@ -1057,7 +1042,7 @@
             const t = (j && j.traders) || [];
             if (!t.length) return;
             const sell = t[0].price, profit = sell - c.buy;
-            if (profit < 1000) return; // skip penny-item noise (huge % but trivial cash)
+            if (profit < 1000) return;
             flips.push({ id: c.id, name: c.name, buy: c.buy, sell: sell, profit: profit, buyers: j.total_count || t.length });
           }).catch(function () { });
       }));
@@ -1065,18 +1050,15 @@
       if (!flips.length) { note.textContent = "Market's efficient right now — no crossed-market flips (no live buyer is paying above the cheapest listing on the items scanned). Try again later — these appear and vanish fast."; setTitle("no flips right now"); return; }
       const top = flips.slice(0, 12);
       note.textContent = "Finding the cheapest seller for the top " + top.length + " flips…";
-      // Stage 3 — buy side: per-item listings give the actual cheapest BAZAAR seller (post-IM2.0 these are hidden,
-      // so linking straight to that shop is the edge) plus the fresh Item Market price → make each flip clickable-to-buy.
       await Promise.all(top.map(function (f) {
         return gmGet("https://weav3r.dev/api/marketplace/" + f.id + "?apiKey=" + encodeURIComponent(key), 20000)
           .then(function (j) {
             const L = ((j && j.listings) || []).filter(function (x) { return x.price > 0; }).sort(function (a, b) { return a.price - b.price; });
-            f.baz = L.length ? L[0] : null;                                // cheapest REAL bazaar seller {player_id, player_name, price, quantity}
+            f.baz = L.length ? L[0] : null;
           }).catch(function () { f.baz = null; });
       }));
-      // Re-price on the FRESH cheapest real bazaar ask (never market_price), drop any that are no longer profitable, re-rank.
       top.forEach(function (f) {
-        f.buy2 = f.baz ? f.baz.price : f.buy; // fresh cheapest bazaar ask; fall back to stage-1 lowest_price
+        f.buy2 = f.baz ? f.baz.price : f.buy;
         f.profit2 = f.sell - f.buy2;
       });
       const finalFlips = top.filter(function (f) { return f.profit2 > 0; }).sort(function (a, b) { return b.profit2 - a.profit2; });
@@ -1094,7 +1076,7 @@
       }).join("");
       setTitle("buy low → sell live · top " + finalFlips.length);
       note.outerHTML = '<div class="tdk-sub" style="padding:6px 12px">🏪 = buy from that seller’s bazaar (hidden since Item Market 2.0) · 🛒 = Item Market. Sell via ⚡ (click the row) = a direct trade, no fee. Prices move fast — reconfirm before buying.</div><div id="tdk-flips">' + rows + '</div>';
-      bx.querySelectorAll(".tdk-flip .fbuy").forEach(function (a) { a.addEventListener("click", function (e) { e.stopPropagation(); }); }); // buy link shouldn't also open the sell popover
+      bx.querySelectorAll(".tdk-flip .fbuy").forEach(function (a) { a.addEventListener("click", function (e) { e.stopPropagation(); }); });
       bx.querySelectorAll(".tdk-flip").forEach(function (el) {
         el.addEventListener("click", function () { openBuyers(+this.getAttribute("data-id"), this.getAttribute("data-name")); });
       });
@@ -1102,12 +1084,9 @@
       const n = bx.querySelector("#tdk-flip-note"); if (n) n.textContent = "Flip scan failed: " + (e.message || e) + " (check your W3B key in ⚙ Settings).";
     }
   }
-  /* ---------- 📊 Stock market: portfolio P&L + benefit blocks + buy-low/sell-high (record-and-derive) ----------
-     Torn's API gives only the CURRENT price (no history), so — like foreign restock — we record it ourselves.
-     Honest framing: stocks have NO predictable cycle, so this is range/trend + your P&L + benefit progress,
-     NOT a predictor. It NEVER advises selling a block you're accumulating for its benefit. */
-  const STK_MAX = 700, STK_AGE = 14 * 24 * 3600, STK_SAMPLE = 600; // ~2 weeks of ≥10-min samples
-  const STK_SELL_FEE = 0.001; // Torn charges 0.1% on SELLING stocks (verified wiki.torn.com/wiki/Stock_Market); buying is free
+
+  const STK_MAX = 700, STK_AGE = 14 * 24 * 3600, STK_SAMPLE = 600;
+  const STK_SELL_FEE = 0.001;
   function recordStockPrices(mkt) {
     if (!mkt) return;
     let hist; try { hist = GM_getValue("stk_hist", null) || {}; } catch (e) { hist = {}; }
@@ -1117,7 +1096,7 @@
       const p = mkt[id] && mkt[id].current_price; if (!(p > 0)) return;
       const arr = hist[id] || (hist[id] = []);
       const last = arr[arr.length - 1];
-      if (last && now - last[0] < STK_SAMPLE) return;        // at most one sample per ~10 min
+      if (last && now - last[0] < STK_SAMPLE) return;
       arr.push([now, p]); changed = true;
       while (arr.length && arr[0][0] < cutoff) arr.shift();
       if (arr.length > STK_MAX) arr.splice(0, arr.length - STK_MAX);
@@ -1125,7 +1104,7 @@
     if (changed) { try { GM_setValue("stk_hist", hist); } catch (e) { } }
     state._stkHist = hist;
   }
-  function stkStats(id) { // range position + vs-recent-average from recorded history (null until enough points)
+  function stkStats(id) {
     const hist = state._stkHist || (function () { try { return GM_getValue("stk_hist", null) || {}; } catch (e) { return {}; } })();
     const arr = hist[id]; if (!arr || arr.length < 3) return null;
     let lo = Infinity, hi = -Infinity, sum = 0;
@@ -1143,15 +1122,14 @@
       if (u) { state.stkMine = (u.stocks && typeof u.stocks === "object") ? u.stocks : {}; }
     } catch (e) { /* non-fatal */ }
   }
-  // Cross-tab background poll for stock prices (needs the Torn key) — builds price history over time.
   function pollStockPrices() {
     const key = GM_getValue("torn_key", ""); if (!key) return;
     let last = 0; try { last = GM_getValue("stk_poll_at", 0); } catch (e) { }
-    if (Date.now() - last < 10 * 60 * 1000 - 4000) return;    // one fetch per ~10 min across tabs
+    if (Date.now() - last < 10 * 60 * 1000 - 4000) return;
     try { GM_setValue("stk_poll_at", Date.now()); } catch (e) { }
     gmGet("https://api.torn.com/torn/?selections=stocks&key=" + encodeURIComponent(key)).then(function (m) { if (m && m.stocks) { state.stkMkt = m.stocks; recordStockPrices(m.stocks); } }).catch(function () { });
   }
-  function stkAvgCost(h) { // weighted average buy price across a holding's transactions
+  function stkAvgCost(h) {
     let sh = 0, cost = 0; const tx = (h && h.transactions) || {};
     Object.keys(tx).forEach(function (k) { sh += tx[k].shares; cost += tx[k].shares * tx[k].bought_price; });
     return sh > 0 ? cost / sh : 0;
@@ -1161,7 +1139,6 @@
     if (st.pos >= 0.8) return '<span class="sktag high">▲ near high</span>';
     return '<span class="sktag mid">mid-range</span>';
   }
-  // Benefit-aware: a block you're still building is a HOLD — never suggest selling it.
   function benefitAwareHint(r, st) {
     const s = r.s, req = s.benefit && s.benefit.requirement;
     const shares = r.held ? (state.stkMine[r.id].total_shares || 0) : 0;
@@ -1186,7 +1163,6 @@
     if (!mkt) { setTitle("couldn't load stocks — check your key in ⚙ Settings"); return; }
     const traveling = state.travelWhere === "flying" || state.travelWhere === "abroad";
     const asOf = new Date(state.stkAt || Date.now()).toLocaleTimeString();
-    // ---- Your portfolio (live P&L + benefit-block progress) ----
     const holdIds = Object.keys(mine).filter(function (id) { return mine[id] && mine[id].total_shares > 0; });
     let portHtml, totalVal = 0, totalPL = 0, totalFee = 0;
     if (holdIds.length) {
@@ -1194,7 +1170,7 @@
         const h = mine[id], s = mkt[id]; if (!s) return '';
         const shares = h.total_shares, cost = stkAvgCost(h), cur = s.current_price;
         const val = cur * shares, pl = (cur - cost) * shares, pct = cost > 0 ? (cur - cost) / cost * 100 : 0;
-        const fee = val * STK_SELL_FEE, net = pl - fee; // Torn's 0.1% sell fee (buying is free); its Profit column is GROSS
+        const fee = val * STK_SELL_FEE, net = pl - fee;
         totalVal += val; totalPL += pl; totalFee += fee;
         const req = s.benefit && s.benefit.requirement;
         let benefit = '';
@@ -1212,7 +1188,6 @@
     } else {
       portHtml = '<div class="sksec">Your portfolio</div><div class="tdk-sub" style="padding:6px 12px">You don\'t hold any stocks right now.</div>';
     }
-    // ---- Buy-low scanner (all 35, most-below-own-average first once history exists) ----
     const rows = Object.keys(mkt).map(function (id) { const st = stkStats(id); return { id: id, s: mkt[id], st: st, held: !!(mine[id] && mine[id].total_shares > 0), vsAvg: st ? st.vsAvg : 0 }; });
     const withHist = rows.filter(function (r) { return r.st; });
     let scanHtml;
@@ -1231,10 +1206,7 @@
       '<div id="tdk-stocks">' + portHtml + scanHtml + '</div>';
     bindClose(bx);
   }
-  /* ---------- 🏪 Shop Flips: buy from a Torn city shop (fixed price) → sell on the market for more ----------
-     Torn has NO shops API, but the items catalog carries buy_price (the NPC shop price) + market_value.
-     Foreign/travel items (present in YATA) are excluded — the main board already covers those. buy_price is a
-     catalog CONSTANT (not live stock), so this is a REFERENCE: verify the item's actually stocked in its shop. */
+
   async function ensureForeignIds() {
     if (state.foreignIds) return state.foreignIds;
     try {
@@ -1254,17 +1226,17 @@
     const key = tornKey();
     if (!key) { setTitle("need a Torn API key (⚙ Settings)"); return; }
     try {
-      await loadResale(key);                       // catalog: buy_price + market_value + circulation
-      const foreign = await ensureForeignIds();    // travel items to exclude
+      await loadResale(key);
+      const foreign = await ensureForeignIds();
       const meta = state.itemMeta || {};
       const cashCeil = (state.cash && state.cash > 0) ? state.cash : 50e6;
       const cand = [];
       Object.keys(meta).forEach(function (id) {
         const m = meta[id], buy = m.buy || 0, mkt = m.mkt || 0;
-        if (!(buy > 0) || !(mkt > 0) || foreign.has(+id)) return;    // shop item, priced, not foreign
-        if (buy > cashCeil) return;                                  // affordable
+        if (!(buy > 0) || !(mkt > 0) || foreign.has(+id)) return;
+        if (buy > cashCeil) return;
         const spread = mkt - buy, marg = spread / buy;
-        if (spread < 500 || marg < 0.08) return;                     // meaningful cash + margin
+        if (spread < 500 || marg < 0.08) return;
         cand.push({ id: +id, name: m.name, type: m.type, buy: buy, mkt: mkt, spread: spread, marg: marg });
       });
       cand.sort(function (a, b) { return b.spread - a.spread; });
@@ -1273,7 +1245,7 @@
       const cat = function (id) { return (meta[id] && meta[id].type) || ""; };
       const rows = top.map(function (c) {
         const marg = Math.round(c.marg * 100);
-        const net = c.spread - c.mkt * 0.01;                         // if you SELL on the Item Market (1% fee); trade = fee-free
+        const net = c.spread - c.mkt * 0.01;
         const warn = marg > 500 ? ' <span class="fwarn" title="Huge % on a cheap item — small cash and usually restock-capped; verify it\'s in the shop">⚠</span>' : '';
         const mUrl = marketUrl(c.id, c.name, cat(c.id));
         return '<div class="tdk-flip" data-id="' + c.id + '" data-name="' + c.name.replace(/"/g, "") + '">' +
@@ -1292,20 +1264,14 @@
       const b = bx.querySelector(".br"); if (b) b.textContent = "Shop scan failed: " + (e.message || e) + " (check your key in ⚙ Settings).";
     }
   }
-  /* ---------- 🎯 Bounty planner: collectible bounties in your reward range, lowest-level (most beatable) first ----------
-     v2/torn/bounties (sorted by reward desc, 100/page). Pages the low-value band, filters reward + level, dedups per
-     target, then pulls each target's live status + faction so you see who's attackable NOW and who's solo (no faction
-     = no retaliation). Level ≠ stats — it's a proxy; a loss just costs energy + a short hospital stay. */
+
   const bDec = function (s) { return String(s || "").replace(/&#0?39;/g, "'").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">"); };
-  // Infer a stat-built "trap" from PUBLIC signals (the API won't show battle stats). Validated live Aug 5 2026:
-  // real newbies have ~0 xanax / 0 defends-won / <$1M / days-old accounts; traps (Tilted, Wimp_Lo) have thousands
-  // of xanax, tens of thousands of defends WON, billions net worth, decade-old accounts kept at level 5-6.
   function trapInfo(x) {
     const r = [];
     if (x.defw >= 300) r.push(x.defw.toLocaleString() + ' defends won');
     if (x.xan >= 100) r.push(x.xan.toLocaleString() + ' xanax');
     if (x.nw >= 1e9) r.push('$' + (x.nw / 1e9).toFixed(1) + 'B');
-    if (!r.length) return null;                                   // needs a real combat/veteran signal, not just age
+    if (!r.length) return null;
     const ageBit = (x.age && x.level && x.age / x.level >= 50) ? ((x.age >= 365 ? (x.age / 365).toFixed(1) + 'y' : x.age + 'd') + ' old at L' + x.level) : null;
     return (ageBit ? ageBit + ' · ' : '') + r.slice(0, 2).join(' · ');
   }
@@ -1328,24 +1294,24 @@
       GM_setValue("bounty_min", mn); GM_setValue("bounty_max", mx); GM_setValue("bounty_maxlvl", ml); GM_setValue("bounty_solo", solo);
       list.innerHTML = '<div class="tdk-sub" style="padding:10px 12px">Scanning bounties…</div>';
       try {
-        const offs = []; for (let o = 0; o <= 1500; o += 100) offs.push(o);   // sorted reward-desc; this covers the low-value band
+        const offs = []; for (let o = 0; o <= 1500; o += 100) offs.push(o);
         const pages = await Promise.all(offs.map(function (o) { return gmGet("https://api.torn.com/v2/torn/bounties?offset=" + o + "&key=" + encodeURIComponent(key)).catch(function () { return null; }); }));
         const all = []; pages.forEach(function (j) { if (j && j.bounties) all.push.apply(all, j.bounties); });
         const inR = all.filter(function (x) { return x.reward >= mn && x.reward <= mx && x.target_level <= ml; });
         const byT = {}; inR.forEach(function (x) { if (!byT[x.target_id] || x.reward > byT[x.target_id].reward) byT[x.target_id] = x; });
-        let block; try { block = GM_getValue("bounty_block", null) || {}; } catch (e) { block = {}; } // targets you've hidden (e.g. stat-built traps that beat you)
+        let block; try { block = GM_getValue("bounty_block", null) || {}; } catch (e) { block = {}; }
         const cand = Object.keys(byT).map(function (k) { return byT[k]; }).filter(function (x) { return !block[x.target_id]; }).sort(function (a, b) { return a.target_level - b.target_level; }).slice(0, 36);
         if (!cand.length) { list.innerHTML = '<div class="tdk-sub" style="padding:10px 12px">No bounties in $' + mn.toLocaleString() + '–$' + mx.toLocaleString() + ' at ≤ lvl ' + ml + (Object.keys(block).length ? ' (' + Object.keys(block).length + ' hidden)' : '') + '. Widen the range.</div>'; return; }
         list.innerHTML = '<div class="tdk-sub" style="padding:6px 12px">Checking status + faction for ' + cand.length + ' targets…</div>';
         await Promise.all(cand.map(function (x) {
           return gmGet("https://api.torn.com/user/" + x.target_id + "/?selections=profile,personalstats&key=" + encodeURIComponent(key)).then(function (p) {
             x.state = (p && p.status && p.status.state) || "?"; x.last = (p && p.last_action && p.last_action.status) || "?";
-            x.until = (p && p.status && p.status.until) || 0; // hospital/jail release timestamp
+            x.until = (p && p.status && p.status.until) || 0;
             x.faction = (p && p.faction && p.faction.faction_id) ? (p.faction.faction_name || "faction") : null;
             x.age = (p && p.age) || 0; const ps = (p && p.personalstats) || {};
             x.defw = ps.defendswon || 0; x.xan = ps.xantaken || 0; x.nw = ps.networth || 0; x.aw = ps.attackswon || 0;
-            x.trap = trapInfo(x); // stat-build tell
-            x.prot = x.age > 0 && x.age < 14; // New Player Protection = first 14 days → you can't attack them (wiki-verified)
+            x.trap = trapInfo(x);
+            x.prot = x.age > 0 && x.age < 14;
           }).catch(function () { x.state = "?"; x.last = "?"; x.faction = null; });
         }));
         let rows = cand;
@@ -1353,7 +1319,7 @@
         const dot = function (s) { return s === "Online" ? "🟢" : s === "Idle" ? "🟡" : "⚫"; };
         const nowS = Math.floor(Date.now() / 1000);
         const rowFn = function (x) {
-          const stTxt = x.state === "Okay" ? "Okay" : x.state + (x.until > nowS ? ' <span class="bout">· out in ' + fmtDur(x.until - nowS) + '</span>' : ''); // hospital/jail release countdown
+          const stTxt = x.state === "Okay" ? "Okay" : x.state + (x.until > nowS ? ' <span class="bout">· out in ' + fmtDur(x.until - nowS) + '</span>' : '');
           return '<div class="bnty' + (x.state === "Okay" ? "" : " na") + (x.trap ? " trap" : "") + '"><div class="bmain"><div class="bn">' +
             '<a href="https://www.torn.com/page.php?sid=attack&user2ID=' + x.target_id + '" target="_blank" rel="noopener" title="Attack ' + x.target_name + '">⚔ ' + x.target_name + '</a> <span class="bl">L' + x.target_level + '</span> <a class="bprof" href="https://www.torn.com/profiles.php?XID=' + x.target_id + '" target="_blank" rel="noopener" title="Profile">👤</a></div>' +
             '<div class="bsub">' + dot(x.last) + ' ' + stTxt + ' · ' + (x.faction ? '🚩 ' + bDec(x.faction) : '🕊 solo') + (x.trap ? ' · <span class="btrap">⚠ ' + x.trap + '</span>' : (x.prot ? ' · <span class="bprot2">🛡 protected — attackable in ' + (14 - x.age) + 'd</span>' : (x.reason ? ' · “' + bDec(x.reason) + '”' : ''))) + '</div></div>' +
@@ -1361,9 +1327,9 @@
             '<button class="bhide" data-id="' + x.target_id + '" data-name="' + String(x.target_name).replace(/"/g, "") + '" title="Avoid — hide this target from all future scans (too strong / beat you)">🚫</button></div>';
         };
         const safe = rows.filter(function (x) { return !x.trap; }), traps = rows.filter(function (x) { return x.trap; });
-        const prot = safe.filter(function (x) { return x.prot; });                        // <14 days = New Player Protection, can't attack
-        const ok = safe.filter(function (x) { return !x.prot && x.state === "Okay"; });    // genuinely attackable
-        const na = safe.filter(function (x) { return !x.prot && x.state !== "Okay"; }).sort(function (a, b) { return (a.until || 9e15) - (b.until || 9e15); }); // in hospital / unavailable, soonest-out first
+        const prot = safe.filter(function (x) { return x.prot; });
+        const ok = safe.filter(function (x) { return !x.prot && x.state === "Okay"; });
+        const na = safe.filter(function (x) { return !x.prot && x.state !== "Okay"; }).sort(function (a, b) { return (a.until || 9e15) - (b.until || 9e15); });
         const blkN = Object.keys(block).length;
         list.innerHTML =
           '<div class="sksec">✅ Attackable now · ' + ok.length + (solo ? ' · solo only' : '') + '</div>' +
@@ -1386,7 +1352,7 @@
       } catch (e) { list.innerHTML = '<div class="tdk-sub" style="padding:10px 12px">Bounty scan failed: ' + (e.message || e) + '</div>'; }
     };
     host.querySelector("#tdk-bscan").addEventListener("click", scan);
-    scan(); // auto-scan on open
+    scan();
   }
   async function loadInv(key) {
     const now = Date.now();
@@ -1399,12 +1365,8 @@
     state.invAt = now;
     return state.inv;
   }
-  // WHITELIST: only these no-use commodity types ever get a Sell link. Everything else (Tools, Materials,
-  // Enhancers, gear, drugs, anything with an effect/requirement) is held back by default — safer than trying
-  // to denylist every use-bearing type (some, like the Cassock, are worth millions). The hasUse guard still
-  // holds back any whitelisted item that turns out to carry an effect/requirement.
+
   const SAFE_TYPES = { Plushie: 1, Flower: 1, Collectible: 1, Artifact: 1, Jewelry: 1, "Supply Pack": 1 };
-  // Per-item user overrides win over the type default. Equipped is ALWAYS held back, no matter the override.
   function effSellable(id, type, hasUse, equipped) {
     if (equipped) return false;
     const o = state.ov[id];
@@ -1422,9 +1384,7 @@
   }
   const TYPE_ICON = { Plushie: "🧸", Flower: "🌸", Collectible: "🎖️", Artifact: "🏺", Jewelry: "💎", "Supply Pack": "📦", Drug: "💊", Candy: "🍬", Enhancer: "✨", Tool: "🔧", Material: "🧱", Special: "⭐", Temporary: "⏳", Medical: "➕", Alcohol: "🍺", Energy: "🥤", Booster: "🧃", Weapon: "🗡️", Armor: "🛡️", Clothing: "👕", Car: "🚗", Book: "📖" };
   function typeIcon(t) { return TYPE_ICON[t] || "•"; }
-  // Where the Bag's item list comes from: the live Torn inventory API when it works, else the item counts we
-  // scraped off your Items page (data-qty) as you browsed it — so the Bag still aggregates everything sellable
-  // in one place while Torn's inventory API is down for their migration. Merged across category tabs already.
+
   function invItems() {
     const api = state.inv || [];
     if (api.length) return { items: api, source: "api", at: state.invAt };
@@ -1439,31 +1399,22 @@
     }
     return { items: [], source: "none", at: 0 };
   }
-  // Rough value of goods you're holding, from the scraped counts × resale (used by the home bar).
-  // foreignOnly=true → count ONLY foreign/travel goods (things you can only get by buying abroad), so the abroad
-  // "fly home to sell" nudge reflects an actual TRIP HAUL, not your permanent sellable stash. The scrape is a
-  // persistent inventory snapshot and (with Torn's inventory API down) can't tell "bought this trip" from "already
-  // owned" — foreign-only is the reliable proxy for a real haul.
+
   function haulSummary(foreignOnly) {
     const store = GM_getValue("inv_counts", null);
     if (!store || !store.map) return null;
     const prices = state.resale || {}, meta = state.itemMeta || {}, foreign = state.foreignIds;
-    if (foreignOnly && (!foreign || !foreign.size)) return { items: 0, count: 0, value: 0 }; // no foreign list yet → don't nudge
+    if (foreignOnly && (!foreign || !foreign.size)) return { items: 0, count: 0, value: 0 };
     let items = 0, count = 0, value = 0;
     Object.keys(store.map).forEach(function (id) {
       const qty = store.map[id], price = prices[id]; if (!qty || !price) return;
-      if (foreignOnly) { if (!foreign.has(+id)) return; } // travel goods are all resale merch — skip the junk whitelist
+      if (foreignOnly) { if (!foreign.has(+id)) return; }
       else { const m = meta[id] || {}; if (!effSellable(id, m.type, m.hasUse, false)) return; }
       items++; count += qty; value += price * qty;
     });
     return { items: items, count: count, value: value };
   }
-  // "Open into items" supply packs — contents compiled from wiki.torn.com (current, Mar 2026), priced LIVE via the
-  // Torn items catalog (state.resale). Two shapes: "draws" = N independent draws from a same-category pool;
-  // "oneof" = one bundle chosen among several. EV assumes equal odds (Torn doesn't publish drop rates), so where the
-  // pool value-spread is wide (a rare high-value drop dominates the mean) we DON'T give a confident verdict — we flag
-  // it a gamble instead of wrongly shouting "open". Item names must match the catalog exactly (resolver falls back to
-  // case-insensitive); a name that doesn't resolve → no hint for that pack rather than a wrong one.
+
   const PACK_MODELS = {
     "Six-Pack of Alcohol": { kind: "draws", n: 6, pool: ["Bottle of Kandy Kane", "Bottle of Pumpkin Brew", "Bottle of Minty Mayhem", "Bottle of Wicked Witch", "Bottle of Mistletoe Madness", "Bottle of Stinky Swamp Punch"] },
     "Six-Pack of Energy Drink": { kind: "draws", n: 6, pool: ["Can of Munster", "Can of Santa Shooters", "Can of Red Cow", "Can of Rockstar Rudolph", "Can of Taurine Elite", "Can of X-MASS"] },
@@ -1472,7 +1423,7 @@
   };
   function nameToId(nm) {
     const meta = state.itemMeta || {};
-    if (state._nameIdFor !== meta) { // (re)build a name→id index whenever the catalog reference changes
+    if (state._nameIdFor !== meta) {
       const idx = {}; Object.keys(meta).forEach(function (id) { const n = meta[id] && meta[id].name; if (n && idx[n] == null) idx[n] = +id; });
       state._nameId = idx; state._nameIdLc = null; state._nameIdFor = meta;
     }
@@ -1497,12 +1448,10 @@
     const mean = vals.reduce(function (a, b) { return a + b; }, 0) / vals.length;
     return { ev: mean, lo: Math.min.apply(null, vals), hi: Math.max.apply(null, vals), spread: Math.max.apply(null, vals) / Math.max(1, Math.min.apply(null, vals)), oneof: true };
   }
-  // ---- Empirical pack data (shared by A: manual seed + B: Torn-log sync) ----
-  // GM "pack_data" = { <packName>: { manual?: {opens:N, items:{id:qty}}, log?: [{ts, id, items:{id:qty}}], lastLogTs? } }
-  // items = TOTAL received quantity of each content item id. EV is always odds × LIVE prices, so it never stales.
+
   function getPackData() { return GM_getValue("pack_data", {}) || {}; }
   function setPackData(d) { GM_setValue("pack_data", d); }
-  // Combine the manual aggregate (EV point only) with logged per-open records (EV + a real confidence interval).
+
   function packEmpirical(name) {
     const pd = getPackData()[name]; if (!pd) return null;
     const prices = state.resale || {};
@@ -1513,30 +1462,25 @@
     if (!opens) return null;
     const ev = totalVal / opens;
     let ci = null;
-    if (perOpen.length >= 3) { // need a few real opens for a meaningful interval
+    if (perOpen.length >= 3) {
       const mean = perOpen.reduce(function (a, b) { return a + b; }, 0) / perOpen.length;
       const varr = perOpen.reduce(function (a, b) { return a + (b - mean) * (b - mean); }, 0) / (perOpen.length - 1);
       ci = 1.96 * Math.sqrt(varr / perOpen.length);
     }
     return { ev: ev, opens: opens, ci: ci, logged: perOpen.length, manual: !!(pd.manual && pd.manual.opens) };
   }
-  // Informational open-vs-sell reference for a pack row (sellPrice = the pack's own market value). "" for non-packs.
-  // Deliberately NOT a buy/sell verdict: real drop odds aren't published, and an equal-odds EV is provably biased for
-  // weighted/tiered packs (user's own torn.report data confirmed it — Grenades under-, Alcohol over-estimated). So we
-  // show the equal-odds EV as a clearly-labeled rough reference + contents, flag wide-spread pools as a gamble, and
-  // point to torn.report for the empirical call.
+
   function packHintHtml(name, sellPrice) {
     if (!PACK_MODELS[name]) return "";
     const edit = ' <span class="tdk-pkedit" data-pack="' + escAttr(name) + '" title="Enter your real drop odds (from torn.report) or sync from your Torn log">✎</span>';
-    // Prefer YOUR real data (manual seed and/or logged opens) — an actual verdict, priced live. CI comes from logged opens.
     const emp = packEmpirical(name);
     if (emp && sellPrice) {
       let verdict, cls;
-      if (emp.ci != null) { // confident only once the interval clears the sell price
+      if (emp.ci != null) {
         if (emp.ev - emp.ci > sellPrice) { verdict = "OPEN"; cls = "open"; }
         else if (emp.ev + emp.ci < sellPrice) { verdict = "SELL"; cls = "sell"; }
         else { verdict = "need more data"; cls = "even"; }
-      } else { // point estimate (manual, or <3 logged) — softer 5% band
+      } else {
         const r = emp.ev / sellPrice;
         verdict = r >= 1.05 ? "OPEN" : r <= 0.95 ? "SELL" : "≈ even";
         cls = r >= 1.05 ? "open" : r <= 0.95 ? "sell" : "even";
@@ -1545,7 +1489,6 @@
       let txt = '🎁 open-EV ~' + money(emp.ev) + (emp.ci != null ? ' ±' + money(emp.ci) : '') + ' vs sell ' + money(sellPrice) + ' → ' + verdict + ' <span class="tdk-pkm">' + src + '</span>';
       return '<div class="cy tdk-pk ' + cls + '" title="Your real drop odds × live prices. Verdict turns confident once the ± interval clears the sell price.">' + txt + edit + '</div>';
     }
-    // No data yet → equal-odds reference (labeled rough), + the ✎ to add your odds.
     const h = packHint(name); if (!h) return "";
     if (h.incomplete) return '<div class="cy tdk-pk">🎁 open-EV: contents not priced yet — open your Items page tabs' + edit + '</div>';
     const wide = h.spread >= 5;
@@ -1555,6 +1498,7 @@
     if (wide) txt += ' · ⚠ wide spread — gamble';
     return '<div class="cy tdk-pk ' + (wide ? 'warn' : 'even') + '" title="Rough equal-odds estimate (wiki contents × live prices). Add your real odds with ✎ for a verdict.">' + txt + edit + '</div>';
   }
+
   async function renderInv() {
     const box = host.querySelector("#tdk-inv");
     box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk</div><div class="p">loading inventory…</div></div>';
@@ -1570,7 +1514,7 @@
     const tv = state.travel;
     const arriveIn = tv && tv.timestamp ? tv.timestamp - Math.floor(Date.now() / 1000) : 0;
     if (arriveIn > 0) {
-      state.invAt = 0; // in-flight inventory is hidden by Torn — don't cache it past landing
+      state.invAt = 0;
       const m = Math.floor(arriveIn / 60), s = arriveIn % 60;
       const eta = m > 0 ? m + "m " + s + "s" : s + "s";
       box.innerHTML = '<div class="tdk-best"><div class="l">Sellable junk</div>' +
@@ -1578,12 +1522,13 @@
         '<div class="k">Torn hides your inventory while traveling — land first, then reopen 📦 Bag. Arriving in ~' + eta + '.</div></div>';
       return;
     }
-    if (!state.resale || !state.itemMeta) { try { await loadResale(key); } catch (e) { /* paint with what we have */ } }
+    if (!state.resale || !state.itemMeta) { try { await loadResale(key); } catch (e) { } }
     paintInv();
   }
+
   function paintInv() {
     const box = host.querySelector("#tdk-inv"); if (!box) return;
-    const src = invItems();                       // API when live, else scraped Items-page counts
+    const src = invItems();
     const items = src.items, priceMap = state.resale || {}, meta = state.itemMeta || {};
     const idOf = function (it) { return it.ID || it.id || it.item_id; };
     const priceOf = function (it) { return priceMap[idOf(it)] || it.market_price || 0; };
@@ -1602,7 +1547,6 @@
     const rowsHtml = function (arr, sellable) {
       return arr.map(function (x) {
         const tog = '<span class="tdk-tog" data-id="' + x.id + '" data-eff="' + (sellable ? 1 : 0) + '" title="' + (sellable ? 'Mark as keep' : 'Allow selling this item') + (x.ov ? ' — override set' : '') + '">' + (sellable ? '🔒' : '🔓') + '</span>';
-        // 🧺 open-market + ⚡ find-buyers only on sell-ok rows (held-back items are lock-only — no sell path by mistake).
         const basket = sellable ? '<a class="tdk-bmkt" href="' + marketUrl(x.id, x.name, x.type) + '" target="_blank" rel="noopener" title="Open Item Market">🧺</a>' : '';
         const zap = sellable ? '<span class="tdk-bzap" data-id="' + x.id + '" data-name="' + esc(x.name) + '" title="Find buyers for this item">⚡</span>' : '';
         return '<tr' + (x.ov ? ' class="tdk-ovr"' : '') + '><td class="l"><span class="nm">' + x.name + '</span>' + packHintHtml(x.name, x.unit) + '</td>' +
@@ -1656,16 +1600,17 @@
       renderInv();
     });
   }
+
   function setView(v) {
     state.view = v;
     const bd = host.querySelector("#tdk-board"), iv = host.querySelector("#tdk-inv");
     if (bd) bd.style.display = v === "inv" ? "none" : "";
     if (iv) iv.style.display = v === "inv" ? "" : "none";
-    const b = host.querySelector("#tdk-invbtn"); if (b) b.classList.toggle("on", v === "inv"); // classList so the "ready" glow survives
-    const f = host.querySelector("#tdk-fund"); if (f) f.classList.toggle("on", v !== "inv" && state.fund); // Fund lit only while viewing the board
+    const b = host.querySelector("#tdk-invbtn"); if (b) b.classList.toggle("on", v === "inv");
+    const f = host.querySelector("#tdk-fund"); if (f) f.classList.toggle("on", v !== "inv" && state.fund);
     if (v === "inv") renderInv(); else render();
   }
-  // Torn's inventory API is empty during their 2026 migration. Poll quietly; when it returns items again, glow the Bag.
+
   function markBagReady(ready) {
     const b = host && host.querySelector("#tdk-invbtn"); if (!b) return;
     b.classList.toggle("ready", !!ready);
@@ -1676,7 +1621,7 @@
     try {
       const items = await loadInv(key);
       const tv = state.travel, flying = tv && tv.timestamp && (tv.timestamp - Math.floor(Date.now() / 1000) > 0);
-      if (flying) return; // inventory is legitimately empty in transit — not a migration signal
+      if (flying) return;
       const ready = items.length > 0, was = state.invReady;
       state.invReady = ready;
       markBagReady(ready);
@@ -1685,92 +1630,19 @@
       }
     } catch (e) { /* keep last known state */ }
   }
+
   const CHANGELOG = [
-    { v: "1.45.0", d: "Aug 5, 2026", c: ["🌐 Shared data feed (optional): point ⚙ Settings → “Shared data feed URL” at a central Google Apps Script that polls YATA 24/7 (code = shared-collector.gs in the repo, you deploy it once under your own Google account), and the board reads the authoritative restock history from it — so restock ETAs & the Landing column work from day one instead of waiting weeks to self-collect. Because foreign stock is global, one poller covers everyone; the client prefers the shared record per-item and falls back to your local data offline. ⤓ Sync shared button + a light once-a-day auto-sync"] },
-    { v: "1.44.0", d: "Aug 5, 2026", c: ["⬆ Import (next to ⬇ Export in this window): paste a previously exported blob to restore all your restock + seasonal data after a Tampermonkey/cache wipe — or seed a brand-new install from someone else’s export so they don’t start from zero. Events merge by timestamp (safe to re-import); the seasonal aggregate is adopted wholesale when your local data is empty, and a signature guard stops a re-imported blob from double-counting"] },
-    { v: "1.43.0", d: "Aug 5, 2026", c: ["📅 Started banking SEASONAL sell-rate data (persistent, never pruned): every selling interval is logged into a day-of-week × hour bucket (TCT), so down the road we can build a real model that predicts arrival stock differently for a quiet Sunday morning vs a busy weeknight. It just collects quietly now — raw stock history only lives 48h, so we had to start accumulating this compact aggregate to ever have the weekend/weekday history. The ⬇ Export button now includes it (shows how many buckets are banked)"] },
-    { v: "1.42.1", d: "Aug 5, 2026", c: ["🛬 Landing prediction now estimates the sell-rate from ALL recorded history — a time-weighted average over every selling interval, not just the last 2 samples — so the “sells out in ~X” / ↻fresh / ⚠gone calls get steadier and keep improving as more data accrues (the ▲/▼ arrows still reflect the latest sample). Tooltip shows the avg rate + how many intervals it’s based on"] },
-    { v: "1.42.0", d: "Aug 5, 2026", c: ["🛬 New “Landing” column: predicts the stock state when you'd touch down if you flew there RIGHT NOW — combines your one-way flight time (travel method), the current buy-rate, and the restock cycle. Shows ✓ stocked / ◑ partial / ↻ fresh (restocks before you land) / ⚠ gone (sells out before you land) / ✗ out / ? (not enough history). Hover for the reasoning + timing. Answers “will it be out-and-restocked by the time I get there?” — no longer only shows restock info when an item is currently out"] },
-    { v: "1.41.0", d: "Aug 5, 2026", c: ["🔬 Build watcher — killed the false alarms: it now only flags a hash it has NEVER seen (a bundle bouncing back to an earlier hash is a flap from browsing different pages, not fresh code), debounces repeat changes of the same module (shows ×N), and stops badging legacy “-old” bundles like header-old that Torn is retiring. One-time purge of the header-old flap noise already logged. Fresh-code alerts now show a short hash so you can tell real drops apart"] },
-    { v: "1.40.1", d: "Aug 5, 2026", c: ["✈ Travel auto-detect now works for real: reads your Torn property (verified API shape — checks modifications.airstrip & staff.pilot as 0/1 flags, keyed to your actual residence, and catches a Private Island you RENT), and auto-applies Airstrip −30% once on load if you have it. Fixed a false-positive where the first cut matched the word 'airstrip' even when you didn't have one"] },
-    { v: "1.40.0", d: "Aug 5, 2026", c: ["✈ Renamed 💰 Fund → ✈ Travel and it now uses YOUR real flight time: pick your method in ⚙ Settings (Standard / Airstrip −30% [Private Island + Pilot] / WLT −50% / Business Class −70%, + optional −25% 'Mailing Yourself Abroad' book) and the whole board re-times — accurate $/min, the ≤time filter, the OC flight-guard, and the shown round-trips all match your setup (verified vs the Torn wiki; ±3% game variance)", "Auto-detect: ⚙ Settings reads your Torn property and offers one-click 'Use Airstrip −30%' if it finds an Airstrip + Pilot", "Cap now auto-grows to your true carry max the moment you open the travel page (e.g. after adding the Airstrip+Pilot's +items) — never shrinks it"] },
-    { v: "1.39.0", d: "Aug 5, 2026", c: ["🛒 Item Market pages now annotate live: a context banner (market value · cheapest bazaar · top trader bid) with a 💰/🔒 sell-guard mirror (click to toggle keep⇄sell), and any listing priced BELOW the top live trader bid gets outlined green with a ⚡+profit tag — a crossed-market flip you can buy right there and trade for more", "🏬 City shops (shops.php) now show a 💰+spread flip tag on the shelf: each item compares its shop price to market value, so you can spot 'buy here, resell higher' straight off the shelf (muted 'mkt $X' on the rest)"] },
-    { v: "1.38.3", d: "Aug 5, 2026", c: ["🎯 Bounty: hospital/jail targets now show 'out in ~18m' (their release countdown), and the unavailable list is sorted soonest-out first — so you can see who's about to be fair game and time your hit"] },
-    { v: "1.38.2", d: "Aug 5, 2026", c: ["🔬 Build watcher fix: it was flagging ~40 'NEW' modules that were just existing Torn modules the watcher saw for the first time as you browsed (it only baselined off the first page). Now there's a 3-day cataloging window — first-sightings are quietly recorded (not alerts), and the 🆕 only fires for genuine code UPDATES (a bundle's hash changing) or truly new modules after the catalog settles. Existing installs get their noisy log auto-cleared once"] },
-    { v: "1.38.1", d: "Aug 5, 2026", c: ["Bounty: fixed the ⚔ attack link (Torn retired loader.php — now uses page.php)", "Bounty now also filters New Player Protection: targets under 14 days old can't be attacked by you at all, so they move to a '🛡 new-player protected' section (shows days until they're fair game) instead of dangling in your attackable list"] },
-    { v: "1.38.0", d: "Aug 5, 2026", c: ["🛡 Bounty tab now AUTO-HIDES stat-built traps. Since the API won't show battle stats, it reads each target's public personal stats and flags the tells — thousands of xanax taken, tens of thousands of 'defends won' (people who attacked them and LOST), billions in net worth, or a decade-old account still stuck at level 5-6. Those drop into a dimmed '⚠ likely stat-builds — don't attack' section with the reason shown, so a level-6 monster like Tilted (40k defends won) or Wimp_Lo (50k) can't lure you in. Real newbies (≈0 xanax, 0 defends won) stay in your attackable list"] },
-    { v: "1.37.1", d: "Aug 5, 2026", c: ["🎯 Bounty tab: each target now has a 🚫 button to hide it from ALL future scans — for the stat-built traps that one-shot you despite a low level (looking at you, Tilted). Hidden targets are remembered; a 'N hidden · clear all' link at the bottom lets you reset. Level really is only a proxy for beatability, so this lets you curate a personal do-not-attack list"] },
-    { v: "1.37.0", d: "Aug 5, 2026", c: ["🔬 Torn build watcher (for bug-bounty hunting): quietly notes the /builds/ module bundles each page loads and flags when a NEW module ships or a bundle's code changes — a 🆕 badge appears on the version chip, and clicking it (the changelog) lists the changes, newest first. Fresh code = least-scrutinized = best bug-bounty odds, so this tells you when to be early. Purely read-only (it just watches what already loaded); the point is to DISCLOSE to Torn, never exploit"] },
-    { v: "1.36.0", d: "Aug 4, 2026", c: ["🎯 New Bounty tab: find collectible bounties you might actually win. Set a reward range ($50k–$250k default) + a max target level (defaults to your level), and it pulls the bounty board, keeps the lowest-level targets (your best shot), and shows each one's LIVE status (✅ attackable now vs ⛔ in hospital) and faction — with a 'solo only' toggle so you only see targets whose faction can't retaliate. Click a name to jump to the attack. Honest: level is a proxy, not stats — spy first if you can, and a loss just costs energy + a short hospital stay"] },
-    { v: "1.35.1", d: "Aug 4, 2026", c: ["OC guard fix: while your Organized Crime is still RECRUITING, Torn's API reports a placeholder ready-time that's wrong (it jumps to the real value only once planning starts — which is why it briefly showed ~10h then corrected to match Torn's 2d). It no longer shows that misleading countdown or flags flights during recruiting — it just says 'recruiting, clear to travel'. Once planning begins, the real countdown + ⛔ flight flags kick in"] },
-    { v: "1.35.0", d: "Aug 4, 2026", c: ["⏳ Restock estimate now shows the whole cycle: out-of-stock rows show '⏳ ~36m · +500' (next restock + typical batch size), and hovering breaks down the full cycle — 'restocks ~500 → sells out in ~18m → out ~1h before it returns'. So you can see how many each restock brings and how fast it sells out.", "Removed the Profit/ea column — it's redundant with 'Profit ×N' (which already respects your Cap). Want per-item profit? Just set Cap to 1"] },
-    { v: "1.34.2", d: "Aug 4, 2026", c: ["🐞 Big Flip-finder fix: it was showing phantom flips (e.g. 'Bathrobe buy $1,000 → sell $11.7M'). Cause: it used the item's market_price as the buy price, but that field is Torn's stale LAST-TRADED value, not a live listing — for rarely-traded items it's fiction (Bathrobe last sold for $1,000; real sellers ask $19.5M). Now the buy price is the actual cheapest BAZAAR listing (a real current ask), so a 'flip' only shows when a real listing truly sits below a live buy-offer. Result: far fewer flips, but the ones shown are real (the phantoms — Bathrobe, Thimble, even Christmas Gnome — correctly vanish). Re-open 💱 Flip to rebuild the list"] },
-    { v: "1.34.1", d: "Aug 4, 2026", c: ["Added an '⬇ Export restock data' button in the changelog window (click the version). It copies all your recorded restock/stock-change data (with item names) to the clipboard — paste it to Claude and say 'analyze the restock data' to turn the collected observations into a real restock-timing model. This is how the browser-side data reaches the analysis"] },
-    { v: "1.34.0", d: "Aug 4, 2026", c: ["Now capturing the RAW stock-increase stream (every +N with its size) unclassified, so we can learn each item's real restock pattern from real data instead of assuming. Why: the Torn wiki confirms (a) selling items back to a foreign shop increases its stock — so a +1 can be a real sell-back, not jitter — and (b) restocks happen 'regularly or irregularly', not only after hitting 0. So a +N can't be perfectly labeled a restock from the number alone; the ⏳ prediction stays a provisional estimate (batch/refill signals) while the data builds. No visible change — this is groundwork for a data-driven restock model over the next few days"] },
-    { v: "1.33.2", d: "Aug 4, 2026", c: ["Refined the restock detector for RARE items: ultra-rare stock (ArmaLite M-15A4, Gold Laptop, etc.) lives at 0–1, so a real 0→1 restock IS their whole batch — the tool now judges a +1 against each item's own typical stock level (max ever seen). +1 on an item carrying thousands = still jitter (ignored); +1 refill on an item that never exceeds ~1 = a genuine restock (counted). Best of both"] },
-    { v: "1.33.1", d: "Aug 4, 2026", c: ["Good catch: a +1 stock bump is NOT a real restock (real ones land in batches) — it's usually YATA report-timing jitter or a player selling one back. The predictor now only counts a genuine restock (a refill from sold-out, or a big jump that at least doubles the stock), and the ▲ arrow no longer flags those tiny +1/+2 blips — so the restock cadence stays clean"] },
-    { v: "1.33.0", d: "Aug 4, 2026", c: ["⏳ Restock prediction (foundation): the tool now durably logs every restock (with time + amount) and sell-out (with time) it observes — kept ~30 days, beyond the 48h snapshot window. Out-of-stock rows show a predicted '⏳ ~Xh' next-restock once 2+ restocks have been seen (median interval since the last one; hover for cadence + last restock/sellout times), and depleting ▼ rows now estimate 'sells out in ~X' in the tooltip. Gets sharper the more cycles it watches — honest estimate, not a guarantee"] },
-    { v: "1.32.1", d: "Aug 4, 2026", c: ["The 'Profit ×N' full-load column is now sortable too (click the header). It sorts the same as Profit/ea since it's just that × your cap"] },
-    { v: "1.32.0", d: "Aug 4, 2026", c: ["Added a 'Profit ×N' column right after Profit/ea — the total profit for a full load at your Cap (profit/ea × cap, e.g. ×23), before airfare. The header updates when you change Cap. Makes the per-trip payoff obvious at a glance"] },
-    { v: "1.31.0", d: "Aug 4, 2026", c: ["✈ In-flight countdown + auto-land refresh: while flying, the banner now counts down 'Landing in 4:12' live, and the panel auto-refreshes the moment you touch down — so your 15s immunity timer starts on its own, no manual refresh needed (refresh once after takeoff to arm it). The OC 'ready in…' banner now also ticks down live every second"] },
-    { v: "1.30.0", d: "Aug 4, 2026", c: ["🛡️ Landing-immunity countdown: Torn gives you 15 seconds of attack immunity when you land (abroad or back in Torn). The board now shows a live-ticking '🛡️ Immunity: 12s' banner right after you land (pulsing green), then a red 'you're exposed — shelter your cash' note when it lapses. Ticks off your arrival time; hit Refresh the moment you land to catch the full window. (This is the window that got away while you were buying Pearls)"] },
-    { v: "1.29.0", d: "Aug 4, 2026", c: ["⛔ OC flight guard: if you're in a faction Organized Crime, the board now shows how long until it's ready ('⏰ OC ready in 9h 12m') and flags any destination whose ROUND TRIP is longer than that with a ⛔ OC badge + strike-through — because if you're flying when the crime is ready you BLOCK the whole thing (you must be in Torn, not Traveling/Hospital/Jail). Best of all it reads the OC from the API, which still works while you're abroad/hospitalized — exactly when Torn hides the OC from you. Uses ready_at (when planning completes); fails safe by warning early"] },
-    { v: "1.28.0", d: "Aug 4, 2026", c: ["🛒 The 'fly home to sell' nudge now reads Torn's OWN trip counter off the travel page ('You have purchased N / 23 items so far') — the reliable source of what you've actually bought this trip. So it shows real slot progress (e.g. '15/23 slots filled — fly home'), stays quiet at 0/23, and never invents a haul total from stale inventory again. Works even though your inventory/Items page is blocked while abroad"] },
-    { v: "1.27.1", d: "Aug 4, 2026", c: ["Fixed the false 'Got your haul? Fly home to sell' nudge that showed abroad even when you'd bought nothing — it was counting your whole sellable STASH (from the scraped inventory snapshot), not this trip's purchases. It now counts only foreign/travel goods (things you can only get by buying abroad), so it stays quiet until you're actually carrying a haul"] },
-    { v: "1.27.0", d: "Aug 4, 2026", c: ["🏪 Shop Flips: a new header button that finds Torn city-shop items (Big Al's, Bits 'n' Bobs, the car dealership, sweet shop, etc.) whose fixed shop price is below their market value — buy low at the shop, sell higher on the market. Uses the item catalog's buy_price vs market_value, excludes travel items (the board covers those), ranks by cash spread, and shows the net after the 1% Item Market sell fee. Reference-only: shop price is a catalog constant, so verify the item's actually stocked (limited stock/caps/restocks). Click a row for buyers, 🛒 to open the Item Market"] },
-    { v: "1.26.0", d: "Aug 4, 2026", c: ["💱 Flips are now one-click actionable: each flip shows a 🏪 link straight to the cheapest seller's bazaar (these are hidden from search since Item Market 2.0 — that's the edge) and a 🛒 Item Market link, so you can jump right to buying. It re-prices on the live cheapest listing before showing, drops any that already closed, and reminds you the ⚡ sell is a direct trade (no fee)"] },
-    { v: "1.25.1", d: "Aug 4, 2026", c: ["📊 Stocks now shows your NET-after-fee P&L: Torn's Profit figure is gross, but selling costs a 0.1% fee (verified on the Torn wiki — buying is free). Each holding shows 'net if sold now' after that fee, and the portfolio header totals both gross and net — so you see what you'd actually pocket (e.g. ~$12k fee on a $12.1M IST sale)"] },
-    { v: "1.25.0", d: "Aug 4, 2026", c: ["📊 Stocks: a new header button with (1) YOUR portfolio — live P&L per holding + a benefit-block progress bar (e.g. 'IST 22% → free education; 77,882 more ≈ $42.6M'), and (2) a buy-low scanner across all 35 stocks ranked by how far each sits below its own recent average, with ▼near-low / ▲near-high tags. Torn gives no price history, so — like restock — it records prices itself (~10-min background poll); trend/range signals fill in as history builds. It's benefit-AWARE: it never tells you to sell a block you're still accumulating. Honest by design: prices tick constantly (figures are as-of-pull, reconcile to Torn on reopen) and signals are range/trend heuristics, NOT predictions"] },
-    { v: "1.24.0", d: "Aug 4, 2026", c: ["💱 Quick Flips: a new header button that hunts genuine 'crossed market' arbitrage — an item you can BUY (Item Market / bazaar) for less than a LIVE trader is offering to BUY it from you, no travel. It scans the whole weav3r market, shortlists the most liquid + affordable items (where transient mispricings actually appear), then pulls real buy-offers and shows ONLY real, positive flips — ranked by profit/ea. Click one to see who's online + ⚡ trade. These are rare and get snapped up fast, so it honestly says 'market's efficient' when there's nothing — it never invents profit. Reconfirm prices before you buy"] },
-    { v: "1.23.0", d: "Aug 4, 2026", c: ["✈ In-flight pre-focus: while you're flying TO a country, the board now auto-focuses on that destination (blue ✈ chip) so you can plan your buy before you land — the status line shows 'heading to X · land in Ym'. Flying home goes back to All. Pick another chip and it sticks until your next leg", "📈 Restock history now keeps ~2 days per item (was ~20h) so the trends have room to show full restock cycles"] },
-    { v: "1.22.0", d: "Aug 4, 2026", c: ["📈 Restock tracking (foundation): the board now quietly records each item's stock level over time (YATA only gives a live number, no history, so we build our own). A ▲/▼ appears by the Stock chip once there are two samples — ▲ restocked, ▼ being bought (hover for the rate). It polls in the background about every 5 min (shared across your open Torn tabs) so history builds even when you're not looking. This is the groundwork for 'what'll likely be in stock when I land' — predictions come once it has enough data"] },
-    { v: "1.21.0", d: "Aug 3, 2026", c: ["🎁 Supply packs now support YOUR real drop odds — priced live, so opening becomes a real OPEN/SELL verdict instead of a rough equal-odds guess. Click ✎ on a pack row to (A) enter opens + what you received (straight from torn.report), or (B) ⟳ Sync from Torn log to pull your actual opens automatically. EV = your odds × live prices (never stales); with enough logged opens it shows a ± confidence interval and only calls OPEN/SELL once that interval clears the sell price — otherwise 'need more data (n=…)'. Packs with no data yet keep the equal-odds reference", "Note: the Torn-log sync is beta — it self-discovers the log type and, if the entry format doesn't match, dumps a sample to the console (F12) to finish wiring"] },
-    { v: "1.20.0", d: "Aug 3, 2026", c: ["🎁 Supply-pack open-vs-sell reference in the Bag: for the 'open into items' packs (Six-Pack of Alcohol/Energy, Box of Medical Supplies, Box of Grenades) each row now shows a rough open-EV — the pack's contents (from the Torn wiki) priced live × the items catalog — next to its sell price, so you can eyeball whether opening is even in the ballpark. Contents with a wide value spread are flagged ⚠ gamble. Deliberately NOT a hard buy/sell verdict: Torn doesn't publish drop odds and they aren't uniform, so an equal-odds estimate is only a reference — the footnote links to torn.report for the empirical, per-pack call"] },
-    { v: "1.19.2", d: "Aug 2, 2026", c: ["📦 Bag no longer over-reports sold items: the scraped snapshot now reconciles as you browse — opening a category tab lists all of that category's items, so anything you've since sold/used (or that shows qty 0) is dropped instead of lingering. Added a ↻ Rescan button + a 'snapshot Nm old' age so you can wipe & rebuild it for odd cases the API-down snapshot can't see"] },
-    { v: "1.19.1", d: "Aug 2, 2026", c: ["📦 Bag readability: the Qty × Sell column was inheriting Torn's dark cell color and was hard to read — gave it an explicit light tone"] },
-    { v: "1.19.0", d: "Aug 2, 2026", c: ["🏠 Home / sell-side helper: standing in Torn, the status line shows 🏠 Home and a green bar summarizes your sellable haul (item count + ~value) with a one-click 📦 Sell haul jump to the Bag. Landed abroad, a gold bar reminds you to fly home to sell — with a ✈ Return to Torn link and, when known, the value of sellable goods you're carrying", "📦 Bag now works even while Torn's inventory API is down — it falls back to the item counts scraped from your Items-page visits, so every sellable item across all categories lands in one place instead of clicking each type in Torn's own UI", "📦 Bag rows redesigned: Item · Category (with a type icon) · Qty × Sell · Expected $, plus per-row 🧺 open-market and ⚡ find-buyers (sell-ok items only — held-back items stay lock-only)"] },
-    { v: "1.18.1", d: "Aug 2, 2026", c: ["📍 Abroad auto-focus now works even when you're hospitalized abroad (or jailed) — it reads the country from your travel data, not just the 'Abroad' status, so a mugging that lands you in a foreign hospital no longer drops the board back to All", "Header fixed: ↻ Refresh and ⚙ now sit on their own stable row (Refresh + ⚙ pinned left; Cap / A− / A+ on the right) so they stop shuffling around as the font size or button widths change"] },
-    { v: "1.18.0", d: "Aug 2, 2026", c: ["📍 Abroad auto-focus: when you're standing in a foreign country the board defaults to that destination's items automatically (the chip shows 📍 and glows green), so you see what to buy right where you are. Pick another chip and it sticks until you move; fly home → back to All"] },
-    { v: "1.17.1", d: "Aug 2, 2026", c: ["⚡ Find-buyers stays on sell-ok items only (default junk, or ones you've toggled to sell) — held-back items are lock-only, so there's no path to sell a use-item by mistake"] },
-    { v: "1.17.0", d: "Aug 2, 2026", c: ["Net-profit in the Buyers popover: for travel-trade goods each buyer's total now shows 'net +$X' (sell − your foreign buy cost × qty), updates live with quantity, and 📋 copies it into the trade line too"] },
-    { v: "1.16.1", d: "Aug 2, 2026", c: ["Gym-estimate energy box is now capped to your energy maximum (can't enter impossible values like 206)"] },
-    { v: "1.16.0", d: "Aug 2, 2026", c: ["⏱ Round-trip time filter: a dropdown by the destination chips limits the board to destinations you can fly there-and-back within your window (≤1h … ≤10h) — e.g. only 2 hours → Mexico/Cayman/Canada. Each row now shows its round-trip time too"] },
-    { v: "1.15.0", d: "Aug 2, 2026", c: ["Sortable board columns: click a header to sort. Click Stock → in-stock items first (then $/min) so you see what's actually buyable; $/min, Profit/ea, Buy, Resale, Load also sortable. The 'Best' card still uses profit order. Your choice is saved"] },
-    { v: "1.14.0", d: "Aug 2, 2026", c: ["😊 Happy now includes a gym-gain ESTIMATE (Vladar formula): pick a stat, set energy, and it projects per-train + total gain at your jumped happy in your active gym — pulls your stats/gym live. Rough by design (Torn hides the real formula; excludes Steadfast/education perks; happy decays as you train)"] },
-    { v: "1.13.1", d: "Aug 2, 2026", c: ["Trade-description autofill now properly enables the Initiate Trade button — fires a full keydown/input/keyup/change burst so Torn's form registers the text (no more erase-a-digit-and-retype)"] },
-    { v: "1.13.0", d: "Aug 2, 2026", c: ["😊 Happy Jump calculator: live 'happy resets in M:SS' timer (the :00/:15/:30/:45 reset), your current/base happy, your held candy/drug/eDVD boosters (auto-detected) with an Ecstasy ×2 toggle, and the max happy + optimal eat/take order (99,999 cap). All values verified from the Torn wiki"] },
-    { v: "1.12.0", d: "Aug 2, 2026", c: ["Trade-description autofill: click ⇄ Trade (or ⚡) on a buyer, then on the trade page a '📋 Fill description' button drops the exact trade line into Torn's required description box. Text-only + you press Initiate Trade — no item/money automation"] },
-    { v: "1.11.3", d: "Aug 2, 2026", c: ["Buyers/changelog window now floats over the page at near-full height instead of being clipped short by the panel (especially when opened via ⚡ before refreshing) — drag any edge to resize"] },
-    { v: "1.11.2", d: "Aug 2, 2026", c: ["Fixed the item.php ⚡ only showing on the last row — moved it next to the item name (the action cell was too cramped and it clipped)", "Changelog / buyers window is taller and you can drag its bottom edge to resize it"] },
-    { v: "1.11.1", d: "Aug 2, 2026", c: ["Hover tooltips on the board's ★ (affordable & in stock) and 💰 (best funded play) row markers so it's clear what they mean"] },
-    { v: "1.11.0", d: "Aug 2, 2026", c: ["⚡ on each sellable item.php row (next to the 🧺 basket): click it right in Torn's own Items list to open that item's buyers + quantity calculator + trade-best-online — no more opening the board and hunting for the item"] },
-    { v: "1.10.0", d: "Aug 2, 2026", c: ["Buyers popover now has a quantity calculator: prices show /ea, every buyer shows a live running total, and 📋 copies a paste-ready trade line (e.g. 'Ambergris Lump ×23 @ $430,000/ea = $9,890,000')", "'You have N' item count — and since Torn's inventory API is down, it's scraped from your Items page (data-qty) as you browse it, so counts work anyway (marked * when from that snapshot)"] },
-    { v: "1.9.5", d: "Aug 2, 2026", c: ["Fund from the Bag now switches straight to the funded board in one click (it used to toggle fund off and need a second click) — Bag/Fund behave like proper tabs now"] },
-    { v: "1.9.4", d: "Aug 2, 2026", c: ["'Incorrect key' errors on the board and in the Bag now show a clickable link straight to ⚙ Settings to update the key"] },
-    { v: "1.9.3", d: "Aug 2, 2026", c: ["📦 Bag auto-recheck: the tool quietly polls every 15 min and the Bag button glows green the moment Torn's inventory API comes back online", "Added a Test button for the W3B key in Settings too", "Really fixed Fund/Bag: only one lights at a time now (Fund lit only while viewing the board)"] },
-    { v: "1.9.2", d: "Aug 2, 2026", c: ["Truth in messaging: the empty 📦 Bag is Torn's fault, not yours — Torn's inventory API is temporarily returning empty for everyone during their inventory-system migration. No key (even Full) can read it until Torn restores the endpoint. Settings/Bag now say so instead of blaming your key"] },
-    { v: "1.9.1", d: "Aug 2, 2026", c: ["Moved the ✕ close to the top-right corner so it stops wrapping to a second line; tightened header buttons", "Fixed the Settings key-test advice: inventory needs a Full key (or a Custom key with Inventory ticked) — Limited isn't enough, and everything else works on Limited"] },
-    { v: "1.9.0", d: "Aug 2, 2026", c: ["New ⚙ Settings: view/update your Torn + W3B keys and Test the Torn key — shows its access level and whether it can actually read your inventory (diagnoses the empty 📦 Bag)", "Fund now switches you out of the Bag view instead of leaving both buttons lit", "Buy / Resale / Load columns are readable — they were inheriting Torn's dark td color"] },
-    { v: "1.8.0", d: "Aug 2, 2026", c: ["Click a board row → Buyers now shows each buyer's 🟢/🟡/⚫ online status (via Torn API) and a one-click ⚡ 'Trade best online' button for the best offer from someone actually around", "Added a ✕ close button to the panel header + raised the 💰 toggle above the panel (fixes not being able to close it)", "Readable board again: brighter item names, lifted dim opacity"] },
-    { v: "1.7.4", d: "Aug 2, 2026", c: ["Fund advice is now stocks-aware: reads your actual stock value (networth) and only suggests a 'funded' play you can truly reach with cash+stocks — no more 'sell $229M in stocks' when you don't have it", "Inline tag moved inside the item name to stop rows wrapping to two lines"] },
-    { v: "1.7.3", d: "Aug 2, 2026", c: ["Panel now anchors to the top and caps its height to the window (zoom-aware) — the header/Refresh are always reachable, no more overshooting the top of the page", "Dimmed (unaffordable) rows are readable again — bumped opacity so item + buy/resale text isn’t washed out when you’re low on cash"] },
-    { v: "1.7.2", d: "Aug 2, 2026", c: ["Click any 🔒/💰 tag (on item.php or in the Bag) to toggle keep ⇄ sell-ok — saved permanently, so you curate your own safe list (equipped items always stay kept)", "Inline tag is now icon-only (value in tooltip) so it no longer wraps item rows to two lines", "Reset-overrides button in the changelog; Bag Sell links now use the current ItemMarket URL"] },
-    { v: "1.7.1", d: "Aug 2, 2026", c: ["Supply Packs (e.g. Coin Purse) are now sellable — they carry no use, and unopened packs often beat their contents. Suitcases/Cassock stay held back (they're Enhancers/Tools)"] },
-    { v: "1.7.0", d: "Aug 2, 2026", c: ["Inline tags on the Items page (item.php): every row shows 💰 market value on plain-junk (with a 🧺 Open-Market basket) or 🔒 on use-items — your don’t-sell-by-mistake guard, right in Torn’s own list"] },
-    { v: "1.6.6", d: "Aug 2, 2026", c: ["📦 Bag safety overhaul: only plain-junk types (plushie/flower/collectible/artifact/jewelry) get a Sell link; Tools, Materials, Enhancers, Special/Temporary, gear, and anything with an effect/requirement are shown in a 🔒 Held-back group with NO Sell link — so pricey use-items (Large Suitcase, Cassock, etc.) can't be sold by mistake"] },
-    { v: "1.6.5", d: "Aug 2, 2026", c: ["Fixed 📦 Bag false 'clean bags' — items are now priced from the Torn items catalog (market_value), not the inventory field that was always 0", "When nothing matches, shows how many items were scanned instead of a misleading all-clear"] },
-    { v: "1.6.4", d: "Aug 2, 2026", c: ["🔄 Check-for-updates button in the changelog (click the version) — compares against GitHub and gives a one-click Install link when a newer version exists"] },
-    { v: "1.6.3", d: "Aug 2, 2026", c: ["Fixed 📦 Bag stuck on 'loading inventory…' (inventory now coerced to an array)", "Board no longer dead-ends: when nothing is affordable + full-stock it shows the Best available play + what's blocking it"] },
-    { v: "1.6.2", d: "Aug 2, 2026", c: ["📦 Bag detects when you're flying (Torn hides inventory in transit) — shows arrival countdown instead of an empty list"] },
-    { v: "1.6.1", d: "Aug 2, 2026", c: ["Clearer message when YATA is down (502/timeout) instead of raw error", "Longer 30s timeout for YATA's heavy export"] },
-    { v: "1.6.0", d: "Aug 1, 2026", c: ["Bigger-text controls (A− / A+)", "Sellable-Junk inventory view (📦 Bag)", "Clickable version → this changelog"] },
-    { v: "1.5.0", d: "Aug 1, 2026", c: ["weav3r trader prices — click a row for top buyers", "One-click ⇄ Trade + profile links"] },
-    { v: "1.4.0", d: "Aug 1, 2026", c: ["Fly-here (✈) links per row", "Live mug-risk readout", "GitHub hosting + auto-update"] },
-    { v: "1.3.0", d: "Aug 1, 2026", c: ["Fund mode — surfaces the best plays even when over budget, with a 'sell $X in stocks' reminder + shortfall badges"] },
-    { v: "1.2.0", d: "Aug 1, 2026", c: ["CSP-safe styling + broader page matching (fixed the invisible panel)"] },
-    { v: "1.1.0", d: "Aug 1, 2026", c: ["Destination filter chips (All + per-country)"] },
-    { v: "1.0.0", d: "Aug 1, 2026", c: ["Initial release — live $/min board (YATA stock × Torn resale), affordability + best pick"] }
+    { v: "1.46.0", d: "Aug 6, 2026", c: ["📅 Day/Time Aware Landing Engine: 'Landing' column now runs an hourly simulation over your flight path using historical day-of-week × hour-of-day sell rates (banked from the shared collector) instead of a simple flat average.", "🎯 Confidence Indicator: Landing predictions now flag when seasonal bucket data is thin for your arrival window so you can avoid long risky flights."] },
+    { v: "1.45.0", d: "Aug 5, 2026", c: ["🌐 Shared data feed (optional): point ⚙ Settings → “Shared data feed URL” at a central Google Apps Script that polls YATA 24/7..."] },
+    { v: "1.44.0", d: "Aug 5, 2026", c: ["⬆ Import (next to ⬇ Export in this window)..."] },
+    { v: "1.43.0", d: "Aug 5, 2026", c: ["📅 Started banking SEASONAL sell-rate data..."] },
+    { v: "1.42.1", d: "Aug 5, 2026", c: ["🛬 Landing prediction now estimates the sell-rate..."] },
+    { v: "1.42.0", d: "Aug 5, 2026", c: ["🛬 New “Landing” column..."] },
+    { v: "1.41.0", d: "Aug 5, 2026", c: ["🔬 Build watcher — killed the false alarms..."] },
+    { v: "1.40.1", d: "Aug 5, 2026", c: ["✈ Travel auto-detect now works for real..."] },
+    { v: "1.40.0", d: "Aug 5, 2026", c: ["✈ Renamed 💰 Fund → ✈ Travel and it now uses YOUR real flight time..."] }
   ];
+
   const RAW_URL = "https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js";
   function curVersion() { return (typeof GM_info !== "undefined" && GM_info.script && GM_info.script.version) || "0"; }
   function cmpVer(a, b) {
@@ -1800,7 +1672,7 @@
       ontimeout: function () { s.textContent = "Update check timed out."; }
     });
   }
-  // Flat happy per item — verified from the Torn wiki (wiki.torn.com/wiki/Happy), Aug 2026.
+
   const HAPPY_ITEMS = {
     "Bag of Bon Bons": 25, "Bag of Chocolate Kisses": 25, "Box of Bon Bons": 25, "Box of Extra Strong Mints": 25, "Box of Sweet Hearts": 25, "Lollipop": 25, "Box of Chocolate Bars": 25,
     "Big Box of Chocolate Bars": 35, "Bag of Candy Kisses": 50, "Chocolate Egg": 50, "Bag of Bloody Eyeballs": 75, "Bag of Tootsie Rolls": 75, "Bag of Chocolate Truffles": 100, "Bag of Reindeer Droppings": 100,
@@ -1810,7 +1682,7 @@
   const HAPPY_CAP = 99999;
   function calcHappy(start, flat, ecstasy) {
     if (!ecstasy) return Math.min(HAPPY_CAP, start + flat);
-    const beforeFlat = Math.min(flat, Math.max(0, Math.floor(HAPPY_CAP / 2) - start)); // fill toward cap/2, double, then add rest
+    const beforeFlat = Math.min(flat, Math.max(0, Math.floor(HAPPY_CAP / 2) - start));
     const doubled = Math.min(HAPPY_CAP, (start + beforeFlat) * 2);
     return Math.min(HAPPY_CAP, doubled + (flat - beforeFlat));
   }
@@ -1874,7 +1746,7 @@
         gymBlock +
       '</div>';
     bindClose(bx);
-    // Vladar gym-gain formula (verified from Torn wiki) — happy decays ~50% of energy per train.
+
     const VLA = { a: 3.480061091e-7, b: 250, c: 3.091619094e-6, d: 6.82775184551527e-5, e: -0.0301431777 };
     const gymBracket = function (h, s) { return (VLA.a * Math.log(h + VLA.b) + VLA.c) * s + VLA.d * (h + VLA.b) + VLA.e; };
     const estGym = function (dots, statVal, happy, energy, ept) {
@@ -1932,12 +1804,7 @@
       updateReset();
     }, 1000);
   }
-  // ---------- Auto-detect the user's flight method from their Torn property ----------
-  // Verified shape (user/?selections=properties, Aug 5 2026): properties is an object keyed by property id; each has
-  // modifications:{airstrip:0|1,…} and staff:{pilot:0|1,…} as NUMERIC flags (so check the VALUE, not the key's
-  // presence — every property carries an "airstrip" key). Airstrip −30% needs BOTH modifications.airstrip>0 AND
-  // staff.pilot>0. Current residence = profile.property_id; the perk can also come from a Private Island you RENT
-  // (that property is in the payload with rented.user_id === your id), so fall back to a perked rental you occupy.
+
   function updateTravelEff() {
     const el = host && host.querySelector("#tdk-set-teff"); if (!el) return;
     const pct = Math.round((1 - travelMult()) * 100);
@@ -1946,12 +1813,12 @@
   }
   function applyTravelChange(manual) {
     GM_setValue("travelMethod", state.travelMethod); GM_setValue("travelBook", state.travelBook);
-    if (manual) GM_setValue("travel_manual", true); // a manual pick freezes auto-detect from re-flipping it
+    if (manual) GM_setValue("travel_manual", true);
     if (state.rows && state.rows.length) recomputePpm();
     const sel = host && host.querySelector("#tdk-set-tmethod"); if (sel) sel.value = state.travelMethod;
     updateTravelEff(); render();
   }
-  function probeTravelProp() { // → Promise<{ok, perk, name, via, air, pilot, reason}>
+  function probeTravelProp() {
     const key = GM_getValue("torn_key", "");
     if (!key) return Promise.resolve({ ok: false, reason: "no Torn key" });
     return Promise.all([
@@ -1965,7 +1832,7 @@
       const residenceId = prof && !prof.error ? prof.property_id : null;
       const hasPerk = function (p) { return !!(p && p.modifications && p.staff && +p.modifications.airstrip > 0 && +p.staff.pilot > 0); };
       let cur = residenceId != null ? props[String(residenceId)] : null, via = "residence";
-      if (!hasPerk(cur)) { // living in a rented PI? scan properties you rent (rented.user_id === you) for the perk
+      if (!hasPerk(cur)) {
         const rental = Object.keys(props).map(function (k) { return props[k]; })
           .find(function (p) { return p && p.rented && myId != null && p.rented.user_id === myId && hasPerk(p); });
         if (rental) { cur = rental; via = "rented"; }
@@ -1977,7 +1844,7 @@
       };
     }).catch(function (e) { return { ok: false, reason: (e.message || e) }; });
   }
-  function detectTravelProp() { // Settings UI: report + (auto-)apply
+  function detectTravelProp() {
     const el = host.querySelector("#tdk-set-tdetect"); if (!el) return;
     if (!GM_getValue("torn_key", "")) { el.innerHTML = "Add a Torn key above to auto-detect your Private Island / Airstrip / Pilot."; return; }
     el.textContent = "🔍 Checking your property…";
@@ -1996,11 +1863,11 @@
       }
     });
   }
-  function autoDetectTravelOnce() { // one-time, silent: correct the board on first load without opening Settings
+  function autoDetectTravelOnce() {
     if (GM_getValue("travel_manual", false) || GM_getValue("travel_detect_done", false)) return;
     if (!GM_getValue("torn_key", "")) return;
     probeTravelProp().then(function (r) {
-      if (!r.ok) return; // don't set the done-flag on failure, so it retries next load
+      if (!r.ok) return;
       GM_setValue("travel_detect_done", true);
       if (r.perk && state.travelMethod !== "air") { state.travelMethod = "air"; GM_setValue("travelMethod", "air"); if (state.rows && state.rows.length) recomputePpm(); render(); }
     });
@@ -2037,13 +1904,12 @@
       state.inv = null; state.resale = null; state.itemMeta = null; state.cash = null; state.stocks = null;
       host.querySelector("#tdk-set-msg").textContent = " Saved ✓ — caches cleared, hit Refresh";
     });
-    // ✈ Travel method: persist (as a MANUAL pick) + live-re-price the board — no refetch, just re-time the rows
     const mSel = host.querySelector("#tdk-set-tmethod");
     if (mSel) mSel.addEventListener("change", function () { state.travelMethod = this.value; applyTravelChange(true); });
     const bChk = host.querySelector("#tdk-set-tbook");
     if (bChk) bChk.addEventListener("change", function () { state.travelBook = this.checked; applyTravelChange(true); });
     updateTravelEff();
-    detectTravelProp(); // fills #tdk-set-tdetect from your Torn property (Airstrip + Pilot), and auto-applies once
+    detectTravelProp();
     const ss = host.querySelector("#tdk-set-sharedsync"), sMsg = host.querySelector("#tdk-set-sharedmsg");
     const syncedAt = (function () { try { return GM_getValue("shared_synced_at", 0); } catch (e) { return 0; } })();
     if (sMsg && syncedAt) sMsg.textContent = "Last synced " + new Date(syncedAt).toLocaleString();
@@ -2079,10 +1945,7 @@
       }).catch(function (e) { out.innerHTML = '<span class="serr">W3B test failed: ' + e.message + ' — check the key</span>'; });
     });
   }
-  // Feed an exported blob back in — restores collected data after a Tampermonkey/cache wipe, or seeds a fresh
-  // install from someone else's export. Events merge by timestamp (idempotent — safe to re-import). The seasonal
-  // aggregate can't dedup (it's pre-summed), so: adopt wholesale when local is empty (the restore/seed case), else
-  // SUM but skip a blob we've already imported (signature guard) so a double-import doesn't double-count.
+
   function importRestockData(text) {
     let p; try { p = JSON.parse(text); } catch (e) { return { err: "That isn’t valid JSON — copy the whole ⬇ Export blob." }; }
     if (!p || p.kind !== "tdk-restock-export") return { err: "Not a Trade Desk export (missing kind)." };
@@ -2090,7 +1953,6 @@
     let imports; try { imports = GM_getValue("tdk_imports", []) || []; } catch (e) { imports = []; }
     const sig = (function (s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h + ":" + s.length; })(text);
     const dup = imports.indexOf(sig) >= 0;
-    // events: union with timestamp dedup
     let ev; try { ev = GM_getValue("stock_events", null) || {}; } catch (e) { ev = {}; }
     let evItems = 0;
     Object.keys(inEv).forEach(function (k) {
@@ -2101,7 +1963,6 @@
       dst.rs.sort(function (a, b) { return a[0] - b[0]; }); dst.so.sort(function (a, b) { return a - b; }); if (dst.up) dst.up.sort(function (a, b) { return a[0] - b[0]; });
       dst.max = Math.max(dst.max || 0, src.max || 0); if (dst.q == null) dst.q = src.q; evItems++;
     });
-    // seasonal: adopt if empty, else sum (unless this exact blob was already imported)
     let sea; try { sea = GM_getValue("stock_seasonal", null) || {}; } catch (e) { sea = {}; }
     const seaEmpty = Object.keys(sea).length === 0; let seaBuckets = 0, seaMode;
     if (seaEmpty) { seaMode = "loaded"; Object.keys(inSea).forEach(function (k) { sea[k] = {}; Object.keys(inSea[k]).forEach(function (b) { sea[k][b] = inSea[k][b].slice(); seaBuckets++; }); }); }
@@ -2116,8 +1977,8 @@
     const bx = host.querySelector("#tdk-buyers");
     const ovCount = Object.keys(state.ov).length;
     const blog = (function () { try { return GM_getValue("build_log", []) || []; } catch (e) { return []; } })();
-    const fresh = blog.filter(function (x) { return x.type !== "seen" && !x.lg; });   // genuine fresh code — the bug-bounty signal
-    const legacy = blog.filter(function (x) { return x.type !== "seen" && x.lg; });     // -old bundles Torn is phasing out — churn, low value
+    const fresh = blog.filter(function (x) { return x.type !== "seen" && !x.lg; });
+    const legacy = blog.filter(function (x) { return x.type !== "seen" && x.lg; });
     const catN = blog.filter(function (x) { return x.type === "seen"; }).length;
     const cnt = function (x) { return x.n > 1 ? ' <span class="muted">×' + x.n + '</span>' : ''; };
     const sh = function (x) { return x.h ? ' <code class="muted">' + String(x.h).slice(0, 7) + '</code>' : ''; };
@@ -2171,10 +2032,10 @@
       const m = bx.querySelector("#tdk-exp-msg"); if (m) m.textContent = "Syncing shared…";
       syncShared(true, function (r) { if (!m) return; m.innerHTML = r.err ? '<span style="color:#e5615c">' + r.err + '</span>' : "Shared synced ✓ " + r.items + " items · " + r.buckets + " buckets"; });
     });
-    try { GM_setValue("build_seen_at", Date.now()); } catch (e) { } updateBuildBadge(); // opening the changelog marks build changes as seen
+    try { GM_setValue("build_seen_at", Date.now()); } catch (e) { } updateBuildBadge();
     bindClose(bx);
   }
-  // A: manual odds editor — enter opens + total received per content item (straight from torn.report). Reuses overlay.
+
   function openPackOdds(name) {
     const m = PACK_MODELS[name]; if (!m) return;
     const bx = host.querySelector("#tdk-buyers"); bx.classList.add("open");
@@ -2220,8 +2081,7 @@
     });
     bx.querySelector("#tdk-pd-sync").addEventListener("click", function () { syncPackLog(name, bx.querySelector("#tdk-pd-msg")); });
   }
-  // B: pull your real supply-pack opens from the Torn API log. Self-discovers the log type; parses defensively and,
-  // if the entry shape doesn't match, dumps a sample to the console so the parser can be finalized. Non-destructive.
+
   async function syncPackLog(name, msgEl) {
     const key = tornKey(); if (!key) { if (msgEl) msgEl.textContent = "Need a Torn API key (⚙ Settings)."; return; }
     const set = function (h) { if (msgEl) msgEl.innerHTML = h; };
@@ -2243,7 +2103,7 @@
           const e = log[k]; if (samples.length < 2) samples.push(e);
           const dat = e.data || {};
           const hay = String(e.title || "") + " " + JSON.stringify(dat);
-          if (hay.toLowerCase().indexOf(name.toLowerCase()) < 0) return; // not this pack
+          if (hay.toLowerCase().indexOf(name.toLowerCase()) < 0) return;
           const items = {};
           const eat = function (arr) { arr.forEach(function (it) { const id = +(it.id || it.ID || it.item || 0), q = +(it.qty || it.quantity || it.amount || 1); if (id && pool[id]) items[id] = (items[id] || 0) + (q || 1); }); };
           if (Array.isArray(dat.items)) eat(dat.items);
@@ -2257,6 +2117,7 @@
       else { console.log("[TDK] sample supply-pack log entries =", samples); set('Found the log type but couldn\'t auto-parse received items — dumped 2 sample entries to the console (F12). Paste them to Claude to finalize the parser.'); }
     } catch (e) { set("Sync failed: " + (e.message || e)); }
   }
+
   function build() {
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -2301,7 +2162,6 @@
       '</div>' +
       '<div id="tdk-inv" style="display:none"></div>';
     host.appendChild(panel);
-    // Overlay lives on host (not the panel) so it floats over the page at full height, unclipped by the panel.
     const buyers = document.createElement("div"); buyers.id = "tdk-buyers"; host.appendChild(buyers);
 
     btn.addEventListener("click", function () { panel.classList.toggle("open"); if (panel.classList.contains("open")) { if (!state.rows.length) refresh(); checkInvStatus(); } });
@@ -2326,8 +2186,6 @@
       state.maxTrip = +e.target.value; GM_setValue("maxTrip", state.maxTrip); render();
     });
     host.querySelector("#tdk-fund").addEventListener("click", function () {
-      // From the Bag, Fund means "show me the funded board" (turn it on) — don't toggle it off.
-      // On the board, Fund toggles fund mode normally.
       if (state.view === "inv") { state.fund = true; setView("board"); }
       else { state.fund = !state.fund; render(); }
       GM_setValue("fund", state.fund);
@@ -2348,7 +2206,6 @@
     applyScale();
   }
 
-  /* ---------- inline Items-page annotator (item.php) ---------- */
   const ITEM_PAGE = /\/item\.php/;
   function repaintRow(li) {
     li.querySelectorAll(".tdk-inl, .tdk-mkt").forEach(function (n) { n.remove(); });
@@ -2370,8 +2227,6 @@
       const ov = !!state.ov[id];
       const nameWrap = li.querySelector(".name-wrap");
       if (nameWrap && !nameWrap.querySelector(".tdk-inl")) {
-        // Icon only (value in tooltip), placed INSIDE .name-wrap so it rides the name's own line and can't
-        // widen Torn's title block into a second row.
         const tag = document.createElement("span");
         tag.className = "tdk-inl " + (sellable ? "sell" : "keep") + (ov ? " ovr" : "");
         tag.textContent = sellable ? "💰" : "🔒";
@@ -2382,7 +2237,7 @@
           tag.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); toggleOverride(id, sellable); repaintRow(li); });
         }
         nameWrap.appendChild(tag);
-        if (sellable && price > 0) { // ⚡ only on sell-ok rows (default junk or toggled to sell) — keeps held-back items out of the sell flow entirely
+        if (sellable && price > 0) {
           const z = document.createElement("span");
           z.className = "tdk-inl tdk-zap"; z.textContent = "⚡"; z.title = "Find buyers · trade the best online offer"; z.style.cursor = "pointer";
           z.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); panel.classList.add("open"); openBuyers(id, name); });
@@ -2401,11 +2256,7 @@
       }
     });
   }
-  // Torn renders your item counts client-side (data-qty on each row) even while the inventory API is down.
-  // Scrape them off item.php and persist, so the Bag works without the API. Merges across category tabs AND
-  // reconciles: an open category tab lists ALL of that category's items, so any stored item of that category we
-  // no longer see (or that shows data-qty 0) was sold/used to zero — drop it, so the snapshot stops over-reporting.
-  // (If an item-search filter hides rows, they re-appear and re-store the moment the filter is cleared.)
+
   function harvestInvCounts() {
     const rows = document.querySelectorAll("li[data-item][data-qty]"); if (!rows.length) return;
     const store = GM_getValue("inv_counts", null) || { map: {}, at: 0 };
@@ -2416,18 +2267,18 @@
       if (!id || isNaN(q)) return;
       const cat = li.getAttribute("data-category") || (meta[id] && meta[id].type) || "";
       if (cat) catsPresent[cat] = 1;
-      if (q > 0) { map[id] = q; seen[id] = 1; } else { delete map[id]; } // qty 0 on-screen → sold out
+      if (q > 0) { map[id] = q; seen[id] = 1; } else { delete map[id]; }
     });
     Object.keys(map).forEach(function (id) {
       if (seen[id]) return;
-      const cat = meta[id] && meta[id].type; // data-category == catalog type, so a shown tab reconciles its items
+      const cat = meta[id] && meta[id].type;
       if (cat && catsPresent[cat]) delete map[id];
     });
     GM_setValue("inv_counts", { map: map, at: Date.now() });
   }
   function annotateItemsPage() {
     if (!ITEM_PAGE.test(location.pathname)) return;
-    const key = GM_getValue("torn_key", ""); if (!key) return; // silent — never prompt from the page
+    const key = GM_getValue("torn_key", ""); if (!key) return;
     loadResale(key).then(function () {
       annotateRows(); harvestInvCounts();
       let pending = false;
@@ -2437,11 +2288,7 @@
       }).observe(document.body, { childList: true, subtree: true });
     }).catch(function () { });
   }
-  /* ---------- inline city-shop annotator (shops.php) — flags shop→market flips right on the shelf ----------
-     Legacy Torn UI (stable classes, itemid attr): each shelf item is span.item[itemid], inside .acc-title with a
-     sibling .price (BUY price text; data-sell = sellback). We look up market_value from the same items API the
-     board uses (state.itemMeta[id].mkt) and tag the spread. Clones from Torn's carousel each get their own tag
-     because we resolve .price relative to the item's own .acc-title box, never the shared #{id}-price global. */
+
   const SHOP_PAGE = /\/shops\.php/i;
   function annotateShopRows() {
     const meta = state.itemMeta || {};
@@ -2450,7 +2297,7 @@
       const id = +it.getAttribute("itemid"); if (!id) return;
       const box = it.closest(".acc-title") || it.closest("li"); if (!box) return;
       const pr = box.querySelector(".price"); if (!pr || box.querySelector(".tdk-shop-tag")) return;
-      const buy = parseM(pr.textContent);                 // shelf price text = what you PAY (data-sell is the sellback)
+      const buy = parseM(pr.textContent);
       const m = meta[id] || {}, mkt = m.mkt || 0;
       if (!(buy > 0) || !(mkt > 0)) return;
       const spread = mkt - buy, marg = buy > 0 ? spread / buy : 0;
@@ -2469,7 +2316,7 @@
   }
   function annotateShopPage() {
     if (!SHOP_PAGE.test(location.pathname)) return;
-    const key = GM_getValue("torn_key", ""); if (!key) return; // silent — never prompt from the page
+    const key = GM_getValue("torn_key", ""); if (!key) return;
     loadResale(key).then(function () {
       annotateShopRows();
       let pending = false;
@@ -2477,13 +2324,8 @@
     }).catch(function () { });
   }
 
-  /* ---------- inline Item Market annotator (page.php?sid=ItemMarket) ----------
-     One item per view (id in the URL hash: itemID=206). React SPA + hashed classes, so anchor on the stable prefix:
-     rows = [class*="sellerRow"], the ask = its [class*="price"], seller = a[href*="profiles.php?XID="]. We add:
-       • a context banner (market value · cheapest bazaar · top trader bid) + a 💰/🔒 sell-guard mirror, and
-       • a crossed-market flip tag on any listing priced BELOW the top live trader bid (buy here → sell to them). */
   const MARKET_PAGE = /sid=ItemMarket/i;
-  const imCtx = {}; // id → { mkt, bid, baz, at }
+  const imCtx = {};
   function marketItemId() { const m = (location.hash + location.search).match(/itemID=(\d+)/i); return m ? +m[1] : null; }
   function marketCtx(id) {
     if (imCtx[id] && Date.now() - imCtx[id].at < 120000) return Promise.resolve(imCtx[id]);
@@ -2505,7 +2347,7 @@
   }
   function ensureMarketBanner(id, ctx) {
     if (document.getElementById("tdk-im-banner")) return;
-    const anchor = document.querySelector('[class*="sellerRow"]'); if (!anchor) return; // header row = top of the table
+    const anchor = document.querySelector('[class*="sellerRow"]'); if (!anchor) return;
     const meta = (state.itemMeta && state.itemMeta[id]) || {};
     const name = meta.name || decodeURIComponent(((location.hash + location.search).match(/itemName=([^&]+)/i) || [])[1] || "").replace(/_/g, " ") || "item";
     const sellable = effSellable(id, meta.type, meta.hasUse, false), ov = !!(state.ov && state.ov[id]);
@@ -2550,7 +2392,7 @@
       let curId = null, pending = false;
       const run = function () {
         const id = marketItemId();
-        if (id !== curId) { // switched items (or first view): tear down the old annotations, refetch context
+        if (id !== curId) {
           const b = document.getElementById("tdk-im-banner"); if (b) b.remove();
           document.querySelectorAll('[class*="sellerRow"][data-tdk]').forEach(function (r) {
             r.removeAttribute("data-tdk"); r.classList.remove("tdk-im-flip");
@@ -2559,7 +2401,7 @@
           curId = id;
           if (id != null) marketCtx(id).then(function (ctx) { if (marketItemId() === id) annotateMarketRows(id, ctx); });
         } else if (id != null && imCtx[id]) {
-          annotateMarketRows(id, imCtx[id]); // same item, DOM re-rendered → (re)tag any fresh rows
+          annotateMarketRows(id, imCtx[id]);
         }
       };
       run();
@@ -2568,8 +2410,6 @@
     });
   }
 
-  // On trade.php: offer to fill the (required) description with the line you stashed by clicking ⇄ Trade.
-  // Text-only + user-initiated; we NEVER add items, set money, or press Initiate Trade.
   const TRADE_PAGE = /\/trade\.php/;
   function tradeDescHelper() {
     if (!TRADE_PAGE.test(location.pathname)) return;
@@ -2577,7 +2417,7 @@
       const ta = document.querySelector("textarea#description");
       if (!ta || document.querySelector("#tdk-filldesc")) return;
       const pend = GM_getValue("pending_trade", null);
-      if (!pend || !pend.line || (Date.now() - pend.at > 15 * 60 * 1000)) return; // expire after 15 min
+      if (!pend || !pend.line || (Date.now() - pend.at > 15 * 60 * 1000)) return;
       const btn = document.createElement("button");
       btn.id = "tdk-filldesc"; btn.type = "button"; btn.className = "tdk-filldesc";
       btn.textContent = "📋 Fill description: " + pend.line;
@@ -2585,8 +2425,6 @@
       btn.addEventListener("click", function (e) {
         e.preventDefault();
         ta.focus();
-        // Set via the native setter (React-safe), then fire a real typing burst so Torn's validation
-        // re-reads the field and enables Initiate Trade (a plain value= + one input event wasn't enough).
         try { const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(ta), "value"); if (d && d.set) d.set.call(ta, pend.line); else ta.value = pend.line; } catch (err) { ta.value = pend.line; }
         ta.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: " " }));
         ta.dispatchEvent(new Event("input", { bubbles: true }));
@@ -2601,9 +2439,7 @@
     let pending = false;
     new MutationObserver(function () { if (pending) return; pending = true; requestAnimationFrame(function () { pending = false; run(); }); }).observe(document.body, { childList: true, subtree: true });
   }
-  // Travel page has Torn's OWN trip counter ("You have purchased N / 23 items so far") — the reliable source of
-  // this trip's haul while abroad (inventory API is down + Items page is blocked in-country). Scrape it off the
-  // text (+ the inventory panel's aria-label as a fallback) — never off the hashed slot classes.
+
   function onTravelPage() { return /[?&]sid=travel\b/i.test(location.search + location.hash) || /\/travel\.php/i.test(location.pathname); }
   function scrapeTripBought() {
     if (!onTravelPage()) return;
@@ -2613,8 +2449,6 @@
       if (m) { n = +m[1]; cap = +m[2]; }
       else { const ul = document.querySelector('ul[aria-label*="Inventory"]'); const al = ul && ul.getAttribute("aria-label"); const am = al && al.match(/(\d+)\s+item/i); if (am) { n = +am[1]; cap = state.cap || 23; } }
       if (n == null) return;
-      // The travel page's "N / NN" max (only trust NN from the explicit regex, not the aria-label fallback) is your
-      // TRUE carry capacity — bump Cap up to it when it grows (e.g. after adding the Airstrip+Pilot). Never shrink.
       if (m && cap > (state.cap || 0)) {
         state.cap = cap; GM_setValue("cap", cap);
         const ci = host && host.querySelector("#tdk-cap"); if (ci) ci.value = cap;
@@ -2629,28 +2463,21 @@
     new MutationObserver(function () { if (pending) return; pending = true; requestAnimationFrame(function () { pending = false; run(); }); }).observe(document.body, { childList: true, subtree: true });
   }
 
-  /* ---------- 🔬 Torn build watcher: flag when a new module ships or a bundle's hash changes (fresh code to poke) ----------
-     Purely observational — reads the /builds/{module}/{name}.{hash}.js bundles the page ALREADY loaded (no fetching).
-     A new module or a changed hash = freshly-shipped code = least-scrutinized → best bug-bounty odds. Read-only;
-     the point is being EARLY to disclose, never to exploit. */
-  const BUILD_WARMUP = 3 * 86400 * 1000; // 3-day cataloging window: first-seen bundles are "cataloged", not alerts —
-  // the watcher only sees a module once you browse its page, so early first-sightings are just learning-what-exists.
-  const BUILD_DEBOUNCE = 15 * 60 * 1000;          // collapse repeat changes of the SAME module within 15 min into one row (×n)
-  const LEGACY_RE = /(^|\/)[^/]*-old(\/|$)/i;      // e.g. "header-old/app" — a bundle Torn is phasing out; track but never badge
+  const BUILD_WARMUP = 3 * 86400 * 1000;
+  const BUILD_DEBOUNCE = 15 * 60 * 1000;
+  const LEGACY_RE = /(^|\/)[^/]*-old(\/|$)/i;
   function recordBuilds() {
     let man; try { man = GM_getValue("build_manifest", null); } catch (e) { man = null; }
     const first = !man; const manifest = man || {};
     let log; try { log = GM_getValue("build_log", []) || []; } catch (e) { log = []; }
     let started; try { started = GM_getValue("build_started", 0); } catch (e) { started = 0; }
-    let hashes; try { hashes = GM_getValue("build_hashes", null); } catch (e) { hashes = null; } // key → every hash we've ever recorded (fresh code = a hash NEVER seen; a bounce back = flap, not new)
+    let hashes; try { hashes = GM_getValue("build_hashes", null); } catch (e) { hashes = null; }
     const now = Date.now();
     let dirty = false;
-    // Migration: a pre-warmup install has a manifest + a log full of cataloging noise. Reset that log, start the clock.
     if (!started) { started = now; try { GM_setValue("build_started", started); GM_setValue("build_seen_at", now); } catch (e) { } log = []; dirty = true; }
-    // One-time: seed the seen-hash set from the current manifest AND purge legacy-bundle flap noise already logged.
     if (!hashes) { hashes = {}; Object.keys(manifest).forEach(function (k) { hashes[k] = [manifest[k]]; }); log = log.filter(function (x) { return !(LEGACY_RE.test(x.k) && (x.type === "changed" || x.type === "new")); }); dirty = true; }
     const warming = (now - started) < BUILD_WARMUP;
-    const bump = function (key, hash, entry) { // debounce: same module + same type within the window → update the top row, don't add
+    const bump = function (key, hash, entry) {
       const top = log[0];
       if (top && top.k === key && top.type === entry.type && (now - top.t) < BUILD_DEBOUNCE) { top.h = hash; top.t = now; top.n = (top.n || 1) + 1; }
       else log.unshift(entry);
@@ -2661,12 +2488,12 @@
       if (!m) return;
       const key = m[1] + "/" + m[2], hash = m[3], prev = manifest[key], lg = LEGACY_RE.test(key) ? 1 : 0;
       const seen = hashes[key] || (hashes[key] = []);
-      if (!prev) { // first sighting: cataloging during warm-up, a real NEW module after
+      if (!prev) {
         manifest[key] = hash; if (seen.indexOf(hash) < 0) seen.push(hash);
         if (!first) bump(key, hash, { k: key, h: hash, t: now, type: warming ? "seen" : "new", lg: lg });
       } else if (prev !== hash) {
         manifest[key] = hash;
-        if (seen.indexOf(hash) >= 0) { /* a hash we've already recorded — a flap/revert, NOT fresh code → stay quiet */ }
+        if (seen.indexOf(hash) >= 0) { }
         else { seen.push(hash); if (seen.length > 12) seen.shift(); bump(key, hash, { k: key, h: hash, ph: prev, t: now, type: "changed", lg: lg }); }
       }
     });
@@ -2674,7 +2501,7 @@
     try { GM_setValue("build_manifest", manifest); GM_setValue("build_hashes", hashes); if (dirty || first) GM_setValue("build_log", log); } catch (e) { }
     updateBuildBadge();
   }
-  function buildUnseen() { try { const log = GM_getValue("build_log", []) || [], seen = GM_getValue("build_seen_at", 0); return log.filter(function (x) { return x.t > seen && x.type !== "seen" && !x.lg; }).length; } catch (e) { return 0; } } // "seen" (cataloged) + legacy (-old) never badge
+  function buildUnseen() { try { const log = GM_getValue("build_log", []) || [], seen = GM_getValue("build_seen_at", 0); return log.filter(function (x) { return x.t > seen && x.type !== "seen" && !x.lg; }).length; } catch (e) { return 0; } }
   function updateBuildBadge() {
     const v = host && host.querySelector("#tdk-ver"); if (!v) return;
     const n = buildUnseen();
@@ -2688,15 +2515,15 @@
   annotateMarketPage();
   tradeDescHelper();
   scrapeTripBought();
-  setTimeout(recordBuilds, 5000);                // snapshot the /builds/ bundles this page loaded
-  setInterval(recordBuilds, 60 * 1000);          // catch SPA-loaded chunks + hash changes as you browse
-  setTimeout(autoDetectTravelOnce, 9000);        // one-time: read your property → auto-set Airstrip −30% if you have it
-  setTimeout(function () { try { if (GM_getValue("shared_url", "") && Date.now() - (GM_getValue("shared_synced_at", 0) || 0) > 12 * 3600 * 1000) syncShared(false); } catch (e) { } }, 15000); // refresh the shared feed at most ~twice a day
-  setTimeout(checkInvStatus, 8000);              // first check shortly after load
-  setInterval(checkInvStatus, 15 * 60 * 1000);   // then quietly every 15 min — lights the Bag when Torn restores inventory
-  setTimeout(pollStocks, 12000);                 // seed the restock history soon after load
-  setInterval(pollStocks, 60 * 1000);            // check every minute; the GM lock caps actual fetches to one per POLL_MS across tabs
-  setTimeout(pollStockPrices, 20000);            // seed stock-price history soon after load
-  setInterval(pollStockPrices, 5 * 60 * 1000);   // check every 5 min; GM lock caps actual fetches to one per ~10 min across tabs
-  setInterval(function () { renderImmunity(); renderOC(); }, 1000); // live-tick the immunity/flight countdown + OC banner
+  setTimeout(recordBuilds, 5000);
+  setInterval(recordBuilds, 60 * 1000);
+  setTimeout(autoDetectTravelOnce, 9000);
+  setTimeout(function () { try { if (GM_getValue("shared_url", "") && Date.now() - (GM_getValue("shared_synced_at", 0) || 0) > 12 * 3600 * 1000) syncShared(false); } catch (e) { } }, 15000);
+  setTimeout(checkInvStatus, 8000);
+  setInterval(checkInvStatus, 15 * 60 * 1000);
+  setTimeout(pollStocks, 12000);
+  setInterval(pollStocks, 60 * 1000);
+  setTimeout(pollStockPrices, 20000);
+  setInterval(pollStockPrices, 5 * 60 * 1000);
+  setInterval(function () { renderImmunity(); renderOC(); }, 1000);
 })();
