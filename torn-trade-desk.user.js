@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.46.0
+// @version      1.47.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -119,6 +119,20 @@
     const m = Math.floor(secs / 60);
     return m < 1 ? secs + "s" : m + "m";
   };
+
+  /* Helper: Find the stock acronym with the largest holding or highest value to suggest for liquidation */
+  function primaryStockAcronym() {
+    const mine = state.stkMine || {}, mkt = state.stkMkt || {};
+    let best = null, maxVal = 0;
+    Object.keys(mine).forEach(function (id) {
+      const h = mine[id], s = mkt[id];
+      if (h && s && h.total_shares > 0) {
+        const val = h.total_shares * s.current_price;
+        if (val > maxVal) { maxVal = val; best = s.acronym; }
+      }
+    });
+    return best || "STK";
+  }
 
   /* ---------- data ---------- */
   async function loadResale(key) {
@@ -289,7 +303,6 @@
     return { perMin: sold / (secs / 60), sold: sold, sellMin: secs / 60, nSeg: nSeg };
   }
 
-  /* ---------- Day-of-Week × Hour Seasonal Depletion Engine (v1.46.0) ---------- */
   function simulatedDepletion(x, startTs, landTs) {
     const sea = seasonalRecord(x.cc, x.id);
     const flightSecs = landTs - startTs;
@@ -300,7 +313,6 @@
     let minSamplesSeen = Infinity;
     let missingBuckets = 0;
 
-    // Simulate flight window hour by hour
     while (t < landTs && curStock > 0) {
       const nextHour = Math.min(landTs, (Math.floor(t / 3600) + 1) * 3600);
       const dt = nextHour - t;
@@ -310,7 +322,7 @@
 
       let ratePerMin = 0;
       if (cell && cell[1] > 0 && cell[2] >= 1) {
-        ratePerMin = cell[0] / (cell[1] / 60); // soldQty / minutes spent selling
+        ratePerMin = cell[0] / (cell[1] / 60);
         minSamplesSeen = Math.min(minSamplesSeen, cell[2]);
       } else {
         missingBuckets++;
@@ -354,7 +366,6 @@
       return { cls: "good", txt: "◑ " + sim.estStock, tip: "Projected ~" + sim.estStock.toLocaleString() + " on touchdown — under your Cap " + cap + " (partial load)." };
     }
 
-    // Depleted or out
     let nextRs = null;
     if (rp && rp.nextAt) { nextRs = rp.nextAt; if (rp.interval > 0) { let g = 0; while (nextRs < nowS && g++ < 1000) nextRs += rp.interval; } }
     
@@ -499,6 +510,8 @@
     table.tdk td{padding:9px 14px;border-bottom:1px solid #211f18;text-align:right;white-space:nowrap;
       font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}
     table.tdk td.mv{color:#ded7c5}
+    table.tdk td.mv.needfund{color:#e2933f;font-weight:700;cursor:help}
+    .tdk-stktag{color:#d9b441;font-size:10px;margin-left:4px;font-weight:800;font-family:system-ui,sans-serif}
     table.tdk td.ldc{padding-left:8px;padding-right:8px}
     table.tdk th.ld{cursor:default}
     .ld{font-weight:700;white-space:nowrap;font-size:11px}
@@ -679,7 +692,7 @@
     .tdk-happy .hgymres b{color:#8fe6b3}
     .tdk-x{position:absolute;top:11px;right:12px;border-color:#7a4a44 !important;color:#e7a49d !important}
     .tdk-x:hover{background:#3a201d !important}
-    .tdk-bestonline{display:block;margin:8px 0 4px;padding:9px 12px;border:1px solid #4cc281;border-radius:9px;background:#16241c;color:#bfe9cf;text-decoration:none;font-size:13px}
+    .tdk-bestonline{display:block;margin:8px 0 4px;padding:9px 12px;border:1px solid #4cc281;border-radius:99px;background:#16241c;color:#bfe9cf;text-decoration:none;font-size:13px}
     .tdk-bestonline:hover{background:#1c2f24}
     .tdk-bestonline b{color:#eafff2}
     .tdk-brow{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid #2c2a21}
@@ -869,6 +882,8 @@
     else disp.sort(function (a, b) { return (b[sm] || 0) - (a[sm] || 0); });
     host.querySelectorAll("#tdk-board th.so").forEach(function (th) { th.classList.toggle("on", th.getAttribute("data-sort") === sm); });
     const g = ocGuard();
+    const pStk = primaryStockAcronym();
+
     body.innerHTML = disp.map(function (x) {
       const aff = cash == null || x.full <= cash;
       const fill = x.stock >= cap;
@@ -898,7 +913,17 @@
           '. Last restock ' + new Date(rp.lastRs * 1000).toLocaleTimeString() + '.';
         sc += ' <span class="rs-eta" title="' + tip + '">⏳ ' + (eta > 0 ? '~' + fmtDur(eta) : 'due') + batchTxt + '</span>';
       }
-      const shortB = (!aff && cash != null && fill) ? '<span class="chip short">free +' + money(x.full - cash) + '</span>' : '';
+
+      // Load column formatting (orange font + stock symbol if cash is needed)
+      let loadHtml = money(x.full);
+      let loadTdCls = "mv";
+      if (!aff && cash != null && stocks > 0) {
+        const need = x.full - cash;
+        loadTdCls = "mv needfund";
+        const tip = "Need to free " + money(need) + " in " + pStk + " stock cash before flying";
+        loadHtml = '<span title="' + escAttr(tip) + '">' + money(x.full) + ' <span class="tdk-stktag">(' + pStk + ')</span></span>';
+      }
+
       const cls = (aff ? "" : (fund ? (isTop ? "fund" : "") : "dim")) + (ocMiss ? " ocmiss" : "");
       const mark = (aff && fill) ? '<span class="star" title="Affordable now & fully in stock — a clean pick">★</span>' : (isTop ? '<span class="star" title="Best funded play — over budget, but reachable by selling stocks (see the banner up top)">💰</span>' : '');
       const ocBadge = ocMiss ? '<span class="oc-x" title="Round trip ' + (FLY[x.cc] ? fmtRt(rtOf(x.cc)) : '?') + (g.secs <= 0 ? ' — your OC is ready NOW, don’t fly' : ' exceeds your OC (ready in ' + fmtDur(g.secs) + ') — you’d miss it') + '">⛔ OC</span>' : '';
@@ -909,7 +934,7 @@
         '<td class="mv">' + full$(x.buy) + '</td><td class="mv">' + full$(x.sell) + '</td>' +
         '<td class="gd">' + money(x.ppi * cap) + '</td><td>' + sc + '</td>' +
         '<td class="ldc">' + (ol ? '<span class="ld ld-' + ol.cls + '" title="' + escAttr(ol.tip) + '">' + ol.txt + '</span>' : '<span class="ld ld-unk">·</span>') + '</td>' +
-        '<td class="mv">' + money(x.full) + shortB + '</td>' +
+        '<td class="' + loadTdCls + '">' + loadHtml + '</td>' +
         '<td class="ppm">$' + x.ppm.toLocaleString() + '</td></tr>';
     }).join("");
 
@@ -1632,15 +1657,9 @@
   }
 
   const CHANGELOG = [
-    { v: "1.46.0", d: "Aug 6, 2026", c: ["📅 Day/Time Aware Landing Engine: 'Landing' column now runs an hourly simulation over your flight path using historical day-of-week × hour-of-day sell rates (banked from the shared collector) instead of a simple flat average.", "🎯 Confidence Indicator: Landing predictions now flag when seasonal bucket data is thin for your arrival window so you can avoid long risky flights."] },
-    { v: "1.45.0", d: "Aug 5, 2026", c: ["🌐 Shared data feed (optional): point ⚙ Settings → “Shared data feed URL” at a central Google Apps Script that polls YATA 24/7..."] },
-    { v: "1.44.0", d: "Aug 5, 2026", c: ["⬆ Import (next to ⬇ Export in this window)..."] },
-    { v: "1.43.0", d: "Aug 5, 2026", c: ["📅 Started banking SEASONAL sell-rate data..."] },
-    { v: "1.42.1", d: "Aug 5, 2026", c: ["🛬 Landing prediction now estimates the sell-rate..."] },
-    { v: "1.42.0", d: "Aug 5, 2026", c: ["🛬 New “Landing” column..."] },
-    { v: "1.41.0", d: "Aug 5, 2026", c: ["🔬 Build watcher — killed the false alarms..."] },
-    { v: "1.40.1", d: "Aug 5, 2026", c: ["✈ Travel auto-detect now works for real..."] },
-    { v: "1.40.0", d: "Aug 5, 2026", c: ["✈ Renamed 💰 Fund → ✈ Travel and it now uses YOUR real flight time..."] }
+    { v: "1.47.0", d: "Aug 6, 2026", c: ["💰 Smart Stock Load Tooltip: Load column now shows in orange with the stock symbol (e.g. IST) if you need to free cash before flying. Hovering tells you exact stock cash needed.", "🧹 Cleaned up board layout by embedding stock symbols directly into the Load column."] },
+    { v: "1.46.0", d: "Aug 6, 2026", c: ["📅 Day/Time Aware Landing Engine: 'Landing' column now runs an hourly simulation over your flight path using historical day-of-week × hour-of-day sell rates...", "🎯 Confidence Indicator: Landing predictions now flag when seasonal bucket data is thin..."] },
+    { v: "1.45.0", d: "Aug 5, 2026", c: ["🌐 Shared data feed (optional): point ⚙ Settings → “Shared data feed URL”..."] }
   ];
 
   const RAW_URL = "https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js";
