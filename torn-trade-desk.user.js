@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.47.0
+// @version      1.48.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -57,7 +57,7 @@
   }
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false) };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt") };
   const fmtRt = function (min) { const h = Math.floor(min / 60), m = min % 60; return (h ? h + "h" : "") + (m ? m + "m" : "") || "0m"; };
 
   const TRAVEL_METHODS = { std: { mult: 1.00, label: "Standard", short: "Standard" }, air: { mult: 0.70, label: "Airstrip · Private Island + Pilot (−30%)", short: "Airstrip −30%" }, wlt: { mult: 0.50, label: "WLT benefit (−50%)", short: "WLT −50%" }, biz: { mult: 0.30, label: "Business Class ticket (−70%)", short: "Business −70%" } };
@@ -120,7 +120,6 @@
     return m < 1 ? secs + "s" : m + "m";
   };
 
-  /* Helper: Find the stock acronym with the largest holding or highest value to suggest for liquidation */
   function primaryStockAcronym() {
     const mine = state.stkMine || {}, mkt = state.stkMkt || {};
     let best = null, maxVal = 0;
@@ -150,6 +149,22 @@
     state.resale = idx; state.itemMeta = meta; state.resaleAt = now;
     return idx;
   }
+
+  async function loadTraderPrices(key) {
+    if (!key) return {};
+    const prices = {};
+    try {
+      const mk = await gmGet("https://weav3r.dev/api/marketplace?apiKey=" + encodeURIComponent(key), 20000);
+      const items = (mk && mk.items) || [];
+      items.forEach(function (it) {
+        if (it && it.item_id > 0 && it.highest_trader_price > 0) {
+          prices[it.item_id] = it.highest_trader_price;
+        }
+      });
+    } catch (e) { /* non-fatal fallback */ }
+    return prices;
+  }
+
   async function loadCash(key) {
     try {
       const j = await gmGet("https://api.torn.com/user/?selections=money,networth,basic,travel&key=" + encodeURIComponent(key));
@@ -350,7 +365,6 @@
     const cap = state.cap, st = x.stock;
     const rp = restockPredict(x.cc, x.id);
     const br = buyRate(x.cc, x.id), tr = stockTrend(x.cc, x.id);
-    const rate = br ? br.perMin : ((tr && tr.dq < 0) ? Math.abs(tr.perMin) : 0);
 
     const sim = simulatedDepletion(x, nowS, arr);
     const dur = function (s) { return fmtDur(Math.max(0, Math.round(s))); };
@@ -414,10 +428,12 @@
     setStatus("Refreshing…");
     const key = tornKey();
     if (!key) { setStatus("Need a Torn API key.", true); return; }
+    const w3b = GM_getValue("w3b_key", "");
     try {
-      const [yata, resale] = await Promise.all([
+      const [yata, resale, traderPrices] = await Promise.all([
         gmGet("https://yata.yt/api/v1/travel/export/", 30000),
-        loadResale(key)
+        loadResale(key),
+        state.priceBasis === "trader" ? loadTraderPrices(w3b) : Promise.resolve({})
       ]);
       await loadCash(key);
       await loadOC(key);
@@ -430,12 +446,14 @@
         const block = yata.stocks[cc];
         state.updates[cc] = block.update ? nowS - block.update : null;
         (block.stocks || block).forEach(function (it) {
-          const sell = resale[it.id]; if (!sell) return;
+          const mktSell = resale[it.id]; if (!mktSell) return;
+          const traderSell = traderPrices[it.id] || 0;
+          const sell = (state.priceBasis === "trader" && traderSell > 0) ? traderSell : mktSell;
           const ppi = sell - it.cost;
           if (ppi <= 0) return;
           const cap = state.cap;
           const ppm = Math.round((ppi * cap - f.fare) / rtOf(cc));
-          rows.push({ id: it.id, name: it.name, cc: cc, country: f.name, buy: it.cost, sell: sell, stock: it.quantity, ppi: ppi, ppm: ppm, full: it.cost * cap, freshS: state.updates[cc] });
+          rows.push({ id: it.id, name: it.name, cc: cc, country: f.name, buy: it.cost, sell: sell, stock: it.quantity, ppi: ppi, ppm: ppm, full: it.cost * cap, freshS: state.updates[cc], isTraderPrice: state.priceBasis === "trader" && traderSell > 0 });
         });
       });
       rows.sort(function (a, b) { return b.ppm - a.ppm; });
@@ -450,7 +468,8 @@
         : state.travelWhere === "home" ? " · 🏠 Home"
           : state.travelWhere === "flying" ? flyNote
             : "";
-      setStatus("Updated " + new Date().toLocaleTimeString() + locNote);
+      const basisNote = state.priceBasis === "trader" ? " · ⚡ Trader Instant Prices" : " · 🛒 Item Market Avg";
+      setStatus("Updated " + new Date().toLocaleTimeString() + locNote + basisNote);
       armLandingRefresh();
     } catch (e) {
       const msg = e.message || "";
@@ -914,7 +933,6 @@
         sc += ' <span class="rs-eta" title="' + tip + '">⏳ ' + (eta > 0 ? '~' + fmtDur(eta) : 'due') + batchTxt + '</span>';
       }
 
-      // Load column formatting (orange font + stock symbol if cash is needed)
       let loadHtml = money(x.full);
       let loadTdCls = "mv";
       if (!aff && cash != null && stocks > 0) {
@@ -929,9 +947,11 @@
       const ocBadge = ocMiss ? '<span class="oc-x" title="Round trip ' + (FLY[x.cc] ? fmtRt(rtOf(x.cc)) : '?') + (g.secs <= 0 ? ' — your OC is ready NOW, don’t fly' : ' exceeds your OC (ready in ' + fmtDur(g.secs) + ') — you’d miss it') + '">⛔ OC</span>' : '';
       const rtTxt = FLY[x.cc] ? '<span title="' + (travelMult() < 1 ? travelLabel() + ' · base ' + fmtRt(FLY[x.cc].rt) : 'Standard round trip') + '">' + fmtRt(rtOf(x.cc)) + ' rt</span> · ' : '';
       const ol = arrivalOutlook(x);
+      const sellTag = x.isTraderPrice ? ' <span style="font-size:9px;color:#d9b441;" title="Priced off top trader buy-offer">⚡</span>' : '';
+
       return '<tr class="' + cls + '" data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '">' +
         '<td class="l"><span class="nm">' + x.name + mark + '</span><div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + rtTxt + ago(x.freshS) + ' old' + ocBadge + '</div></td>' +
-        '<td class="mv">' + full$(x.buy) + '</td><td class="mv">' + full$(x.sell) + '</td>' +
+        '<td class="mv">' + full$(x.buy) + '</td><td class="mv">' + full$(x.sell) + sellTag + '</td>' +
         '<td class="gd">' + money(x.ppi * cap) + '</td><td>' + sc + '</td>' +
         '<td class="ldc">' + (ol ? '<span class="ld ld-' + ol.cls + '" title="' + escAttr(ol.tip) + '">' + ol.txt + '</span>' : '<span class="ld ld-unk">·</span>') + '</td>' +
         '<td class="' + loadTdCls + '">' + loadHtml + '</td>' +
@@ -1657,8 +1677,9 @@
   }
 
   const CHANGELOG = [
-    { v: "1.47.0", d: "Aug 6, 2026", c: ["💰 Smart Stock Load Tooltip: Load column now shows in orange with the stock symbol (e.g. IST) if you need to free cash before flying. Hovering tells you exact stock cash needed.", "🧹 Cleaned up board layout by embedding stock symbols directly into the Load column."] },
-    { v: "1.46.0", d: "Aug 6, 2026", c: ["📅 Day/Time Aware Landing Engine: 'Landing' column now runs an hourly simulation over your flight path using historical day-of-week × hour-of-day sell rates...", "🎯 Confidence Indicator: Landing predictions now flag when seasonal bucket data is thin..."] },
+    { v: "1.48.0", d: "Aug 7, 2026", c: ["⚙ Resale Price Basis Toggle: Added setting to calculate $/min off either 'Market Value (Bazaar / Item Market)' or 'Top Trader Offer (Instant Trade via W3B)'. Your preference is saved permanently.", "⚡ Resale Column Indicator: When calculating off trader buy prices, a small ⚡ badge appears next to the resale value on the board."] },
+    { v: "1.47.0", d: "Aug 6, 2026", c: ["💰 Smart Stock Load Tooltip: Load column now shows in orange with the stock symbol (e.g. IST) if you need to free cash before flying...", "🧹 Cleaned up board layout by embedding stock symbols directly into the Load column."] },
+    { v: "1.46.0", d: "Aug 6, 2026", c: ["📅 Day/Time Aware Landing Engine: 'Landing' column now runs an hourly simulation over your flight path...", "🎯 Confidence Indicator: Landing predictions now flag when seasonal bucket data is thin..."] },
     { v: "1.45.0", d: "Aug 5, 2026", c: ["🌐 Shared data feed (optional): point ⚙ Settings → “Shared data feed URL”..."] }
   ];
 
@@ -1902,7 +1923,12 @@
         '<div class="srow"><input id="tdk-set-torn" type="text" spellcheck="false" placeholder="Torn API key" value="' + esc(GM_getValue("torn_key", "")) + '"><button class="tdk-btn2" id="tdk-set-test">Test</button></div>' +
         '<div class="sl">weav3r (W3B) key <small>— trader buy prices</small></div>' +
         '<div class="srow"><input id="tdk-set-w3b" type="text" spellcheck="false" placeholder="W3B key" value="' + esc(GM_getValue("w3b_key", "")) + '"><button class="tdk-btn2" id="tdk-set-w3btest">Test</button></div>' +
-        '<div class="srow"><button class="tdk-btn2" id="tdk-set-save">Save keys</button><span id="tdk-set-msg" class="ssub"></span></div>' +
+        '<div class="sl" style="margin-top:16px">💵 Resale price basis ($/min) <small>— how the board prices your haul</small></div>' +
+        '<div class="srow"><select id="tdk-set-pbasis">' +
+          '<option value="mkt"' + (state.priceBasis === "mkt" ? ' selected' : '') + '>Market Value (Bazaar / Item Market average)</option>' +
+          '<option value="trader"' + (state.priceBasis === "trader" ? ' selected' : '') + '>Top Trader Offer (Instant trade via W3B)</option>' +
+        '</select></div>' +
+        '<div class="srow"><button class="tdk-btn2" id="tdk-set-save">Save keys &amp; options</button><span id="tdk-set-msg" class="ssub"></span></div>' +
         '<div id="tdk-set-out" class="ssub"></div>' +
         '<div class="sl" style="margin-top:16px">✈ Travel method <small>— sets your real flight time so $/min, the ≤time filter &amp; the OC guard match your setup</small></div>' +
         '<div class="srow"><select id="tdk-set-tmethod">' +
@@ -1920,8 +1946,11 @@
     host.querySelector("#tdk-set-save").addEventListener("click", function () {
       GM_setValue("torn_key", host.querySelector("#tdk-set-torn").value.trim());
       GM_setValue("w3b_key", host.querySelector("#tdk-set-w3b").value.trim());
+      state.priceBasis = host.querySelector("#tdk-set-pbasis").value;
+      GM_setValue("priceBasis", state.priceBasis);
       state.inv = null; state.resale = null; state.itemMeta = null; state.cash = null; state.stocks = null;
       host.querySelector("#tdk-set-msg").textContent = " Saved ✓ — caches cleared, hit Refresh";
+      refresh();
     });
     const mSel = host.querySelector("#tdk-set-tmethod");
     if (mSel) mSel.addEventListener("change", function () { state.travelMethod = this.value; applyTravelChange(true); });
