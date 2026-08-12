@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.52.3
+// @version      1.52.4
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -596,6 +596,10 @@
     .tdk-clog:last-child{border-bottom:none}
     .tdk-clog .cv{font-weight:800;color:#d9b441}
     .tdk-clog .cv span{color:#928b78;font-weight:600;font-size:11px}
+    details.tdk-clog>summary{cursor:pointer;list-style:none;user-select:none}
+    details.tdk-clog>summary::-webkit-details-marker{display:none}
+    details.tdk-clog>summary::before{content:"▸";color:#928b78;margin-right:7px;font-size:11px;display:inline-block}
+    details.tdk-clog[open]>summary::before{content:"▾"}
     .tdk-clog ul{margin:4px 0 0;padding-left:18px;color:#c3bda9;font-size:12.5px;line-height:1.5}
     .tdk-clog li{margin:2px 0}
     .chip.short{color:#e2933f;background:#2c2114;margin-left:6px}
@@ -1684,6 +1688,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.52.4", d: "Aug 12, 2026", c: ["🔬 The Torn build-watcher list in this window is now collapsible — click the “🔬 Torn build watcher” heading to expand/collapse it (▸/▾). Starts collapsed so it stays out of the way; the count stays in the heading, and it remembers your choice."] },
     { v: "1.52.3", d: "Aug 12, 2026", c: ["📐 Slimmed the rail to a compact icon-only strip (50px, was 76px) like the mockup — hover an icon for its name. Gives the board back the extra width."] },
     { v: "1.52.2", d: "Aug 12, 2026", c: ["🩹 Bag no longer lists EQUIPPED items (e.g. worn pants) as sellable. The equipped flag was being dropped when the Bag ran off the scraped snapshot (Torn's inventory API being flaky), so a worn item with an old ‘sell’ toggle could slip into the sell list. The tool now records which items are equipped from your Items page and always keeps them out of the sell side. Visit your Items page once (any tab) to refresh equipped state, then reopen 📦 Bag."] },
     { v: "1.52.1", d: "Aug 12, 2026", c: ["📐 Board now fits with NO horizontal scroll: folded Buy / Resale / Load into a compact line under each item name (buy → resale · load), so the table is just Item · Profit ×N · Stock · Landing · $/min — five columns that fit any width (fixed layout, long names ellipsis-clip).", "🧹 Decluttered the Stock column — dropped the ⏳ restock ETA (the Landing column + its tooltip already tell you whether it'll be stocked when you land)."] },
@@ -2032,11 +2037,12 @@
     const catN = blog.filter(function (x) { return x.type === "seen"; }).length;
     const cnt = function (x) { return x.n > 1 ? ' <span class="muted">×' + x.n + '</span>' : ''; };
     const sh = function (x) { return x.h ? ' <code class="muted">' + String(x.h).slice(0, 7) + '</code>' : ''; };
-    const bsec = '<div class="tdk-clog"><div class="cv">🔬 Torn build watcher <span>· ' + (fresh.length ? fresh.length + ' new/changed · fresh code to poke (disclose, don’t exploit)' : 'watching — no fresh releases yet') + '</span></div><ul class="bwlog">' +
+    const bwOpen = (function () { try { return GM_getValue("bw_open", false); } catch (e) { return false; } })();
+    const bsec = '<details class="tdk-clog bwd"' + (bwOpen ? ' open' : '') + '><summary class="cv">🔬 Torn build watcher <span>· ' + (fresh.length ? fresh.length + ' new/changed · fresh code to poke (disclose, don’t exploit)' : 'watching — no fresh releases yet') + '</span></summary><ul class="bwlog">' +
       (fresh.length ? fresh.slice(0, 25).map(function (x) { return '<li>' + (x.type === "new" ? '🆕 <b>NEW module</b> ' : '♻ <b>updated</b> ') + '<code>' + x.k + '</code>' + sh(x) + cnt(x) + ' · ' + new Date(x.t).toLocaleString() + '</li>'; }).join("")
         : '<li>Nothing yet — a <b>NEW</b> module or a genuinely fresh bundle hash will show here as you browse. Best bug-bounty odds. Read-only.</li>') +
       (legacy.length ? '<li class="muted">…plus ' + legacy.length + ' legacy <code>-old</code> bundle update' + (legacy.length === 1 ? '' : 's') + ' (e.g. header-old — Torn phasing these out, low value; not badged).</li>' : '') +
-      (catN ? '<li class="muted">…plus ' + catN + ' existing module' + (catN === 1 ? '' : 's') + ' cataloged while learning what exists (not alerts).</li>' : '') + '</ul></div>';
+      (catN ? '<li class="muted">…plus ' + catN + ' existing module' + (catN === 1 ? '' : 's') + ' cataloged while learning what exists (not alerts).</li>' : '') + '</ul></details>';
     bx.classList.add("open");
     bx.innerHTML = '<div class="tdk-bh"><div class="tt">Changelog<small> — Torn Trade Desk</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
       '<div class="tdk-upbar"><button class="tdk-btn2" id="tdk-updbtn" title="Check GitHub for a newer version">🔄 Check for updates</button><span class="tdk-upd" id="tdk-upd">v' + curVersion() + '</span></div>' +
@@ -2078,6 +2084,7 @@
       if (ta) ta.value = "";
     });
     try { GM_setValue("build_seen_at", Date.now()); } catch (e) { } updateBuildBadge();
+    const bwd = bx.querySelector("details.bwd"); if (bwd) bwd.addEventListener("toggle", function () { try { GM_setValue("bw_open", bwd.open); } catch (e) { } }); // remember collapsed/expanded
     bindClose(bx);
   }
 
