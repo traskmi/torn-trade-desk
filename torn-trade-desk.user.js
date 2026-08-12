@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.48.0
+// @version      1.49.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -260,9 +260,12 @@
     return sea[key];
   }
 
+  // Central shared dataset (the always-on Google Apps Script collector) — baked in so every user reads it with no
+  // setup; the client just prefers it per-item over its own thinner local record. Silent: no UI, auto-synced on load.
+  const SHARED_URL = "https://script.google.com/macros/s/AKfycbz0xnXTzToEVuLkEEQ6z0mYVHGNREqqvOc1ihTEBUMSsxydu_IgYxLdrlYOgADJciuH/exec";
   function syncShared(manual, cb) {
-    const url = GM_getValue("shared_url", "");
-    if (!url) { if (cb) cb({ err: "No shared feed URL set (⚙ Settings)." }); return; }
+    const url = GM_getValue("shared_url", "") || SHARED_URL; // GM override optional (no UI), else the baked-in feed
+    if (!url) { if (cb) cb({ err: "No shared feed URL." }); return; }
     gmGet(url, 30000).then(function (j) {
       if (!j || j.kind !== "tdk-restock-export") { if (cb) cb({ err: "That URL didn’t return Trade Desk data." }); return; }
       try { GM_setValue("shared_data", { at: j.at, events: j.events || {}, seasonal: j.seasonal || {} }); GM_setValue("shared_synced_at", Date.now()); } catch (e) { }
@@ -318,41 +321,29 @@
     return { perMin: sold / (secs / 60), sold: sold, sellMin: secs / 60, nSeg: nSeg };
   }
 
-  function simulatedDepletion(x, startTs, landTs) {
-    const sea = seasonalRecord(x.cc, x.id);
-    const flightSecs = landTs - startTs;
-    if (flightSecs <= 0) return { estStock: x.stock, confidence: "high", minSamples: 99 };
-    
-    let curStock = x.stock;
-    let t = startTs;
-    let minSamplesSeen = Infinity;
-    let missingBuckets = 0;
-
-    while (t < landTs && curStock > 0) {
-      const nextHour = Math.min(landTs, (Math.floor(t / 3600) + 1) * 3600);
-      const dt = nextHour - t;
-      const d = new Date(t * 1000);
-      const bucket = d.getUTCDay() * 24 + d.getUTCHours();
-      const cell = sea ? sea[bucket] : null;
-
-      let ratePerMin = 0;
-      if (cell && cell[1] > 0 && cell[2] >= 1) {
-        ratePerMin = cell[0] / (cell[1] / 60);
-        minSamplesSeen = Math.min(minSamplesSeen, cell[2]);
-      } else {
-        missingBuckets++;
-      }
-
-      curStock -= ratePerMin * (dt / 60);
+  // Time-of-week sell velocity averaged over the FLIGHT WINDOW (only the dow×hours you'd actually be in transit),
+  // from the seasonal buckets. Returns null when the window's buckets are too thin to lean on. Note: like the
+  // buckets themselves, this is the rate WHILE actively selling (denominator = selling-seconds), used only for the
+  // near-term "does current stock survive a short hop" check — NOT integrated blindly over multi-hour flights.
+  function seasonalRate(cc, id, fromTs, toTs) {
+    const sea = seasonalRecord(cc, id); if (!sea) return null;
+    let sold = 0, secs = 0, span = 0, covered = 0, minSamp = Infinity, t = fromTs;
+    while (t < toTs) {
+      const nextHour = Math.min(toTs, (Math.floor(t / 3600) + 1) * 3600), dt = nextHour - t;
+      const cell = sea[new Date(t * 1000).getUTCDay() * 24 + new Date(t * 1000).getUTCHours()];
+      span += dt;
+      if (cell && cell[1] > 0 && cell[2] >= 1) { sold += cell[0]; secs += cell[1]; covered += dt; minSamp = Math.min(minSamp, cell[2]); }
       t = nextHour;
     }
-
-    curStock = Math.max(0, Math.round(curStock));
-    let conf = "high";
-    if (missingBuckets > 0 || minSamplesSeen < 3) conf = "low";
-    return { estStock: curStock, confidence: conf, minSamples: minSamplesSeen === Infinity ? 0 : minSamplesSeen };
+    if (secs <= 0 || sold <= 0) return null;
+    return { perMin: sold / (secs / 60), coverage: span > 0 ? covered / span : 0, minSamp: minSamp === Infinity ? 0 : minSamp };
   }
 
+  // "Landing": predicted stock when you'd touch down if you flew NOW. Foreign stock RESTOCKS on a short cycle, so:
+  //  - a LONG flight spans many restock cycles → availability is governed by the CYCLE (how much of each cycle the
+  //    item holds stock = selloutDur/interval), NOT by draining current stock to zero;
+  //  - a SHORT hop (< one restock cycle, or no cycle data) → the near-term question: does CURRENT stock survive the
+  //    trip, and if it sells out, does a restock land before you do?
   function arrivalOutlook(x) {
     if (!FLY[x.cc]) return null;
     const nowS = Math.floor(Date.now() / 1000);
@@ -360,37 +351,40 @@
     if (state.travelWhere === "abroad" && x.cc === state.loc) arr = nowS;
     else if (state.travelWhere === "flying" && x.cc === state.flyTo && state.arrivalTs) arr = state.arrivalTs;
     else arr = nowS + Math.round(rtOf(x.cc) / 2) * 60;
-
-    const landIn = arr - nowS, landTxt = landIn <= 30 ? "you arrive" : "you land in ~" + fmtDur(landIn);
-    const cap = state.cap, st = x.stock;
-    const rp = restockPredict(x.cc, x.id);
-    const br = buyRate(x.cc, x.id), tr = stockTrend(x.cc, x.id);
-
-    const sim = simulatedDepletion(x, nowS, arr);
+    const flight = arr - nowS, landTxt = flight <= 30 ? "you arrive" : "you land in ~" + fmtDur(flight);
+    const cap = state.cap, st = x.stock, rp = restockPredict(x.cc, x.id);
     const dur = function (s) { return fmtDur(Math.max(0, Math.round(s))); };
+    let nextRs = null; // next predicted restock at/after now
+    if (rp && rp.nextAt && rp.interval > 0) { nextRs = rp.nextAt; let g = 0; while (nextRs < nowS && g++ < 5000) nextRs += rp.interval; }
 
-    if (sim.confidence === "low" && (!br || br.nSeg < 2)) {
-      return { cls: "unk", txt: st > 0 ? "◑ " + sim.estStock : "✗ out ?", tip: "Low seasonal data for this arrival window. Current stock " + st.toLocaleString() + " → projected ~" + sim.estStock.toLocaleString() + " on touchdown." };
+    // --- LONG flight: item restocks ≥1× in transit → answer is the CYCLE, not depletion ---
+    if (rp && rp.interval > 0 && flight >= rp.interval) {
+      const cycleTxt = "restocks ~+" + (rp.batch ? rp.batch.toLocaleString() : "?") + " every ~" + dur(rp.interval) +
+        (rp.selloutDur ? ", sells out in ~" + dur(rp.selloutDur) : "") + " · ~" + Math.round(flight / rp.interval) + " cycles during your " + fmtDur(flight) + " trip";
+      const frac = (rp.selloutDur > 0 && rp.interval > 0) ? Math.min(1, rp.selloutDur / rp.interval) : (st > 0 ? 1 : 0); // share of each cycle it holds stock ≈ chance it's up on arrival
+      if (rp.nSo === 0 || frac >= 0.6) return { cls: "good", txt: "✓ stocked", tip: "Usually in stock — " + cycleTxt + ". Very likely available when " + landTxt + "." };
+      if (frac >= 0.25) return { cls: "warn", txt: "◐ ~" + Math.round(frac * 100) + "%", tip: "In stock ~" + Math.round(frac * 100) + "% of each cycle — " + cycleTxt + ". Roughly even odds on arrival; best right after a restock." };
+      return { cls: "warn", txt: "⚡ snap", tip: "Sells out fast — " + cycleTxt + ". Usually empty between restocks, so you'd need to land in the first minutes after one." };
     }
 
-    if (st > 0 && sim.estStock >= cap) {
-      return { cls: "good", txt: "✓ stocked", tip: "In stock (" + st.toLocaleString() + ") and seasonal model projects ~" + sim.estStock.toLocaleString() + " when " + landTxt + "." };
+    // --- SHORT hop (or no cycle data): will CURRENT stock survive, and does a restock beat you there? ---
+    const br = buyRate(x.cc, x.id), sr = seasonalRate(x.cc, x.id, nowS, arr);
+    const rate = (sr && sr.coverage >= 0.5) ? sr.perMin : (br ? br.perMin : 0);
+    const rTxt = Math.round(rate) + "/min" + (sr && sr.coverage >= 0.5 ? " (seasonal)" : br ? " (avg)" : "");
+    let outAt = Infinity;
+    if (st <= 0) outAt = nowS; else if (rate > 0) outAt = nowS + (st / rate) * 60;
+    if (st > 0 && outAt > arr) {
+      if (st >= cap) return { cls: "good", txt: "✓ stocked", tip: "In stock (" + st.toLocaleString() + "), expected to last until " + landTxt + (rate > 0 ? " (selling ~" + rTxt + ")" : "") + "." };
+      return { cls: "good", txt: "◑ " + st, tip: st.toLocaleString() + " in stock — under Cap " + cap + " (partial load), likely still there when " + landTxt + "." };
     }
-    if (st > 0 && sim.estStock > 0) {
-      return { cls: "good", txt: "◑ " + sim.estStock, tip: "Projected ~" + sim.estStock.toLocaleString() + " on touchdown — under your Cap " + cap + " (partial load)." };
-    }
-
-    let nextRs = null;
-    if (rp && rp.nextAt) { nextRs = rp.nextAt; if (rp.interval > 0) { let g = 0; while (nextRs < nowS && g++ < 1000) nextRs += rp.interval; } }
-    
     if (st <= 0) {
-      if (nextRs && nextRs <= arr) return { cls: "good", txt: "↻ fresh", tip: "Out now, but predicted restock" + (rp.batch ? " ~+" + rp.batch.toLocaleString() : "") + " about " + dur(arr - nextRs) + " before " + landTxt + "." };
-      if (nextRs) return { cls: "bad", txt: "✗ out", tip: "Out now; predicted restock is ~" + dur(nextRs - arr) + " AFTER " + landTxt + "." };
-      return { cls: "unk", txt: "✗ out ?", tip: "Out now, and not enough restock history to predict the next batch." };
+      if (nextRs && nextRs <= arr) return { cls: "good", txt: "↻ fresh", tip: "Out now, predicted to restock" + (rp && rp.batch ? " ~+" + rp.batch.toLocaleString() : "") + " ~" + dur(arr - nextRs) + " before " + landTxt + "." };
+      if (nextRs) return { cls: "bad", txt: "✗ out", tip: "Out now; next restock ~" + dur(nextRs - arr) + " AFTER " + landTxt + "." };
+      return { cls: "unk", txt: "✗ out ?", tip: "Out now, and not enough restock history to predict the next batch yet." };
     }
-
-    if (nextRs && nextRs <= arr) return { cls: "good", txt: "↻ fresh", tip: "Sells out mid-flight, but a fresh restock is predicted before " + landTxt + "." };
-    return { cls: "warn", txt: "⚠ gone", tip: "Seasonal model projects stock selling out before " + landTxt + " with no restock expected prior." };
+    const rsAfterOut = (rp && rp.outDur) ? outAt + rp.outDur : nextRs; // the restock following this stock selling out
+    if (rsAfterOut && rsAfterOut <= arr) return { cls: "good", txt: "↻ fresh", tip: st.toLocaleString() + " now, selling ~" + rTxt + " → sells out ~" + dur(outAt - nowS) + " from now, then restocks before " + landTxt + " — fresh on arrival." };
+    return { cls: "warn", txt: "⚠ gone", tip: st.toLocaleString() + " now, selling ~" + rTxt + " → likely sold out ~" + dur(outAt - nowS) + " from now, with no restock predicted before " + landTxt + "." };
   }
 
   async function loadOC(key) {
@@ -1677,6 +1671,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.49.0", d: "Aug 7, 2026", c: ["🛬 Fixed the Landing prediction (it was wrong for remote destinations): the previous 'hourly simulation' only ever drained stock and never added restocks back, so a long flight always projected 'sold out' even though foreign stock refills every few minutes. Landing now models the RESTOCK CYCLE — for a trip spanning multiple cycles it reports how reliably the item is in stock (✓ usually / ◐ ~N% of each cycle / ⚡ snap up if it sells out fast); for a short hop it checks whether current stock survives and whether a restock beats you there. The day/time (seasonal) sell-rate still feeds the short-hop estimate and keeps improving as data grows.", "🧹 Shared data feed is now built-in — removed the Settings URL box and the Sync button (it just works quietly in the background), de-cluttering the interface."] },
     { v: "1.48.0", d: "Aug 7, 2026", c: ["⚙ Resale Price Basis Toggle: Added setting to calculate $/min off either 'Market Value (Bazaar / Item Market)' or 'Top Trader Offer (Instant Trade via W3B)'. Your preference is saved permanently.", "⚡ Resale Column Indicator: When calculating off trader buy prices, a small ⚡ badge appears next to the resale value on the board."] },
     { v: "1.47.0", d: "Aug 6, 2026", c: ["💰 Smart Stock Load Tooltip: Load column now shows in orange with the stock symbol (e.g. IST) if you need to free cash before flying...", "🧹 Cleaned up board layout by embedding stock symbols directly into the Load column."] },
     { v: "1.46.0", d: "Aug 6, 2026", c: ["📅 Day/Time Aware Landing Engine: 'Landing' column now runs an hourly simulation over your flight path...", "🎯 Confidence Indicator: Landing predictions now flag when seasonal bucket data is thin..."] },
@@ -1937,9 +1932,6 @@
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-tbook"' + (state.travelBook ? ' checked' : '') + '> Book “Mailing Yourself Abroad” active <small>(−25% for 31 days, stacks)</small></label></div>' +
         '<div id="tdk-set-teff" class="ssub"></div>' +
         '<div id="tdk-set-tdetect" class="ssub"></div>' +
-        '<div class="sl" style="margin-top:16px">🌐 Shared data feed <small>— optional: a central YATA collector (Google Apps Script) so you get 24/7 restock history without collecting it all yourself</small></div>' +
-        '<div class="srow"><input id="tdk-set-shared" type="text" spellcheck="false" placeholder="Apps Script /exec URL" value="' + esc(GM_getValue("shared_url", "")) + '"><button class="tdk-btn2" id="tdk-set-sharedsync">Save &amp; Sync</button></div>' +
-        '<div id="tdk-set-sharedmsg" class="ssub"></div>' +
         '<div class="sl" style="margin-top:14px">Need a key? <a class="prof" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Torn → Settings → API Keys</a>. Note: the 📦 Bag needs Torn’s inventory API, which is temporarily disabled during Torn’s inventory migration — no key fixes that until Torn restores it.</div>' +
       '</div>';
     bindClose(bx);
@@ -1958,15 +1950,6 @@
     if (bChk) bChk.addEventListener("change", function () { state.travelBook = this.checked; applyTravelChange(true); });
     updateTravelEff();
     detectTravelProp();
-    const ss = host.querySelector("#tdk-set-sharedsync"), sMsg = host.querySelector("#tdk-set-sharedmsg");
-    const syncedAt = (function () { try { return GM_getValue("shared_synced_at", 0); } catch (e) { return 0; } })();
-    if (sMsg && syncedAt) sMsg.textContent = "Last synced " + new Date(syncedAt).toLocaleString();
-    if (ss) ss.addEventListener("click", function () {
-      const u = host.querySelector("#tdk-set-shared").value.trim(); GM_setValue("shared_url", u);
-      if (!u) { if (sMsg) sMsg.textContent = "Cleared — using only your local data."; return; }
-      if (sMsg) sMsg.textContent = "Syncing…";
-      syncShared(true, function (r) { if (!sMsg) return; sMsg.innerHTML = r.err ? '<span class="serr">' + r.err + '</span>' : "Synced ✓ " + r.items + " items · " + r.buckets + " buckets · feed updated " + new Date((r.at || 0) * 1000).toLocaleString(); });
-    });
     host.querySelector("#tdk-set-test").addEventListener("click", function () {
       const k = host.querySelector("#tdk-set-torn").value.trim(), out = host.querySelector("#tdk-set-out");
       if (!k) { out.textContent = "Enter a Torn key first."; return; }
@@ -2038,7 +2021,7 @@
     bx.classList.add("open");
     bx.innerHTML = '<div class="tdk-bh"><div class="tt">Changelog<small> — Torn Trade Desk</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
       '<div class="tdk-upbar"><button class="tdk-btn2" id="tdk-updbtn" title="Check GitHub for a newer version">🔄 Check for updates</button><span class="tdk-upd" id="tdk-upd">v' + curVersion() + '</span></div>' +
-      '<div class="tdk-upbar tdk-upbar2"><button class="tdk-btn2" id="tdk-exp-restock" title="Copy your recorded restock/stock + seasonal data to the clipboard — paste it to Claude to analyze, or save it as a backup">⬇ Export</button><button class="tdk-btn2" id="tdk-imp-restock" title="Paste a previously exported blob to restore your data after a Tampermonkey/cache wipe — or seed a fresh install from someone else’s export">⬆ Import</button><button class="tdk-btn2" id="tdk-sync-shared" title="Fetch the shared central dataset now (set the feed URL in ⚙ Settings)">⤓ Sync shared</button><span class="tdk-upd" id="tdk-exp-msg"></span></div>' +
+      '<div class="tdk-upbar tdk-upbar2"><button class="tdk-btn2" id="tdk-exp-restock" title="Copy your recorded restock/stock + seasonal data to the clipboard — paste it to Claude to analyze, or save it as a backup">⬇ Export</button><button class="tdk-btn2" id="tdk-imp-restock" title="Paste a previously exported blob to restore your data after a Tampermonkey/cache wipe — or seed a fresh install from someone else’s export">⬆ Import</button><span class="tdk-upd" id="tdk-exp-msg"></span></div>' +
       '<div class="tdk-impbox" id="tdk-impbox" style="display:none"><textarea id="tdk-imp-ta" spellcheck="false" placeholder="Paste the exported JSON here, then Load…"></textarea><button class="tdk-btn2" id="tdk-imp-go">Load</button></div>' +
       (ovCount ? '<div class="tdk-upbar tdk-upbar2"><button class="tdk-btn2" id="tdk-ovreset" title="Clear every keep/sell-ok override you\'ve set">↺ Reset ' + ovCount + ' override' + (ovCount > 1 ? 's' : '') + '</button></div>' : '') +
       bsec +
@@ -2074,11 +2057,6 @@
       if (res.err) { if (m) m.innerHTML = '<span style="color:#e5615c">' + res.err + '</span>'; return; }
       if (m) m.textContent = "Imported ✓ " + res.evItems + " items · " + res.seaBuckets + " buckets (" + res.seaMode + ")";
       if (ta) ta.value = "";
-    });
-    const sy = bx.querySelector("#tdk-sync-shared");
-    if (sy) sy.addEventListener("click", function () {
-      const m = bx.querySelector("#tdk-exp-msg"); if (m) m.textContent = "Syncing shared…";
-      syncShared(true, function (r) { if (!m) return; m.innerHTML = r.err ? '<span style="color:#e5615c">' + r.err + '</span>' : "Shared synced ✓ " + r.items + " items · " + r.buckets + " buckets"; });
     });
     try { GM_setValue("build_seen_at", Date.now()); } catch (e) { } updateBuildBadge();
     bindClose(bx);
@@ -2566,7 +2544,7 @@
   setTimeout(recordBuilds, 5000);
   setInterval(recordBuilds, 60 * 1000);
   setTimeout(autoDetectTravelOnce, 9000);
-  setTimeout(function () { try { if (GM_getValue("shared_url", "") && Date.now() - (GM_getValue("shared_synced_at", 0) || 0) > 12 * 3600 * 1000) syncShared(false); } catch (e) { } }, 15000);
+  setTimeout(function () { try { if (Date.now() - (GM_getValue("shared_synced_at", 0) || 0) > 12 * 3600 * 1000) syncShared(false); } catch (e) { } }, 15000); // silent: refresh the baked-in shared feed at most ~twice a day
   setTimeout(checkInvStatus, 8000);
   setInterval(checkInvStatus, 15 * 60 * 1000);
   setTimeout(pollStocks, 12000);
