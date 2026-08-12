@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.52.1
+// @version      1.52.2
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -1443,7 +1443,7 @@
       const meta = state.itemMeta || {};
       const items = Object.keys(store.map).filter(function (id) { return store.map[id] > 0; }).map(function (id) {
         const m = meta[id] || {};
-        return { ID: +id, id: +id, name: m.name || ("#" + id), type: m.type || "", quantity: store.map[id], equipped: false };
+        return { ID: +id, id: +id, name: m.name || ("#" + id), type: m.type || "", quantity: store.map[id], equipped: !!(store.equip && store.equip[id]) };
       });
       return { items: items, source: "scan", at: store.at };
     }
@@ -1459,7 +1459,7 @@
     Object.keys(store.map).forEach(function (id) {
       const qty = store.map[id], price = prices[id]; if (!qty || !price) return;
       if (foreignOnly) { if (!foreign.has(+id)) return; }
-      else { const m = meta[id] || {}; if (!effSellable(id, m.type, m.hasUse, false)) return; }
+      else { const m = meta[id] || {}; if (!effSellable(id, m.type, m.hasUse, store.equip && store.equip[id])) return; }
       items++; count += qty; value += price * qty;
     });
     return { items: items, count: count, value: value };
@@ -1584,11 +1584,12 @@
     const priceOf = function (it) { return priceMap[idOf(it)] || it.market_price || 0; };
     const metaOf = function (it) { return meta[idOf(it)] || {}; };
     const typeOf = function (it) { return metaOf(it).type || it.type || "—"; };
+    const eqSet = (GM_getValue("inv_counts", null) || {}).equip || {}; // equipped items scraped from item.php — honored even if the live API omits the flag
     const sell = [], keep = [];
     items.forEach(function (it) {
       const price = priceOf(it); if (price <= 0) return;
       const id = idOf(it), m = metaOf(it);
-      const s = effSellable(id, typeOf(it), m.hasUse, it.equipped);
+      const s = effSellable(id, typeOf(it), m.hasUse, it.equipped || eqSet[id]);
       (s ? sell : keep).push({ id: id, name: it.name, type: typeOf(it), qty: it.quantity, unit: price, total: price * it.quantity, ov: !!state.ov[id] });
     });
     sell.sort(function (a, b) { return b.total - a.total; });
@@ -1682,6 +1683,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.52.2", d: "Aug 12, 2026", c: ["🩹 Bag no longer lists EQUIPPED items (e.g. worn pants) as sellable. The equipped flag was being dropped when the Bag ran off the scraped snapshot (Torn's inventory API being flaky), so a worn item with an old ‘sell’ toggle could slip into the sell list. The tool now records which items are equipped from your Items page and always keeps them out of the sell side. Visit your Items page once (any tab) to refresh equipped state, then reopen 📦 Bag."] },
     { v: "1.52.1", d: "Aug 12, 2026", c: ["📐 Board now fits with NO horizontal scroll: folded Buy / Resale / Load into a compact line under each item name (buy → resale · load), so the table is just Item · Profit ×N · Stock · Landing · $/min — five columns that fit any width (fixed layout, long names ellipsis-clip).", "🧹 Decluttered the Stock column — dropped the ⏳ restock ETA (the Landing column + its tooltip already tell you whether it'll be stocked when you land)."] },
     { v: "1.52.0", d: "Aug 12, 2026", c: ["✨ Facelift (part 1 of the redesign): the two cramped header rows are gone — the tabs (📦 ✈ 😊 💱 🏪 📊 🎯) now live in a clean vertical icon rail on the left, with ↻ Refresh and ⚙ Settings at its foot. The top strip keeps just the title, Cap, and A−/A+. Fixes the long-standing “Refresh/⚙ buttons drift as the font size changes” problem and frees up room. Everything works exactly as before — this is a layout change only. Next: selectable board views (Table / Cards / Leaderboard / Departures)."] },
     { v: "1.51.0", d: "Aug 11, 2026", c: ["🔬 Build watcher — smarter “new” detection: the {hash} in each bundle name is already Torn’s content checksum, so a first sighting can’t tell “new to Torn” from “new to you” — those now only ever get CATALOGED (no more false 🆕 alarms from just opening a page you hadn’t before). A hash CHANGE still alerts (real fresh code), and it’s flagged 🆕 only when the module first appeared recently AND is already being re-deployed — the real fingerprint of a genuinely new module Torn is iterating on."] },
@@ -2301,7 +2303,7 @@
   function harvestInvCounts() {
     const rows = document.querySelectorAll("li[data-item][data-qty]"); if (!rows.length) return;
     const store = GM_getValue("inv_counts", null) || { map: {}, at: 0 };
-    const map = store.map || {}, meta = state.itemMeta || {};
+    const map = store.map || {}, equip = store.equip || {}, meta = state.itemMeta || {};
     const seen = {}, catsPresent = {};
     rows.forEach(function (li) {
       const id = +li.getAttribute("data-item"), q = parseInt(li.getAttribute("data-qty"), 10);
@@ -2309,13 +2311,15 @@
       const cat = li.getAttribute("data-category") || (meta[id] && meta[id].type) || "";
       if (cat) catsPresent[cat] = 1;
       if (q > 0) { map[id] = q; seen[id] = 1; } else { delete map[id]; }
+      // Track equipped state (item.php marks worn items) so the Bag never lists a worn item as sellable.
+      if (li.getAttribute("data-equipped") === "true") equip[id] = 1; else delete equip[id];
     });
     Object.keys(map).forEach(function (id) {
       if (seen[id]) return;
       const cat = meta[id] && meta[id].type;
-      if (cat && catsPresent[cat]) delete map[id];
+      if (cat && catsPresent[cat]) { delete map[id]; delete equip[id]; }
     });
-    GM_setValue("inv_counts", { map: map, at: Date.now() });
+    GM_setValue("inv_counts", { map: map, equip: equip, at: Date.now() });
   }
   function annotateItemsPage() {
     if (!ITEM_PAGE.test(location.pathname)) return;
