@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.52.2
+// @version      1.52.3
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -488,10 +488,11 @@
       font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:13px;display:none}
     #tdk-panel.open{display:flex}
     /* ---- Command Rail shell (v1.52) — vertical icon nav on the left, scrolling content column on the right ---- */
-    .tdk-rail{flex:0 0 76px;width:76px;display:flex;flex-direction:column;gap:3px;padding:10px 9px;background:#100f0b;border-right:1px solid #2c2a21;overflow-y:auto}
+    .tdk-rail{flex:0 0 50px;width:50px;display:flex;flex-direction:column;gap:4px;padding:8px 7px;background:#100f0b;border-right:1px solid #2c2a21;overflow-y:auto}
     .tdk-rail .tdk-railsp{flex:1;min-height:6px}
-    .tdk-rail .tdk-btn2{display:flex;flex-direction:column;align-items:center;gap:3px;width:100%;padding:9px 4px;background:transparent;border:1px solid transparent;color:#928b78;border-radius:11px;font-weight:600;font-size:10px;letter-spacing:.02em}
-    .tdk-rail .tdk-btn2 i{font-size:19px;font-style:normal;line-height:1}
+    .tdk-rail .tdk-btn2{display:flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;background:transparent;border:1px solid transparent;color:#928b78;border-radius:10px}
+    .tdk-rail .tdk-btn2 i{font-size:18px;font-style:normal;line-height:1}
+    .tdk-rail .tdk-btn2 span{display:none}
     .tdk-rail .tdk-btn2:hover{background:#262112;color:#ece7d8}
     .tdk-rail .tdk-btn2.on{background:#d9b441;color:#14130f;border-color:transparent}
     .tdk-rail .tdk-btn2.ready{background:#16241c;border-color:#4cc281;color:#8fe6b3;animation:tdkpulse 1.8s ease-in-out infinite}
@@ -1683,6 +1684,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.52.3", d: "Aug 12, 2026", c: ["📐 Slimmed the rail to a compact icon-only strip (50px, was 76px) like the mockup — hover an icon for its name. Gives the board back the extra width."] },
     { v: "1.52.2", d: "Aug 12, 2026", c: ["🩹 Bag no longer lists EQUIPPED items (e.g. worn pants) as sellable. The equipped flag was being dropped when the Bag ran off the scraped snapshot (Torn's inventory API being flaky), so a worn item with an old ‘sell’ toggle could slip into the sell list. The tool now records which items are equipped from your Items page and always keeps them out of the sell side. Visit your Items page once (any tab) to refresh equipped state, then reopen 📦 Bag."] },
     { v: "1.52.1", d: "Aug 12, 2026", c: ["📐 Board now fits with NO horizontal scroll: folded Buy / Resale / Load into a compact line under each item name (buy → resale · load), so the table is just Item · Profit ×N · Stock · Landing · $/min — five columns that fit any width (fixed layout, long names ellipsis-clip).", "🧹 Decluttered the Stock column — dropped the ⏳ restock ETA (the Landing column + its tooltip already tell you whether it'll be stocked when you land)."] },
     { v: "1.52.0", d: "Aug 12, 2026", c: ["✨ Facelift (part 1 of the redesign): the two cramped header rows are gone — the tabs (📦 ✈ 😊 💱 🏪 📊 🎯) now live in a clean vertical icon rail on the left, with ↻ Refresh and ⚙ Settings at its foot. The top strip keeps just the title, Cap, and A−/A+. Fixes the long-standing “Refresh/⚙ buttons drift as the font size changes” problem and frees up room. Everything works exactly as before — this is a layout change only. Next: selectable board views (Table / Cards / Leaderboard / Departures)."] },
