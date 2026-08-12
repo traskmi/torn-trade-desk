@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.50.0
+// @version      1.51.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -1668,6 +1668,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.51.0", d: "Aug 11, 2026", c: ["🔬 Build watcher — smarter “new” detection: the {hash} in each bundle name is already Torn’s content checksum, so a first sighting can’t tell “new to Torn” from “new to you” — those now only ever get CATALOGED (no more false 🆕 alarms from just opening a page you hadn’t before). A hash CHANGE still alerts (real fresh code), and it’s flagged 🆕 only when the module first appeared recently AND is already being re-deployed — the real fingerprint of a genuinely new module Torn is iterating on."] },
     { v: "1.50.0", d: "Aug 11, 2026", c: ["🛬 Landing column simplified to a plain, glanceable answer — ✓ In stock / ◐ Maybe / ◐ Partial / ✗ Empty (or ? when there isn’t enough history), color-coded. Hover gives ONE short line of why (e.g. “usually in stock”, “sells out fast — best right after a restock”). Dropped the cryptic labels and the wall-of-detail tooltips."] },
     { v: "1.49.0", d: "Aug 7, 2026", c: ["🛬 Fixed the Landing prediction (it was wrong for remote destinations): the previous 'hourly simulation' only ever drained stock and never added restocks back, so a long flight always projected 'sold out' even though foreign stock refills every few minutes. Landing now models the RESTOCK CYCLE — for a trip spanning multiple cycles it reports how reliably the item is in stock (✓ usually / ◐ ~N% of each cycle / ⚡ snap up if it sells out fast); for a short hop it checks whether current stock survives and whether a restock beats you there. The day/time (seasonal) sell-rate still feeds the short-hop estimate and keeps improving as data grows.", "🧹 Shared data feed is now built-in — removed the Settings URL box and the Sync button (it just works quietly in the background), de-cluttering the interface."] },
     { v: "1.48.0", d: "Aug 7, 2026", c: ["⚙ Resale Price Basis Toggle: Added setting to calculate $/min off either 'Market Value (Bazaar / Item Market)' or 'Top Trader Offer (Instant Trade via W3B)'. Your preference is saved permanently.", "⚡ Resale Column Indicator: When calculating off trader buy prices, a small ⚡ badge appears next to the resale value on the board."] },
@@ -2487,20 +2488,25 @@
     new MutationObserver(function () { if (pending) return; pending = true; requestAnimationFrame(function () { pending = false; run(); }); }).observe(document.body, { childList: true, subtree: true });
   }
 
-  const BUILD_WARMUP = 3 * 86400 * 1000;
+  // The {hash} in /builds/{module}/{name}.{hash}.js is Torn's own webpack content-checksum, so a changed hash always
+  // = changed code. We can't tell "new to Torn" from "new to YOUR browsing" (we only see what the page loads), so:
+  //   • a FIRST sighting is only ever CATALOGED (never alerts) — kills the false "NEW" from just visiting a page;
+  //   • a hash CHANGE alerts (real fresh code) — and if that module first appeared RECENTLY (< NEW_WINDOW) and is
+  //     already being re-deployed, it's flagged 🆕 (a genuinely-new module Torn is actively iterating = best odds).
+  const NEW_WINDOW = 10 * 86400 * 1000;
   const BUILD_DEBOUNCE = 15 * 60 * 1000;
   const LEGACY_RE = /(^|\/)[^/]*-old(\/|$)/i;
   function recordBuilds() {
     let man; try { man = GM_getValue("build_manifest", null); } catch (e) { man = null; }
     const first = !man; const manifest = man || {};
     let log; try { log = GM_getValue("build_log", []) || []; } catch (e) { log = []; }
-    let started; try { started = GM_getValue("build_started", 0); } catch (e) { started = 0; }
     let hashes; try { hashes = GM_getValue("build_hashes", null); } catch (e) { hashes = null; }
+    let fseen; try { fseen = GM_getValue("build_firstseen", null); } catch (e) { fseen = null; }
     const now = Date.now();
     let dirty = false;
-    if (!started) { started = now; try { GM_setValue("build_started", started); GM_setValue("build_seen_at", now); } catch (e) { } log = []; dirty = true; }
+    try { if (!GM_getValue("build_seen_at", 0)) GM_setValue("build_seen_at", now); } catch (e) { }
     if (!hashes) { hashes = {}; Object.keys(manifest).forEach(function (k) { hashes[k] = [manifest[k]]; }); log = log.filter(function (x) { return !(LEGACY_RE.test(x.k) && (x.type === "changed" || x.type === "new")); }); dirty = true; }
-    const warming = (now - started) < BUILD_WARMUP;
+    if (!fseen) { fseen = {}; Object.keys(manifest).forEach(function (k) { fseen[k] = 0; }); dirty = true; } // existing modules: unknown/pre-existing age (0)
     const bump = function (key, hash, entry) {
       const top = log[0];
       if (top && top.k === key && top.type === entry.type && (now - top.t) < BUILD_DEBOUNCE) { top.h = hash; top.t = now; top.n = (top.n || 1) + 1; }
@@ -2514,15 +2520,20 @@
       const seen = hashes[key] || (hashes[key] = []);
       if (!prev) {
         manifest[key] = hash; if (seen.indexOf(hash) < 0) seen.push(hash);
-        if (!first) bump(key, hash, { k: key, h: hash, t: now, type: warming ? "seen" : "new", lg: lg });
+        if (fseen[key] == null) fseen[key] = first ? 0 : now;           // when WE first saw it (0 = pre-existing at baseline)
+        if (!first) bump(key, hash, { k: key, h: hash, t: now, type: "seen", lg: lg }); // first sight = cataloged only, never an alert
       } else if (prev !== hash) {
         manifest[key] = hash;
-        if (seen.indexOf(hash) >= 0) { }
-        else { seen.push(hash); if (seen.length > 12) seen.shift(); bump(key, hash, { k: key, h: hash, ph: prev, t: now, type: "changed", lg: lg }); }
+        if (seen.indexOf(hash) >= 0) { /* flap back to a hash we've already recorded — not fresh code */ }
+        else {
+          seen.push(hash); if (seen.length > 12) seen.shift();
+          const fresh = fseen[key] > 0 && (now - fseen[key] < NEW_WINDOW); // appeared recently AND now redeploying = genuinely-new module
+          bump(key, hash, { k: key, h: hash, ph: prev, t: now, type: fresh ? "new" : "changed", lg: lg });
+        }
       }
     });
     if (log.length > 100) log.length = 100;
-    try { GM_setValue("build_manifest", manifest); GM_setValue("build_hashes", hashes); if (dirty || first) GM_setValue("build_log", log); } catch (e) { }
+    try { GM_setValue("build_manifest", manifest); GM_setValue("build_hashes", hashes); GM_setValue("build_firstseen", fseen); if (dirty) GM_setValue("build_log", log); } catch (e) { }
     updateBuildBadge();
   }
   function buildUnseen() { try { const log = GM_getValue("build_log", []) || [], seen = GM_getValue("build_seen_at", 0); return log.filter(function (x) { return x.t > seen && x.type !== "seen" && !x.lg; }).length; } catch (e) { return 0; } }
