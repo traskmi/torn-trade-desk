@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.51.0
+// @version      1.52.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -483,10 +483,24 @@
     #tdk-btn{position:fixed;right:18px;bottom:18px;z-index:2147483600;width:46px;height:46px;border-radius:50%;
       background:#14130f;border:1px solid #d9b441;color:#d9b441;font-size:20px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.5)}
     #tdk-btn:hover{background:#201e17}
-    #tdk-panel{position:fixed;right:18px;top:12px;z-index:2147483000;width:min(760px,94vw);max-height:calc(100vh - 24px);overflow:auto;
+    #tdk-panel{position:fixed;right:18px;top:12px;z-index:2147483000;width:min(780px,94vw);max-height:calc(100vh - 24px);overflow:hidden;padding:0;
       background:#14130f;color:#ece7d8;border:1px solid #2c2a21;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.6);
       font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:13px;display:none}
-    #tdk-panel.open{display:block}
+    #tdk-panel.open{display:flex}
+    /* ---- Command Rail shell (v1.52) — vertical icon nav on the left, scrolling content column on the right ---- */
+    .tdk-rail{flex:0 0 76px;width:76px;display:flex;flex-direction:column;gap:3px;padding:10px 9px;background:#100f0b;border-right:1px solid #2c2a21;overflow-y:auto}
+    .tdk-rail .tdk-railsp{flex:1;min-height:6px}
+    .tdk-rail .tdk-btn2{display:flex;flex-direction:column;align-items:center;gap:3px;width:100%;padding:9px 4px;background:transparent;border:1px solid transparent;color:#928b78;border-radius:11px;font-weight:600;font-size:10px;letter-spacing:.02em}
+    .tdk-rail .tdk-btn2 i{font-size:19px;font-style:normal;line-height:1}
+    .tdk-rail .tdk-btn2:hover{background:#262112;color:#ece7d8}
+    .tdk-rail .tdk-btn2.on{background:#d9b441;color:#14130f;border-color:transparent}
+    .tdk-rail .tdk-btn2.ready{background:#16241c;border-color:#4cc281;color:#8fe6b3;animation:tdkpulse 1.8s ease-in-out infinite}
+    .tdk-col{flex:1;min-width:0;min-height:0;overflow-y:auto;max-height:calc(100vh - 26px)}
+    .tdk-topbar{position:sticky;top:0;z-index:6;display:flex;align-items:center;gap:9px;padding:12px 46px 10px 16px;background:#14130f;border-bottom:1px solid #2c2a21;flex-wrap:wrap}
+    .tdk-topbar .t{font-weight:800;letter-spacing:.02em}
+    .tdk-topbar .t small{color:#928b78;font-weight:600;letter-spacing:.12em;text-transform:uppercase;font-size:10px;margin-left:6px}
+    .tdk-topbar .sp{flex:1}
+    .tdk-topbar .capw{font-size:12px;color:#928b78}
     .tdk-hd{position:sticky;top:0;z-index:6;background:#14130f;border-bottom:1px solid #2c2a21}
     .tdk-h{display:flex;align-items:center;gap:9px;padding:14px 52px 8px 16px;background:#14130f;flex-wrap:wrap}
     .tdk-h2{display:flex;align-items:center;gap:9px;padding:0 16px 12px;flex-wrap:wrap}
@@ -1668,6 +1682,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.52.0", d: "Aug 12, 2026", c: ["✨ Facelift (part 1 of the redesign): the two cramped header rows are gone — the tabs (📦 ✈ 😊 💱 🏪 📊 🎯) now live in a clean vertical icon rail on the left, with ↻ Refresh and ⚙ Settings at its foot. The top strip keeps just the title, Cap, and A−/A+. Fixes the long-standing “Refresh/⚙ buttons drift as the font size changes” problem and frees up room. Everything works exactly as before — this is a layout change only. Next: selectable board views (Table / Cards / Leaderboard / Departures)."] },
     { v: "1.51.0", d: "Aug 11, 2026", c: ["🔬 Build watcher — smarter “new” detection: the {hash} in each bundle name is already Torn’s content checksum, so a first sighting can’t tell “new to Torn” from “new to you” — those now only ever get CATALOGED (no more false 🆕 alarms from just opening a page you hadn’t before). A hash CHANGE still alerts (real fresh code), and it’s flagged 🆕 only when the module first appeared recently AND is already being re-deployed — the real fingerprint of a genuinely new module Torn is iterating on."] },
     { v: "1.50.0", d: "Aug 11, 2026", c: ["🛬 Landing column simplified to a plain, glanceable answer — ✓ In stock / ◐ Maybe / ◐ Partial / ✗ Empty (or ? when there isn’t enough history), color-coded. Hover gives ONE short line of why (e.g. “usually in stock”, “sells out fast — best right after a restock”). Dropped the cryptic labels and the wall-of-detail tooltips."] },
     { v: "1.49.0", d: "Aug 7, 2026", c: ["🛬 Fixed the Landing prediction (it was wrong for remote destinations): the previous 'hourly simulation' only ever drained stock and never added restocks back, so a long flight always projected 'sold out' even though foreign stock refills every few minutes. Landing now models the RESTOCK CYCLE — for a trip spanning multiple cycles it reports how reliably the item is in stock (✓ usually / ◐ ~N% of each cycle / ⚡ snap up if it sells out fast); for a short hop it checks whether current stock survives and whether a restock beats you there. The day/time (seasonal) sell-rate still feeds the short-hop estimate and keeps improving as data grows.", "🧹 Shared data feed is now built-in — removed the Settings URL box and the Sync button (it just works quietly in the background), de-cluttering the interface."] },
@@ -2154,38 +2169,38 @@
 
     panel = document.createElement("div"); panel.id = "tdk-panel";
     panel.innerHTML =
-      '<div class="tdk-hd">' +
-        '<div class="tdk-h">' +
-          '<div class="t">Trade Desk<small>Torn · $/min · <span class="tdk-ver" id="tdk-ver" title="View changelog">v' + (typeof GM_info !== "undefined" && GM_info.script ? GM_info.script.version : "") + '</span></small></div><div class="sp"></div>' +
-          '<button class="tdk-btn2" id="tdk-invbtn" title="Toggle your sellable-junk inventory">📦 Bag</button>' +
-          '<button class="tdk-btn2" id="tdk-fund" title="Travel board — best $/min plays for YOUR flight time (Private Island/Airstrip/Pilot), plus over-budget plays with how to fund them from stocks">✈ Travel</button>' +
-          '<button class="tdk-btn2" id="tdk-happy" title="Happy-jump calculator — max happy, best order &amp; reset timer">😊 Happy</button>' +
-          '<button class="tdk-btn2" id="tdk-flip" title="Quick flips — buy cheap, sell to the highest live trader">💱 Flip</button>' +
-          '<button class="tdk-btn2" id="tdk-shop" title="Shop flips — Torn city-shop items worth more on the market">🏪 Shop</button>' +
-          '<button class="tdk-btn2" id="tdk-stk" title="Stocks — your P&amp;L, benefit-block progress, buy-low scanner">📊 Stocks</button>' +
-          '<button class="tdk-btn2" id="tdk-bounty" title="Bounty planner — collectible bounties, lowest-level first">🎯 Bounty</button>' +
-          '<button class="tdk-btn2 tdk-x" id="tdk-close" title="Close panel">✕</button>' +
-        '</div>' +
-        '<div class="tdk-h2">' +
-          '<button class="tdk-btn2" id="tdk-refresh">↻ Refresh</button>' +
-          '<button class="tdk-btn2" id="tdk-settings" title="Settings — API keys &amp; options">⚙</button>' +
-          '<div class="sp"></div>' +
-          'Cap <input class="tdk-cap" id="tdk-cap" type="number" min="1" max="60" value="' + state.cap + '">' +
+      '<button class="tdk-btn2 tdk-x" id="tdk-close" title="Close panel">✕</button>' +
+      '<aside class="tdk-rail">' +
+        '<button class="tdk-btn2" id="tdk-invbtn" title="Bag — your sellable-junk inventory"><i>📦</i><span>Bag</span></button>' +
+        '<button class="tdk-btn2" id="tdk-fund" title="Travel board — best $/min plays for your flight time, plus over-budget plays with how to fund them from stocks"><i>✈</i><span>Travel</span></button>' +
+        '<button class="tdk-btn2" id="tdk-happy" title="Happy-jump calculator — max happy, best order &amp; reset timer"><i>😊</i><span>Happy</span></button>' +
+        '<button class="tdk-btn2" id="tdk-flip" title="Quick flips — buy cheap, sell to the highest live trader"><i>💱</i><span>Flip</span></button>' +
+        '<button class="tdk-btn2" id="tdk-shop" title="Shop flips — Torn city-shop items worth more on the market"><i>🏪</i><span>Shop</span></button>' +
+        '<button class="tdk-btn2" id="tdk-stk" title="Stocks — your P&amp;L, benefit-block progress, buy-low scanner"><i>📊</i><span>Stocks</span></button>' +
+        '<button class="tdk-btn2" id="tdk-bounty" title="Bounty planner — collectible bounties, lowest-level first"><i>🎯</i><span>Bounty</span></button>' +
+        '<span class="tdk-railsp"></span>' +
+        '<button class="tdk-btn2" id="tdk-refresh" title="Refresh live data"><i>↻</i><span>Refresh</span></button>' +
+        '<button class="tdk-btn2" id="tdk-settings" title="Settings — API keys &amp; options"><i>⚙</i><span>Settings</span></button>' +
+      '</aside>' +
+      '<div class="tdk-col">' +
+        '<div class="tdk-topbar">' +
+          '<div class="t">Trade Desk<small>$/min · <span class="tdk-ver" id="tdk-ver" title="View changelog">v' + (typeof GM_info !== "undefined" && GM_info.script ? GM_info.script.version : "") + '</span></small></div><div class="sp"></div>' +
+          '<span class="capw">Cap <input class="tdk-cap" id="tdk-cap" type="number" min="1" max="60" value="' + state.cap + '"></span>' +
           '<button class="tdk-btn2 tdk-sm" id="tdk-adec" title="Smaller text">A−</button>' +
           '<button class="tdk-btn2 tdk-sm" id="tdk-ainc" title="Bigger text">A+</button>' +
         '</div>' +
-      '</div>' +
-      '<div class="tdk-status" id="tdk-status">Click Refresh to pull live data.</div>' +
-      '<div id="tdk-board">' +
-        '<div class="tdk-imm" id="tdk-immunity" style="display:none"></div>' +
-        '<div class="tdk-homebar" id="tdk-homebar" style="display:none"></div>' +
-        '<div class="tdk-oc" id="tdk-oc" style="display:none"></div>' +
-        '<div class="tdk-filter" id="tdk-filter"></div>' +
-        '<div class="tdk-best" id="tdk-best"><div class="l">Best play</div><div class="p">—</div></div>' +
-        '<table class="tdk"><thead><tr><th class="l">Item</th><th class="so" data-sort="buy">Buy</th><th class="so" data-sort="sell">Resale</th><th id="tdk-th-full" class="so" data-sort="fullprofit" title="Total profit for a full load (profit/ea × cap), before airfare. Set Cap to 1 to see per-item profit.">Profit ×' + state.cap + '</th><th class="so" data-sort="stock">Stock</th><th class="ld" title="Predicted stock when you touch down if you flew there from Torn right now — from your flight time, the current buy-rate, and the restock cycle">Landing</th><th class="so" data-sort="full">Load</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
-        '<div class="tdk-mug" id="tdk-mug"></div>' +
-      '</div>' +
-      '<div id="tdk-inv" style="display:none"></div>';
+        '<div class="tdk-status" id="tdk-status">Click Refresh to pull live data.</div>' +
+        '<div id="tdk-board">' +
+          '<div class="tdk-imm" id="tdk-immunity" style="display:none"></div>' +
+          '<div class="tdk-homebar" id="tdk-homebar" style="display:none"></div>' +
+          '<div class="tdk-oc" id="tdk-oc" style="display:none"></div>' +
+          '<div class="tdk-filter" id="tdk-filter"></div>' +
+          '<div class="tdk-best" id="tdk-best"><div class="l">Best play</div><div class="p">—</div></div>' +
+          '<table class="tdk"><thead><tr><th class="l">Item</th><th class="so" data-sort="buy">Buy</th><th class="so" data-sort="sell">Resale</th><th id="tdk-th-full" class="so" data-sort="fullprofit" title="Total profit for a full load (profit/ea × cap), before airfare. Set Cap to 1 to see per-item profit.">Profit ×' + state.cap + '</th><th class="so" data-sort="stock">Stock</th><th class="ld" title="Predicted stock when you touch down if you flew there from Torn right now — from your flight time, the current buy-rate, and the restock cycle">Landing</th><th class="so" data-sort="full">Load</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
+          '<div class="tdk-mug" id="tdk-mug"></div>' +
+        '</div>' +
+        '<div id="tdk-inv" style="display:none"></div>' +
+      '</div>';
     host.appendChild(panel);
     const buyers = document.createElement("div"); buyers.id = "tdk-buyers"; host.appendChild(buyers);
 
