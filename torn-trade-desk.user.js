@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.52.4
+// @version      1.52.5
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -878,7 +878,7 @@
     const capTh = host.querySelector("#tdk-th-full"); if (capTh) capTh.textContent = "Profit ×" + cap;
     const fbtn = host.querySelector("#tdk-fund"); if (fbtn) fbtn.className = "tdk-btn2" + (fund ? " on" : "");
     let rows = state.filter === "all" ? state.rows : state.rows.filter(function (x) { return x.cc === state.filter; });
-    if (state.maxTrip) rows = rows.filter(function (x) { return FLY[x.cc] && rtOf(x.cc) <= state.maxTrip; });
+    if (state.maxTrip) { const hereCC = focusCC(); rows = rows.filter(function (x) { return FLY[x.cc] && (rtOf(x.cc) <= state.maxTrip || x.cc === hereCC); }); } // exempt where you're standing / heading — no round trip needed there
     const best = rows.find(function (x) { return (cash == null || x.full <= cash) && x.stock >= cap; });
     const alt = best ? null : rows.find(function (x) { return x.stock > 0; });
     const topOver = rows.find(function (x) { return x.stock >= cap && cash != null && x.full > cash && x.full <= funds && (!best || x.ppm > best.ppm); });
@@ -1688,6 +1688,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.52.5", d: "Aug 12, 2026", c: ["🩹 Fixed “Nothing profitable here” while abroad: the ≤time-budget filter was hiding the country you're standing in (its round-trip is long, but you don't fly there — you're already there). The board now always shows the country you're in / heading to, regardless of the time filter."] },
     { v: "1.52.4", d: "Aug 12, 2026", c: ["🔬 The Torn build-watcher list in this window is now collapsible — click the “🔬 Torn build watcher” heading to expand/collapse it (▸/▾). Starts collapsed so it stays out of the way; the count stays in the heading, and it remembers your choice."] },
     { v: "1.52.3", d: "Aug 12, 2026", c: ["📐 Slimmed the rail to a compact icon-only strip (50px, was 76px) like the mockup — hover an icon for its name. Gives the board back the extra width."] },
     { v: "1.52.2", d: "Aug 12, 2026", c: ["🩹 Bag no longer lists EQUIPPED items (e.g. worn pants) as sellable. The equipped flag was being dropped when the Bag ran off the scraped snapshot (Torn's inventory API being flaky), so a worn item with an old ‘sell’ toggle could slip into the sell list. The tool now records which items are equipped from your Items page and always keeps them out of the sell side. Visit your Items page once (any tab) to refresh equipped state, then reopen 📦 Bag."] },
