@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.52.5
+// @version      1.53.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -57,7 +57,7 @@
   }
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt") };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "ppm"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt"), boardView: GM_getValue("boardView", "table") };
   const fmtRt = function (min) { const h = Math.floor(min / 60), m = min % 60; return (h ? h + "h" : "") + (m ? m + "m" : "") || "0m"; };
 
   const TRAVEL_METHODS = { std: { mult: 1.00, label: "Standard", short: "Standard" }, air: { mult: 0.70, label: "Airstrip · Private Island + Pilot (−30%)", short: "Airstrip −30%" }, wlt: { mult: 0.50, label: "WLT benefit (−50%)", short: "WLT −50%" }, biz: { mult: 0.30, label: "Business Class ticket (−70%)", short: "Business −70%" } };
@@ -564,6 +564,47 @@
     .tk-tr{font-size:9px;margin-right:4px;vertical-align:middle}.tk-tr.up{color:#4cc281}.tk-tr.dn{color:#e5615c}
     .rs-eta{font-size:9px;color:#9fc7f0;margin-left:4px;white-space:nowrap;cursor:help;font-family:ui-monospace,monospace}
     .star{color:#d9b441;margin-left:6px}
+    /* view switcher */
+    .tdk-vsw{display:flex;justify-content:flex-end;gap:3px;padding:0 16px 8px}
+    .tdk-vsw button{width:30px;height:26px;border:1px solid #3c3623;background:#201e17;color:#928b78;border-radius:7px;font-size:14px;cursor:pointer;line-height:1}
+    .tdk-vsw button:hover{color:#ece7d8}
+    .tdk-vsw button.on{background:#d9b441;color:#14130f;border-color:transparent}
+    /* cards lens */
+    .tk-cards{display:flex;flex-direction:column;gap:8px;padding:0 12px 12px}
+    .tk-card{display:flex;gap:12px;align-items:flex-start;border:1px solid #332e1e;border-radius:11px;background:#1e1b12;padding:12px 14px;cursor:pointer}
+    .tk-card:hover{background:#231f14}
+    .tk-card.dim{opacity:.72}.tk-card.fund{border-color:#d9b441;background:#221d10}.tk-card.ocmiss{background:#241717}
+    .tk-card .tk-cl{min-width:0;flex:1}
+    .tk-card .tk-cl .cy{color:#a49c88;font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .tk-card .tk-cl .cy2{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:#8f886f;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .tk-card .tk-cr{text-align:right;white-space:nowrap}
+    .tk-card .tk-cppm{font-family:ui-monospace,monospace;color:#d9b441;font-weight:800;font-size:16px}
+    .tk-card .tk-cppm small{color:#8f886f;font-weight:500;font-size:11px}
+    .tk-card .tk-csub{font-size:11px;color:#8f886f;margin-top:3px;font-family:ui-monospace,monospace}
+    /* leaderboard lens */
+    .tk-lb{display:flex;flex-direction:column;gap:8px;padding:0 12px 12px}
+    .tk-bar{position:relative;display:flex;align-items:center;gap:12px;min-height:46px;border:1px solid #332e1e;border-radius:10px;background:#1f1c11;padding-right:14px;overflow:hidden;cursor:pointer}
+    .tk-bar.dim{opacity:.72}
+    .tk-fill{position:absolute;left:0;top:0;bottom:0;border-radius:9px 0 0 9px;background:linear-gradient(90deg,rgba(217,180,65,.30),rgba(217,180,65,.04));border-left:3px solid #d9b441}
+    .tk-bar.b-warn .tk-fill{background:linear-gradient(90deg,rgba(226,163,74,.26),rgba(226,163,74,.03));border-left-color:#e2933f}
+    .tk-bar.b-bad .tk-fill{background:linear-gradient(90deg,rgba(229,97,92,.24),rgba(229,97,92,.03));border-left-color:#e5615c}
+    .tk-bar.b-unk .tk-fill{background:linear-gradient(90deg,rgba(143,136,111,.18),transparent);border-left-color:#6f6a5a}
+    .tk-rank{position:relative;width:26px;text-align:center;font-family:ui-monospace,monospace;color:#8f886f;font-weight:800}
+    .tk-bn{position:relative;font-weight:600;color:#f2eddf;min-width:0;overflow:hidden;text-overflow:ellipsis}
+    .tk-bn small{display:block;color:#8f886f;font-size:11px;font-weight:400}
+    .tk-br{position:relative;margin-left:auto;text-align:right;padding-left:8px}
+    .tk-bp{font-family:ui-monospace,monospace;color:#d9b441;font-weight:800;font-size:15px;display:block}
+    /* departures lens */
+    .tk-flipwrap{overflow-x:auto;padding:0 6px 10px}
+    table.tk-flip{width:100%;border-collapse:collapse;font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+    table.tk-flip th{font-size:9px;letter-spacing:.12em;color:#b9932f;text-transform:uppercase;text-align:left;padding:8px 12px;border-bottom:1px solid #2a2410;white-space:nowrap}
+    table.tk-flip td{padding:10px 12px;border-bottom:1px solid #201a0c;color:#eec95f;white-space:nowrap;cursor:pointer}
+    table.tk-flip tr:hover td{background:#12100a}
+    .tk-flip .dep-dest{color:#f4efe0;font-weight:700;letter-spacing:.06em}
+    .tk-flip .dep-ppm{color:#d9b441;font-weight:800}
+    .tk-flip .dep-prof{color:#4cc281}
+    .stt{display:inline-block;font-weight:800;padding:3px 8px;border-radius:3px;letter-spacing:.06em;font-size:10px;color:#14130f}
+    .stt.go{background:#69c58a}.stt.warn{background:#e2933f}.stt.no{background:#e5615c}.stt.mut{background:#3a3729;color:#928b78}
     .tdk-filter{display:flex;flex-wrap:wrap;gap:6px;padding:0 16px 10px}
     .tdk-fc{font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;cursor:pointer;border:1px solid #3a3729;background:#1b1a14;color:#c3bda9}
     .tdk-fc:hover{background:#201e17}
@@ -925,7 +966,10 @@
     const g = ocGuard();
     const pStk = primaryStockAcronym();
 
-    body.innerHTML = disp.map(function (x) {
+    const view = state.boardView || "table";
+    host.querySelectorAll("#tdk-vsw button").forEach(function (vb) { vb.classList.toggle("on", vb.getAttribute("data-view") === view); });
+    const maxPpm = disp.reduce(function (m, x) { return Math.max(m, x.ppm); }, 0) || 1;
+    const built = disp.map(function (x, i) {
       const aff = cash == null || x.full <= cash;
       const fill = x.stock >= cap;
       const isTop = topOver && x === topOver;
@@ -943,30 +987,71 @@
           sc = '<span class="tk-tr up" title="Restocked +' + tr.dq.toLocaleString() + ' since last sample">▲</span>' + sc;
         }
       }
-      // Restock timing is now conveyed by the Landing column (+ its tooltip), so the Stock cell stays lean.
-      // Full-load cost rides the item sub-line instead of its own column — keeps the board scroll-free.
       let loadInline = 'load ' + money(x.full);
       if (!aff && cash != null && stocks > 0) {
         const need = x.full - cash;
         loadInline = '<span class="needfund" title="' + escAttr("Need to free " + money(need) + " in " + pStk + " stock cash before flying") + '">load ' + money(x.full) + ' (' + pStk + ')</span>';
       }
-
       const cls = (aff ? "" : (fund ? (isTop ? "fund" : "") : "dim")) + (ocMiss ? " ocmiss" : "");
       const mark = (aff && fill) ? '<span class="star" title="Affordable now & fully in stock — a clean pick">★</span>' : (isTop ? '<span class="star" title="Best funded play — over budget, but reachable by selling stocks (see the banner up top)">💰</span>' : '');
       const ocBadge = ocMiss ? '<span class="oc-x" title="Round trip ' + (FLY[x.cc] ? fmtRt(rtOf(x.cc)) : '?') + (g.secs <= 0 ? ' — your OC is ready NOW, don’t fly' : ' exceeds your OC (ready in ' + fmtDur(g.secs) + ') — you’d miss it') + '">⛔ OC</span>' : '';
       const rtTxt = FLY[x.cc] ? '<span title="' + (travelMult() < 1 ? travelLabel() + ' · base ' + fmtRt(FLY[x.cc].rt) : 'Standard round trip') + '">' + fmtRt(rtOf(x.cc)) + ' rt</span> · ' : '';
       const ol = arrivalOutlook(x);
       const sellTag = x.isTraderPrice ? ' <span style="font-size:9px;color:#d9b441;" title="Priced off top trader buy-offer">⚡</span>' : '';
+      const profit = money(x.ppi * cap), ppmTxt = '$' + x.ppm.toLocaleString();
+      const ldPill = ol ? '<span class="ld ld-' + ol.cls + '" title="' + escAttr(ol.tip) + '">' + ol.txt + '</span>' : '<span class="ld ld-unk">·</span>';
+      const nm = '<span class="nm">' + x.name + mark + '</span>';
+      const dataAttr = ' data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '"';
 
-      return '<tr class="' + cls + '" data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '">' +
-        '<td class="l"><span class="nm">' + x.name + mark + '</span>' +
+      if (view === "cards") {
+        return '<div class="tk-card ' + cls + '"' + dataAttr + '>' +
+          '<div class="tk-cl">' + nm +
+            '<div class="cy">' + x.country + ' ✈ · ' + rtTxt + ago(x.freshS) + ' old' + ocBadge + '</div>' +
+            '<div class="cy2">' + money(x.buy) + ' → ' + money(x.sell) + sellTag + ' · ' + loadInline + '</div></div>' +
+          '<div class="tk-cr"><div class="tk-cppm">' + ppmTxt + '<small>/min</small></div>' +
+            '<div class="tk-csub">' + ldPill + ' · <b class="gd">+' + profit + '</b> · ' + sc + '</div></div></div>';
+      }
+      if (view === "bars") {
+        const pct = Math.max(4, Math.round(x.ppm / maxPpm * 100));
+        const bcl = ol ? ol.cls : "unk";
+        return '<div class="tk-bar b-' + bcl + (cls.indexOf("dim") >= 0 ? " dim" : "") + '"' + dataAttr + '>' +
+          '<span class="tk-fill" style="width:' + pct + '%"></span>' +
+          '<span class="tk-rank">' + (i + 1) + '</span>' +
+          '<span class="tk-bn">' + x.name + mark + '<small>' + x.country + ' · ' + fmtRt(rtOf(x.cc)) + ' rt · +' + profit + ' · ' + sc + '</small></span>' +
+          '<span class="tk-br"><span class="tk-bp">' + ppmTxt + '</span>' + ldPill + '</span></div>';
+      }
+      if (view === "dep") {
+        const stt = ol ? (ol.cls === "good" ? ["go", "BOARDING"] : ol.cls === "warn" ? ["warn", "LIMITED"] : ol.cls === "bad" ? ["no", "CANCELLED"] : ["mut", "—"]) : ["mut", "—"];
+        return '<tr' + dataAttr + '><td class="dep-dest">' + x.country.toUpperCase() + '</td>' +
+          '<td>' + x.name + ' · ' + money(x.buy) + '→' + money(x.sell) + '</td>' +
+          '<td class="dep-prof">+' + profit + '</td>' +
+          '<td class="dep-ppm">' + ppmTxt + '</td>' +
+          '<td><span class="stt ' + stt[0] + '">' + stt[1] + '</span></td></tr>';
+      }
+      return '<tr class="' + cls + '"' + dataAttr + '>' +
+        '<td class="l">' + nm +
           '<div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + rtTxt + ago(x.freshS) + ' old' + ocBadge + '</div>' +
           '<div class="cy2">' + money(x.buy) + ' → ' + money(x.sell) + sellTag + ' · ' + loadInline + '</div></td>' +
-        '<td class="gd">' + money(x.ppi * cap) + '</td>' +
+        '<td class="gd">' + profit + '</td>' +
         '<td>' + sc + '</td>' +
-        '<td class="ldc">' + (ol ? '<span class="ld ld-' + ol.cls + '" title="' + escAttr(ol.tip) + '">' + ol.txt + '</span>' : '<span class="ld ld-unk">·</span>') + '</td>' +
-        '<td class="ppm">$' + x.ppm.toLocaleString() + '</td></tr>';
+        '<td class="ldc">' + ldPill + '</td>' +
+        '<td class="ppm">' + ppmTxt + '</td></tr>';
     }).join("");
+
+    const tbl = host.querySelector("#tdk-board table.tdk"), lens = host.querySelector("#tdk-lens");
+    if (view === "table") {
+      body.innerHTML = built;
+      if (tbl) tbl.style.display = "";
+      if (lens) { lens.style.display = "none"; lens.innerHTML = ""; }
+    } else {
+      if (tbl) tbl.style.display = "none";
+      if (lens) {
+        lens.style.display = "";
+        if (view === "cards") lens.innerHTML = '<div class="tk-cards">' + built + '</div>';
+        else if (view === "bars") lens.innerHTML = '<div class="tk-lb">' + built + '</div>';
+        else lens.innerHTML = '<div class="tk-flipwrap"><table class="tk-flip"><thead><tr><th>Destination</th><th>Cargo · buy→sell</th><th>Profit ×' + cap + '</th><th>$/min</th><th>Landing</th></tr></thead><tbody>' + built + '</tbody></table></div>';
+      }
+    }
 
     const mug = host.querySelector("#tdk-mug");
     if (mug) mug.innerHTML = cash != null
@@ -1688,6 +1773,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.53.0", d: "Aug 12, 2026", c: ["🔭 Board view switcher (facelift part 2): the little ▤ ▭ ▬ ✈ buttons above the board flip the SAME travel data between four looks — Table, Cards, Leaderboard (heat bars sized by $/min, coloured by Landing), and Departures (an airport board where Landing reads as BOARDING / LIMITED / CANCELLED). Your choice is saved. Click any row/card/bar to open its buyers, same as before."] },
     { v: "1.52.5", d: "Aug 12, 2026", c: ["🩹 Fixed “Nothing profitable here” while abroad: the ≤time-budget filter was hiding the country you're standing in (its round-trip is long, but you don't fly there — you're already there). The board now always shows the country you're in / heading to, regardless of the time filter."] },
     { v: "1.52.4", d: "Aug 12, 2026", c: ["🔬 The Torn build-watcher list in this window is now collapsible — click the “🔬 Torn build watcher” heading to expand/collapse it (▸/▾). Starts collapsed so it stays out of the way; the count stays in the heading, and it remembers your choice."] },
     { v: "1.52.3", d: "Aug 12, 2026", c: ["📐 Slimmed the rail to a compact icon-only strip (50px, was 76px) like the mockup — hover an icon for its name. Gives the board back the extra width."] },
@@ -2209,7 +2295,14 @@
           '<div class="tdk-oc" id="tdk-oc" style="display:none"></div>' +
           '<div class="tdk-filter" id="tdk-filter"></div>' +
           '<div class="tdk-best" id="tdk-best"><div class="l">Best play</div><div class="p">—</div></div>' +
+          '<div class="tdk-vsw" id="tdk-vsw">' +
+            '<button data-view="table" title="Table view">▤</button>' +
+            '<button data-view="cards" title="Card view">▭</button>' +
+            '<button data-view="bars" title="Leaderboard view">▬</button>' +
+            '<button data-view="dep" title="Departures board">✈</button>' +
+          '</div>' +
           '<table class="tdk"><thead><tr><th class="l">Item <span class="thsub">buy → resale · load</span></th><th id="tdk-th-full" class="so" data-sort="fullprofit" title="Total profit for a full load (profit/ea × cap), before airfare. Set Cap to 1 to see per-item profit.">Profit ×' + state.cap + '</th><th class="so" data-sort="stock">Stock</th><th class="ld" title="Predicted stock when you touch down if you flew there from Torn right now — from your flight time, the current buy-rate, and the restock cycle">Landing</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
+          '<div id="tdk-lens" style="display:none"></div>' +
           '<div class="tdk-mug" id="tdk-mug"></div>' +
         '</div>' +
         '<div id="tdk-inv" style="display:none"></div>' +
@@ -2243,14 +2336,18 @@
       else { state.fund = !state.fund; render(); }
       GM_setValue("fund", state.fund);
     });
-    host.querySelector("#tdk-body").addEventListener("click", function (e) {
-      if (e.target.closest("a, button")) return;
-      const tr = e.target.closest("tr"); if (!tr || !tr.dataset.id) return;
-      openBuyers(+tr.dataset.id, tr.dataset.name);
+    host.querySelector("#tdk-board").addEventListener("click", function (e) {
+      if (e.target.closest("a, button, th")) return; // clicking any row/card/bar/departure opens the buyers popover
+      const el = e.target.closest("[data-id]"); if (!el || !el.dataset.id) return;
+      openBuyers(+el.dataset.id, el.dataset.name);
     });
     host.querySelector("#tdk-board").addEventListener("click", function (e) {
       const th = e.target.closest("th.so"); if (!th) return;
       state.sort = th.getAttribute("data-sort"); GM_setValue("sort", state.sort); render();
+    });
+    host.querySelector("#tdk-vsw").addEventListener("click", function (e) {
+      const vb = e.target.closest("button[data-view]"); if (!vb) return;
+      state.boardView = vb.getAttribute("data-view"); GM_setValue("boardView", state.boardView); render();
     });
     host.querySelector("#tdk-ainc").addEventListener("click", function () { state.scale = Math.min(1.6, +(state.scale + 0.1).toFixed(2)); GM_setValue("scale", state.scale); applyScale(); });
     host.querySelector("#tdk-adec").addEventListener("click", function () { state.scale = Math.max(0.9, +(state.scale - 0.1).toFixed(2)); GM_setValue("scale", state.scale); applyScale(); });
