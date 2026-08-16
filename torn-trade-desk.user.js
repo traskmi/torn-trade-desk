@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.54.2
+// @version      1.54.3
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -1792,6 +1792,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.54.3", d: "Aug 12, 2026", c: ["😊 Dropped Box of Tissues from the jump checklist — they’re too marginal (5–20 happy, capped ~20% of max) to be worth the step. Step 3 now just: candies, then eDVDs, up to ~50,000."] },
     { v: "1.54.2", d: "Aug 12, 2026", c: ["😊 Happy Jump checklist now says where to get Box of Tissues — Bits ’n’ Bobs (~$20 each), with a direct shop link. (Heads-up: tissues are a minor happy source, capped ~20% of your max, so candies/eDVDs still do the real work.)"] },
     { v: "1.54.1", d: "Aug 12, 2026", c: ["📐 Gave the $/min column real breathing room from the panel’s right edge (wider column + right padding), reserved a stable scrollbar gutter so nothing hugs the scrollbar, and did the same for the Departures view’s Status column."] },
     { v: "1.54.0", d: "Aug 12, 2026", c: ["😊 Happy Jump — added a full-jump cost + a tick-off checklist. Set your energy-to-bank target and it prices the whole run at market value: N× Xanax for the energy, Ecstasy, and the Erotic DVDs to reach 99,999 — each with a 🛒 Item-Market buy link (they’re all Item-Market buys, no travel needed). Below it, a saved step-by-step order you can check off as you go over the hours (bank energy → wait the drug cooldown → tissues first → Ecstasy ×2 → train).", "🔋 The gym ‘energy to spend’ box now allows your BANKED energy above the normal max (e.g. 1,000 from stacking Xanax), instead of capping at 150."] },
@@ -1921,7 +1922,7 @@
         '<ul class="horder" id="tdk-hchecklist">' +
           '<li><label><input type="checkbox" data-step="s1"> <b>Bank energy</b> — one Xanax every ~6–8h (drug cooldown), <b>don’t spend energy</b>, until you hit your target.</label></li>' +
           '<li><label><input type="checkbox" data-step="s2"> <b>Wait out the final Xanax’s drug cooldown</b> before any Ecstasy — otherwise the overdose wipes your energy + happy.</label></li>' +
-          '<li><label><input type="checkbox" data-step="s3"> Right after a happy reset (xx:00/15/30/45): eat cheap fillers first — <b>Box of Tissues</b> (<a class="prof" href="https://www.torn.com/shops.php?step=bitsnbobs" target="_blank" rel="noopener">Bits ’n’ Bobs</a>, ~$20; minor — helps only up to ~20% of your max) and candies — then <b>eDVDs</b> up to ~50,000.</label></li>' +
+          '<li><label><input type="checkbox" data-step="s3"> Right after a happy reset (xx:00/15/30/45): eat your happy items — candies, then <b>eDVDs</b> — up to ~50,000.</label></li>' +
           '<li><label><input type="checkbox" data-step="s4"> <b>Ecstasy ×2</b> → ~99,999.</label></li>' +
           '<li><label><input type="checkbox" data-step="s5"> Eat any leftover happy items.</label></li>' +
           '<li><label><input type="checkbox" data-step="s6"> <b>Train all your energy</b> before the next 15-minute reset.</label></li>' +
