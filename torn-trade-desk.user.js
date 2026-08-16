@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.54.0
+// @version      1.54.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -498,7 +498,7 @@
     .tdk-rail .tdk-btn2:hover{background:#262112;color:#ece7d8}
     .tdk-rail .tdk-btn2.on{background:#d9b441;color:#14130f;border-color:transparent}
     .tdk-rail .tdk-btn2.ready{background:#16241c;border-color:#4cc281;color:#8fe6b3;animation:tdkpulse 1.8s ease-in-out infinite}
-    .tdk-col{flex:1;min-width:0;min-height:0;overflow-y:auto;max-height:calc(100vh - 26px)}
+    .tdk-col{flex:1;min-width:0;min-height:0;overflow-y:auto;max-height:calc(100vh - 26px);scrollbar-gutter:stable}
     .tdk-topbar{position:sticky;top:0;z-index:6;display:flex;align-items:center;gap:9px;padding:12px 46px 10px 16px;background:#14130f;border-bottom:1px solid #2c2a21;flex-wrap:wrap}
     .tdk-topbar .t{font-weight:800;letter-spacing:.02em}
     .tdk-topbar .t small{color:#928b78;font-weight:600;letter-spacing:.12em;text-transform:uppercase;font-size:10px;margin-left:6px}
@@ -555,7 +555,8 @@
     #tdk-board table.tdk th[data-sort="fullprofit"]{width:96px}
     #tdk-board table.tdk th[data-sort="stock"]{width:84px}
     #tdk-board table.tdk th.ld{width:104px}
-    #tdk-board table.tdk th[data-sort="ppm"]{width:84px}
+    #tdk-board table.tdk th[data-sort="ppm"]{width:100px}
+    #tdk-board table.tdk td.ppm,#tdk-board table.tdk th[data-sort="ppm"]{padding-right:22px} /* keep $/min off the panel's right edge / scrollbar */
     #tdk-board table.tdk td.l{overflow:hidden}
     #tdk-board table.tdk td.l .nm,#tdk-board table.tdk td.l .cy,#tdk-board table.tdk td.l .cy2{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .ppm{color:#d9b441;font-weight:800}
@@ -600,6 +601,7 @@
     table.tk-flip{width:100%;border-collapse:collapse;font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
     table.tk-flip th{font-size:9px;letter-spacing:.12em;color:#b9932f;text-transform:uppercase;text-align:left;padding:8px 12px;border-bottom:1px solid #2a2410;white-space:nowrap}
     table.tk-flip td{padding:10px 12px;border-bottom:1px solid #201a0c;color:#eec95f;white-space:nowrap;cursor:pointer}
+    table.tk-flip td:last-child,table.tk-flip th:last-child{padding-right:20px} /* keep Status off the right edge */
     table.tk-flip tr:hover td{background:#12100a}
     .tk-flip .dep-dest{color:#f4efe0;font-weight:700;letter-spacing:.06em}
     .tk-flip .dep-ppm{color:#d9b441;font-weight:800}
@@ -1790,6 +1792,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.54.1", d: "Aug 12, 2026", c: ["📐 Gave the $/min column real breathing room from the panel’s right edge (wider column + right padding), reserved a stable scrollbar gutter so nothing hugs the scrollbar, and did the same for the Departures view’s Status column."] },
     { v: "1.54.0", d: "Aug 12, 2026", c: ["😊 Happy Jump — added a full-jump cost + a tick-off checklist. Set your energy-to-bank target and it prices the whole run at market value: N× Xanax for the energy, Ecstasy, and the Erotic DVDs to reach 99,999 — each with a 🛒 Item-Market buy link (they’re all Item-Market buys, no travel needed). Below it, a saved step-by-step order you can check off as you go over the hours (bank energy → wait the drug cooldown → tissues first → Ecstasy ×2 → train).", "🔋 The gym ‘energy to spend’ box now allows your BANKED energy above the normal max (e.g. 1,000 from stacking Xanax), instead of capping at 150."] },
     { v: "1.53.2", d: "Aug 12, 2026", c: ["📏 Added breathing room between the panel and the right edge of the browser (right margin 18→28px), so the $/min column isn't jammed against the edge."] },
     { v: "1.53.1", d: "Aug 12, 2026", c: ["🛬 Landing is now sortable — and the new default sort: it groups what will actually be IN STOCK when you land first (✓ → ◐ → ✗ → ?), and within each group ranks by $/min, so the top of the board is the best profit among things you can actually buy on arrival. Click any column header to sort by it as before."] },
