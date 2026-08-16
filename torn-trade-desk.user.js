@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.53.1
+// @version      1.53.2
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -485,7 +485,7 @@
     #tdk-btn{position:fixed;right:18px;bottom:18px;z-index:2147483600;width:46px;height:46px;border-radius:50%;
       background:#14130f;border:1px solid #d9b441;color:#d9b441;font-size:20px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.5)}
     #tdk-btn:hover{background:#201e17}
-    #tdk-panel{position:fixed;right:18px;top:12px;z-index:2147483000;width:min(780px,94vw);max-height:calc(100vh - 24px);overflow:hidden;padding:0;
+    #tdk-panel{position:fixed;right:28px;top:12px;z-index:2147483000;width:min(780px,92vw);max-height:calc(100vh - 24px);overflow:hidden;padding:0;
       background:#14130f;color:#ece7d8;border:1px solid #2c2a21;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.6);
       font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:13px;display:none}
     #tdk-panel.open{display:flex}
@@ -1777,6 +1777,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.53.2", d: "Aug 12, 2026", c: ["📏 Added breathing room between the panel and the right edge of the browser (right margin 18→28px), so the $/min column isn't jammed against the edge."] },
     { v: "1.53.1", d: "Aug 12, 2026", c: ["🛬 Landing is now sortable — and the new default sort: it groups what will actually be IN STOCK when you land first (✓ → ◐ → ✗ → ?), and within each group ranks by $/min, so the top of the board is the best profit among things you can actually buy on arrival. Click any column header to sort by it as before."] },
     { v: "1.53.0", d: "Aug 12, 2026", c: ["🔭 Board view switcher (facelift part 2): the little ▤ ▭ ▬ ✈ buttons above the board flip the SAME travel data between four looks — Table, Cards, Leaderboard (heat bars sized by $/min, coloured by Landing), and Departures (an airport board where Landing reads as BOARDING / LIMITED / CANCELLED). Your choice is saved. Click any row/card/bar to open its buyers, same as before."] },
     { v: "1.52.5", d: "Aug 12, 2026", c: ["🩹 Fixed “Nothing profitable here” while abroad: the ≤time-budget filter was hiding the country you're standing in (its round-trip is long, but you don't fly there — you're already there). The board now always shows the country you're in / heading to, regardless of the time filter."] },
