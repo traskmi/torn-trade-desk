@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.53.2
+// @version      1.54.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -761,6 +761,19 @@
     .tdk-happy .hv{color:#928b78;font-size:11px}
     .tdk-happy .hqty{width:70px;background:#201e17;border:1px solid #3a3729;color:#ece7d8;border-radius:8px;padding:5px 7px;font-family:ui-monospace,monospace}
     .tdk-happy .hsub{width:92px;text-align:right;color:#8fe6b3;font-size:11px;font-family:ui-monospace,monospace}
+    .tdk-happy #tdk-hen-target{width:80px;background:#201e17;border:1px solid #3a3729;color:#ece7d8;border-radius:8px;padding:5px 7px;font-family:ui-monospace,monospace}
+    .tdk-happy .hcost{margin-top:4px}
+    .tdk-happy .hcrow{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:3px 0;color:#c3bda9;align-items:baseline}
+    .tdk-happy .hcrow b{font-family:ui-monospace,monospace;color:#d9b441;white-space:nowrap}
+    .tdk-happy .hcrow.htot{border-top:1px solid #3a3729;margin-top:4px;padding-top:6px;font-weight:800;color:#ece7d8}
+    .tdk-happy .hcrow.htot b{color:#4cc281}
+    .tdk-happy a.prof{color:#d9b441;text-decoration:none;border-bottom:1px dotted #4a4536;cursor:pointer}
+    .tdk-happy ul.horder{margin:6px 0 0;padding-left:0;list-style:none;color:#c3bda9;font-size:12.5px;line-height:1.5}
+    .tdk-happy ul.horder li{margin:5px 0}
+    .tdk-happy ul.horder li label{display:flex;gap:8px;align-items:flex-start;cursor:pointer}
+    .tdk-happy ul.horder li input{margin-top:2px;flex:0 0 auto;width:15px;height:15px;accent-color:#d9b441}
+    .tdk-happy ul.horder li.done{opacity:.5}
+    .tdk-happy ul.horder li.done label{text-decoration:line-through}
     .tdk-happy .hchk label{cursor:pointer}
     .tdk-happy .hresult{margin-top:10px;font-size:16px;font-weight:800;color:#ece7d8;border-top:1px dashed #3a3729;padding-top:8px}
     .tdk-happy .hresult b{color:#d9b441}
@@ -1777,6 +1790,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.54.0", d: "Aug 12, 2026", c: ["😊 Happy Jump — added a full-jump cost + a tick-off checklist. Set your energy-to-bank target and it prices the whole run at market value: N× Xanax for the energy, Ecstasy, and the Erotic DVDs to reach 99,999 — each with a 🛒 Item-Market buy link (they’re all Item-Market buys, no travel needed). Below it, a saved step-by-step order you can check off as you go over the hours (bank energy → wait the drug cooldown → tissues first → Ecstasy ×2 → train).", "🔋 The gym ‘energy to spend’ box now allows your BANKED energy above the normal max (e.g. 1,000 from stacking Xanax), instead of capping at 150."] },
     { v: "1.53.2", d: "Aug 12, 2026", c: ["📏 Added breathing room between the panel and the right edge of the browser (right margin 18→28px), so the $/min column isn't jammed against the edge."] },
     { v: "1.53.1", d: "Aug 12, 2026", c: ["🛬 Landing is now sortable — and the new default sort: it groups what will actually be IN STOCK when you land first (✓ → ◐ → ✗ → ?), and within each group ranks by $/min, so the top of the board is the best profit among things you can actually buy on arrival. Click any column header to sort by it as before."] },
     { v: "1.53.0", d: "Aug 12, 2026", c: ["🔭 Board view switcher (facelift part 2): the little ▤ ▭ ▬ ✈ buttons above the board flip the SAME travel data between four looks — Table, Cards, Leaderboard (heat bars sized by $/min, coloured by Landing), and Departures (an airport board where Landing reads as BOARDING / LIMITED / CANCELLED). Your choice is saved. Click any row/card/bar to open its buyers, same as before."] },
@@ -1873,13 +1887,14 @@
     const STAT_KEYS = { Strength: "strength", Speed: "speed", Defense: "defense", Dexterity: "dexterity" };
     const trainable = (gym ? Object.keys(STAT_KEYS).filter(function (s) { return (gym[STAT_KEYS[s]] || 0) > 0; }) : []);
     const defStat = trainable[0] || "Strength";
+    const enCap = Math.max(energyMax, energyNow || 0); // allow banked energy over the normal max (Xanax pushes above the cap)
     const gymBlock = (stats && gym) ? (
       '<div class="hsec hgymhdr" style="margin-top:12px;border-top:1px dashed #3a3729;padding-top:8px">Gym gain estimate <small>— ' + (gym.name || "gym") + ' · ' + gym.energy + 'E/train · rough</small></div>' +
       '<div class="hstats">' + Object.keys(STAT_KEYS).map(function (s) {
         const dots = (gym[STAT_KEYS[s]] || 0) / 10;
         return '<button class="hstat' + (s === defStat ? " on" : "") + '" data-stat="' + s + '" data-dots="' + dots + '" data-val="' + stats[s] + '"' + (dots <= 0 ? " disabled" : "") + '>' + s.slice(0, 3) + ' ' + (dots > 0 ? "(" + dots.toFixed(1) + ")" : "—") + '</button>';
       }).join("") + '</div>' +
-      '<div class="hrow"><label>Energy to spend</label><input class="hqty" id="tdk-hen" type="number" min="' + gym.energy + '" max="' + energyMax + '" value="' + Math.min(energyMax, (energyNow && energyNow > 0 ? energyNow : energyMax)) + '"><span class="hv">max ' + energyMax + '</span></div>' +
+      '<div class="hrow"><label>Energy to spend</label><input class="hqty" id="tdk-hen" type="number" min="' + gym.energy + '" max="' + enCap + '" value="' + (energyNow && energyNow > 0 ? energyNow : enCap) + '"><span class="hv">max ' + enCap.toLocaleString() + (enCap > energyMax ? ' (banked)' : '') + '</span></div>' +
       '<div class="hgymres" id="tdk-hgymres"></div>' +
       '<div class="ssub">Estimate (Vladar formula, verified) · excludes Steadfast/education perks · happy decays as you train.</div>'
     ) : (key && stats ? '<div class="ssub">Gym estimate needs your active gym — train once, then reopen 😊 Happy.</div>' : '');
@@ -1895,6 +1910,18 @@
         '<div class="hresult" id="tdk-hresult"></div>' +
         '<div class="hseq" id="tdk-hseq"></div>' +
         '<div class="ssub">Cap 99,999 · boosted happy lasts only until the reset. Values verified from the Torn wiki.</div>' +
+        '<div class="hsec" style="margin-top:12px;border-top:1px dashed #3a3729;padding-top:8px">🛒 Cost to run a full jump <small>— est. at market value</small></div>' +
+        '<div class="hrow"><label>Energy to bank</label><input id="tdk-hen-target" type="number" min="0" step="250" value="1000"><span class="hv">Xanax = +250 each</span></div>' +
+        '<div class="hcost" id="tdk-hcost"></div>' +
+        '<div class="hsec" style="margin-top:12px">Best order <small>— tick as you go</small> · <a class="prof" id="tdk-hck-reset" href="#">reset</a></div>' +
+        '<ul class="horder" id="tdk-hchecklist">' +
+          '<li><label><input type="checkbox" data-step="s1"> <b>Bank energy</b> — one Xanax every ~6–8h (drug cooldown), <b>don’t spend energy</b>, until you hit your target.</label></li>' +
+          '<li><label><input type="checkbox" data-step="s2"> <b>Wait out the final Xanax’s drug cooldown</b> before any Ecstasy — otherwise the overdose wipes your energy + happy.</label></li>' +
+          '<li><label><input type="checkbox" data-step="s3"> Right after a happy reset (xx:00/15/30/45): eat happy items — <b>Box of Tissues first</b> (caps ~20% of max), then candies / eDVDs — up to ~50,000.</label></li>' +
+          '<li><label><input type="checkbox" data-step="s4"> <b>Ecstasy ×2</b> → ~99,999.</label></li>' +
+          '<li><label><input type="checkbox" data-step="s5"> Eat any leftover happy items.</label></li>' +
+          '<li><label><input type="checkbox" data-step="s6"> <b>Train all your energy</b> before the next 15-minute reset.</label></li>' +
+        '</ul>' +
         gymBlock +
       '</div>';
     bindClose(bx);
@@ -1913,12 +1940,32 @@
       const res = bx.querySelector("#tdk-hgymres"); if (!res || !gym) return;
       const sb = bx.querySelector(".hstat.on"); if (!sb) { res.textContent = ""; return; }
       const dots = +sb.getAttribute("data-dots"), statVal = +sb.getAttribute("data-val"), statName = sb.getAttribute("data-stat");
-      const enEl = bx.querySelector("#tdk-hen"), energy = Math.max(gym.energy, Math.min(energyMax, parseInt(enEl && enEl.value, 10) || energyMax));
+      const enEl = bx.querySelector("#tdk-hen"), energy = Math.max(gym.energy, Math.min(enCap, parseInt(enEl && enEl.value, 10) || enCap));
       const est = estGym(dots, statVal, lastHappy, energy, gym.energy);
       res.innerHTML = '~<b>+' + fmtG(est.perStart) + '</b> ' + statName + '/train @ ' + lastHappy.toLocaleString() + ' happy · total <b>~+' + fmtG(est.total) + '</b> from ' + energy.toLocaleString() + 'E <span class="hv">(' + est.trains + ' trains, happy decaying)</span>';
     };
     bx.querySelectorAll(".hstat").forEach(function (b) { b.addEventListener("click", function () { if (this.disabled) return; bx.querySelectorAll(".hstat").forEach(function (x) { x.classList.remove("on"); }); this.classList.add("on"); updateGymEst(); }); });
     const enEl = bx.querySelector("#tdk-hen"); if (enEl) enEl.addEventListener("input", updateGymEst);
+    const renderCost = function () {
+      const el = bx.querySelector("#tdk-hcost"); if (!el) return;
+      const ecs = bx.querySelector("#tdk-hecs").checked;
+      const baseH = max != null ? max : start;
+      const targetE = Math.max(0, parseInt((bx.querySelector("#tdk-hen-target") || {}).value, 10) || 0);
+      const nXan = Math.ceil(targetE / 250);
+      const flatBefore = ecs ? Math.max(0, Math.floor(HAPPY_CAP / 2) - baseH) : Math.max(0, HAPPY_CAP - baseH);
+      const dvdNeed = Math.ceil(flatBefore / 2500);
+      const priceOf = function (nm) { const id = nameToId(nm); return id ? ((state.resale && state.resale[id]) || 0) : 0; };
+      const link = function (nm) { const id = nameToId(nm); if (!id) return ""; const t = (state.itemMeta && state.itemMeta[id] && state.itemMeta[id].type) || ""; return ' <a class="prof" href="' + marketUrl(id, nm, t) + '" target="_blank" rel="noopener" title="Buy on the Item Market">🛒</a>'; };
+      const $ = function (n) { return n > 0 ? money(n) : '<span class="hv">price?</span>'; };
+      const cX = nXan * priceOf("Xanax"), cE = ecs ? priceOf("Ecstasy") : 0, cD = dvdNeed * priceOf("Erotic DVD");
+      const tot = cX + cE + cD;
+      el.innerHTML =
+        '<div class="hcrow"><span>' + nXan + '× Xanax → +' + (nXan * 250).toLocaleString() + 'E' + link("Xanax") + '</span><b>' + $(cX) + '</b></div>' +
+        (ecs ? '<div class="hcrow"><span>1× Ecstasy — doubles happy' + link("Ecstasy") + '</span><b>' + $(cE) + '</b></div>' : '') +
+        '<div class="hcrow"><span>' + dvdNeed + '× Erotic DVD → +' + (dvdNeed * 2500).toLocaleString() + ' happy' + link("Erotic DVD") + '</span><b>' + $(cD) + '</b></div>' +
+        '<div class="hcrow htot"><span>Total <span class="hv">from base ' + baseH.toLocaleString() + ' happy' + (ecs ? '' : ', no Ecstasy') + '</span></span><b>' + $(tot) + '</b></div>' +
+        '<div class="ssub">All three are <b>Item Market</b> buys — no travel needed (🛒 links above). Cheaper-but-tedious: candies (25–250 happy) cost far less per-happy than eDVDs. Prices are market-value estimates — check live before buying.</div>';
+    };
     const recompute = function () {
       let flat = 0;
       bx.querySelectorAll(".hqty").forEach(function (inp) {
@@ -1938,9 +1985,17 @@
         if (beforeFlat >= flat) seq.innerHTML = 'Eat all boosters (+' + flat.toLocaleString() + ' → ' + (start + flat).toLocaleString() + '), then <b>Ecstasy ×2</b> → <b>' + final.toLocaleString() + '</b>';
         else seq.innerHTML = 'Eat +' + beforeFlat.toLocaleString() + ' → ' + (start + beforeFlat).toLocaleString() + ', <b>Ecstasy ×2</b> → ' + Math.min(HAPPY_CAP, (start + beforeFlat) * 2).toLocaleString() + ', then remaining +' + (flat - beforeFlat).toLocaleString() + ' → <b>' + final.toLocaleString() + '</b>';
       }
-      lastHappy = final; updateGymEst();
+      lastHappy = final; updateGymEst(); renderCost();
     };
     bx.querySelectorAll(".hqty, #tdk-hecs").forEach(function (el) { el.addEventListener("input", recompute); el.addEventListener("change", recompute); });
+    const tgtEl = bx.querySelector("#tdk-hen-target"); if (tgtEl) tgtEl.addEventListener("input", renderCost);
+    // Persistent, tick-as-you-go checklist (a jump spans hours of energy banking, so it survives reopening)
+    const ckGet = function () { try { return GM_getValue("happy_checklist", {}) || {}; } catch (e) { return {}; } };
+    (function () { const cks = ckGet(); bx.querySelectorAll("#tdk-hchecklist input[data-step]").forEach(function (cb) {
+      cb.checked = !!cks[cb.getAttribute("data-step")]; cb.closest("li").classList.toggle("done", cb.checked);
+      cb.addEventListener("change", function () { const s = ckGet(); s[cb.getAttribute("data-step")] = cb.checked; try { GM_setValue("happy_checklist", s); } catch (e) { } cb.closest("li").classList.toggle("done", cb.checked); });
+    }); })();
+    const ckr = bx.querySelector("#tdk-hck-reset"); if (ckr) ckr.addEventListener("click", function (e) { e.preventDefault(); try { GM_setValue("happy_checklist", {}); } catch (e2) { } bx.querySelectorAll("#tdk-hchecklist input[data-step]").forEach(function (cb) { cb.checked = false; cb.closest("li").classList.remove("done"); }); });
     const updateReset = function () {
       const el = host.querySelector("#tdk-hreset"); if (!el) return;
       const now = new Date(), m = now.getUTCMinutes(), s = now.getUTCSeconds();
