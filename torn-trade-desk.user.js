@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.54.3
+// @version      1.54.4
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -663,7 +663,7 @@
     .tdk-shop-tag{margin-left:6px;font-size:11px;font-weight:700;padding:1px 5px;border-radius:5px;white-space:nowrap;vertical-align:middle}
     .tdk-shop-tag.good{background:rgba(85,170,90,.18);color:#7ac67f;border:1px solid rgba(85,170,90,.4)}
     .tdk-shop-tag.meh{background:transparent;color:#8f886f;font-weight:600}
-    .tdk-im-banner{flex:0 0 100%;width:100%;box-sizing:border-box;margin:0 0 8px;padding:8px 12px;background:#1b1a14;border:1px solid #d9b441;border-radius:8px;color:#d8d2bf;font-size:13px;line-height:1.5}
+    .tdk-im-banner{display:block;grid-column:1/-1;flex:0 0 100%;width:100%;box-sizing:border-box;position:relative;z-index:5;margin:0 0 10px;padding:8px 12px;background:#1b1a14;border:1px solid #d9b441;border-radius:8px;color:#d8d2bf;font-size:13px;line-height:1.5}
     .tdk-im-banner b{color:#f0e7cf}
     .tdk-im-banner .tdk-im-x{color:#7ac67f;font-weight:700}
     .tdk-im-guard{cursor:pointer;font-size:15px;margin-right:4px;user-select:none}
@@ -1792,6 +1792,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.54.4", d: "Aug 12, 2026", c: ["🛒 Fixed the Item Market info banner colliding with the listings header (Torn reshaped that page). It now sits above the whole listings block and spans full width in either layout, so it no longer overlaps the first rows."] },
     { v: "1.54.3", d: "Aug 12, 2026", c: ["😊 Dropped Box of Tissues from the jump checklist — they’re too marginal (5–20 happy, capped ~20% of max) to be worth the step. Step 3 now just: candies, then eDVDs, up to ~50,000."] },
     { v: "1.54.2", d: "Aug 12, 2026", c: ["😊 Happy Jump checklist now says where to get Box of Tissues — Bits ’n’ Bobs (~$20 each), with a direct shop link. (Heads-up: tissues are a minor happy source, capped ~20% of your max, so candies/eDVDs still do the real work.)"] },
     { v: "1.54.1", d: "Aug 12, 2026", c: ["📐 Gave the $/min column real breathing room from the panel’s right edge (wider column + right padding), reserved a stable scrollbar gutter so nothing hugs the scrollbar, and did the same for the Departures view’s Status column."] },
@@ -2577,7 +2578,11 @@
       '<span class="tdk-im-guard ' + (sellable ? "sell" : "keep") + (ov ? " ovr" : "") + '" title="' + (sellable ? "Safe to sell" : "Held back — kept off the sell flow") + ' · click to toggle">' + (sellable ? "💰" : "🔒") + '</span>' +
       '<b>' + name + '</b> · market ' + (ctx.mkt ? full$(ctx.mkt) : "—") + ' · cheapest bazaar ' + (ctx.baz ? full$(ctx.baz) : "—") + ' · top bid ' + (ctx.bid ? full$(ctx.bid) : "—") +
       (crossed ? ' · <span class="tdk-im-x">⚡ crossed: bazaar &lt; top bid</span>' : "");
-    anchor.parentNode.insertBefore(bar, anchor);
+    // Insert ABOVE the whole listings container (not before the first row) so Torn's sticky column-header row can't
+    // overlap it, and it isn't laid out as a stray flex/grid cell among the rows. Re-inserts itself if React wipes it.
+    const list = anchor.parentNode;
+    if (list && list.parentNode) list.parentNode.insertBefore(bar, list);
+    else anchor.parentNode.insertBefore(bar, anchor);
     const g = bar.querySelector(".tdk-im-guard");
     if (g) g.addEventListener("click", function () {
       toggleOverride(id, effSellable(id, meta.type, meta.hasUse, false));
