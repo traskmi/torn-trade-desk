@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.54.6
+// @version      1.55.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -425,10 +425,12 @@
       landTimer = setTimeout(function () { landTimer = null; refresh(); }, (state.flyEta + 2) * 1000);
     }
   }
-  async function refresh() {
-    setStatus("Refreshing…");
+  async function refresh(silent) {
+    if (state._refreshing) return; // don't overlap (manual click + auto-refresh)
     const key = tornKey();
-    if (!key) { setStatus("Need a Torn API key.", true); return; }
+    if (!key) { if (!silent) setStatus("Need a Torn API key.", true); return; }
+    state._refreshing = true; state._lastRefreshAt = Date.now();
+    if (!silent) setStatus("Refreshing…");
     const w3b = GM_getValue("w3b_key", "");
     try {
       const [yata, resale, traderPrices] = await Promise.all([
@@ -483,7 +485,7 @@
       } else {
         setStatus("Refresh failed — " + msg, true);
       }
-    }
+    } finally { state._refreshing = false; }
   }
 
   /* ---------- UI ---------- */
@@ -1800,6 +1802,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.55.0", d: "Aug 12, 2026", c: ["🔄 Auto-refresh: while the panel is open on the board, it now re-pulls live data ~every 2.5 minutes on its own, so it catches restocks without you clicking ↻. Great for parking abroad and waiting for a restock — the “↻ due” flips to “✓ In stock” the moment it lands. (Only runs while open; a manual refresh and the auto one won’t overlap.)"] },
     { v: "1.54.6", d: "Aug 12, 2026", c: ["🛬 Restock ETA no longer silently jumps a whole cycle when the predicted time passes. When a restock was due but the board hasn’t caught it yet, Landing shows “↻ due” (amber) with “restock was due ~Xm ago — may already be in stock, hit ↻ Refresh” instead of quietly rolling the estimate to the next cycle."] },
     { v: "1.54.5", d: "Aug 12, 2026", c: ["🛬 Landing tooltip now shows the next-restock estimate when an item is Empty (or about to sell out): “Next restock ~in 14m (≈3:42 PM), ~+250 — from 8 seen, ~every 4h.” Great for deciding whether to wait for a restock while you’re already abroad."] },
     { v: "1.54.4", d: "Aug 12, 2026", c: ["🛒 Fixed the Item Market info banner colliding with the listings header (Torn reshaped that page). It now sits above the whole listings block and spans full width in either layout, so it no longer overlaps the first rows."] },
@@ -2770,4 +2773,6 @@
   setTimeout(pollStockPrices, 20000);
   setInterval(pollStockPrices, 5 * 60 * 1000);
   setInterval(function () { renderImmunity(); renderOC(); }, 1000);
+  // Auto-refresh the board while the panel is open (board view) so it catches restocks live — ~every 2.5 min.
+  setInterval(function () { try { if (panel && panel.classList.contains("open") && state.view !== "inv" && Date.now() - (state._lastRefreshAt || 0) > 145000) refresh(true); } catch (e) { } }, 30 * 1000);
 })();
