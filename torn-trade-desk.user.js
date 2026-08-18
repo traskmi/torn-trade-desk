@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.56.0
+// @version      1.57.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -270,6 +270,28 @@
     const cap = state.cap, ceil = stockCeiling(cc, id, curStock);
     const q = ceil > 0 ? Math.min(cap, ceil) : cap; // no stock evidence → assume it can fill (don't penalize unknowns)
     return Math.round((ppi * q - f.fare * (q / cap)) / rtOf(cc));
+  }
+  // Best TRIP: for each destination, fill your Cap slots with the highest profit/ea items it actually stocks
+  // (3 of a +3 item, then the rest with the next-best), and rank destinations by the whole load's $/min. This is
+  // the honest "where should I fly + what do I buy" — the airfare is shared across the full load, not one item.
+  function bestTrip(rows) {
+    const cap = state.cap, byCC = {};
+    (rows || state.rows || []).forEach(function (r) { (byCC[r.cc] || (byCC[r.cc] = [])).push(r); });
+    let best = null;
+    Object.keys(byCC).forEach(function (cc) {
+      const f = FLY[cc]; if (!f) return;
+      const items = byCC[cc].slice().sort(function (a, b) { return b.ppi - a.ppi; });
+      let remaining = cap, loadProfit = 0, loadCost = 0; const picks = [];
+      for (let i = 0; i < items.length && remaining > 0; i++) {
+        const it = items[i], take = Math.min(remaining, stockCeiling(it.cc, it.id, it.stock));
+        if (take <= 0) continue;
+        picks.push({ name: it.name, qty: take }); loadProfit += it.ppi * take; loadCost += it.buy * take; remaining -= take;
+      }
+      if (!picks.length) return;
+      const tripPpm = Math.round((loadProfit - f.fare) / rtOf(cc));
+      if (!best || tripPpm > best.tripPpm) best = { cc: cc, country: f.name, tripPpm: tripPpm, loadProfit: loadProfit, loadCost: loadCost, fare: f.fare, picks: picks, filled: cap - remaining };
+    });
+    return best;
   }
   function seasonalRecord(cc, id) {
     const key = cc + ":" + id, sd = sharedFresh();
@@ -568,6 +590,10 @@
     .tdk-best .p span{color:#928b78;font-weight:600;font-size:13px}
     .tdk-best .k{color:#928b78;font-size:12px;margin-top:4px}
     .tdk-best .k b{color:#d9b441;font-family:ui-monospace,monospace}
+    .tdk-besttrip{padding-bottom:9px;margin-bottom:9px;border-bottom:1px dashed #3a3729}
+    .tdk-picks{font-size:11.5px;color:#c3bda9;margin-top:5px;line-height:1.55}
+    .tdk-picks b{color:#d9b441;font-family:ui-monospace,monospace;font-weight:700}
+    #tdk-best .hv{color:#928b78;font-size:11px}
     table.tdk{width:100%;border-collapse:collapse}
     table.tdk th{position:sticky;top:0;text-align:right;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#928b78;
       font-weight:700;padding:9px 14px;border-bottom:1px solid #3a3729;background:#201e17;white-space:nowrap}
@@ -610,7 +636,10 @@
     .rs-eta{font-size:9px;color:#9fc7f0;margin-left:4px;white-space:nowrap;cursor:help;font-family:ui-monospace,monospace}
     .star{color:#d9b441;margin-left:6px}
     /* view switcher */
-    .tdk-vsw{display:flex;justify-content:flex-end;gap:3px;padding:0 16px 8px}
+    .tdk-vsw{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:0 16px 8px}
+    .tdk-vswbtns{display:flex;gap:3px}
+    .tdk-sortwrap{font-size:11px;color:#928b78}
+    .tdk-sortwrap select{background:#201e17;border:1px solid #3c3623;color:#ece7d8;border-radius:7px;padding:4px 6px;font-size:12px;margin-left:4px}
     .tdk-vsw button{width:30px;height:26px;border:1px solid #3c3623;background:#201e17;color:#928b78;border-radius:7px;font-size:14px;cursor:pointer;line-height:1}
     .tdk-vsw button:hover{color:#ece7d8}
     .tdk-vsw button.on{background:#d9b441;color:#14130f;border-color:transparent}
@@ -1011,7 +1040,19 @@
           : 'Everything’s out of stock here — check back after restocks.';
       html = '<div class="l">Best now</div><div class="p">' + msg + '</div>';
     }
-    b.innerHTML = html;
+    const bt = bestTrip(rows);
+    let btHtml = "";
+    if (bt && bt.tripPpm > 0) {
+      const pickTxt = bt.picks.slice(0, 5).map(function (p) { return p.name + ' <b>×' + p.qty.toLocaleString() + '</b>'; }).join(' · ') + (bt.picks.length > 5 ? ' · <span class="hv">+' + (bt.picks.length - 5) + ' more</span>' : '');
+      btHtml = '<div class="tdk-besttrip">' +
+        '<div class="l">✈ Best trip' + (travelMult() < 1 ? ' · ' + travelLabel() : '') + '</div>' +
+        '<div class="p">' + bt.country + ' <span>· fills ' + bt.filled + '/' + cap + ' slots</span></div>' +
+        '<div class="k"><b>$' + bt.tripPpm.toLocaleString() + '</b>/min · net ' + money(bt.loadProfit - bt.fare) + ' · costs ' + money(bt.loadCost) + '</div>' +
+        '<div class="tdk-picks">Buy: ' + pickTxt + '</div>' +
+        (cash != null && bt.loadCost > cash ? '<div class="tdk-fund2">💵 Free ' + money(bt.loadCost - cash) + ' from stocks to full-load this trip.</div>' : '') +
+        '</div>';
+    }
+    b.innerHTML = btHtml + html;
 
     const body = host.querySelector("#tdk-body");
     let sm = state.sort || "ppm";
@@ -1030,6 +1071,7 @@
 
     const view = state.boardView || "table";
     host.querySelectorAll("#tdk-vsw button").forEach(function (vb) { vb.classList.toggle("on", vb.getAttribute("data-view") === view); });
+    const ssel = host.querySelector("#tdk-sortsel"); if (ssel && ssel.value !== sm) ssel.value = sm;
     const maxPpm = disp.reduce(function (m, x) { return Math.max(m, x.ppm); }, 0) || 1;
     const built = disp.map(function (x, i) {
       const aff = cash == null || x.full <= cash;
@@ -1085,11 +1127,12 @@
       }
       if (view === "dep") {
         const stt = ol ? (ol.cls === "good" ? ["go", "BOARDING"] : ol.cls === "warn" ? ["warn", "LIMITED"] : ol.cls === "bad" ? ["no", "CANCELLED"] : ["mut", "—"]) : ["mut", "—"];
-        return '<tr' + dataAttr + '><td class="dep-dest">' + x.country.toUpperCase() + '</td>' +
+        const tipAttr = ol ? ' title="' + escAttr(ol.tip) + '"' : '';
+        return '<tr' + dataAttr + tipAttr + '><td class="dep-dest">' + x.country.toUpperCase() + '</td>' +
           '<td>' + x.name + ' · ' + money(x.buy) + '→' + money(x.sell) + '</td>' +
-          '<td class="dep-prof">+' + profit + '</td>' +
+          '<td class="dep-prof">+' + profit + loadWarn + '</td>' +
           '<td class="dep-ppm">' + ppmTxt + '</td>' +
-          '<td><span class="stt ' + stt[0] + '">' + stt[1] + '</span></td></tr>';
+          '<td><span class="stt ' + stt[0] + '"' + tipAttr + '>' + stt[1] + '</span></td></tr>';
       }
       return '<tr class="' + cls + '"' + dataAttr + '>' +
         '<td class="l">' + nm +
@@ -1836,6 +1879,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.57.0", d: "Aug 12, 2026", c: ["✈ New ‘Best trip’ up top: picks the destination whose best FULL LOAD earns the most $/min — fills your Cap with the highest profit/ea items it actually stocks (e.g. 3× Neumune + the rest) — and shows what to buy, the net after airfare, and the load cost. Respects your country filter.", "🔀 Sort dropdown (Landing / $/min / Profit / Stock) next to the view buttons, so you can sort in ANY view — e.g. flip to Departures and sort Landing to float all the BOARDING ones to the top. (Table column headers still work too.)", "🛬 Departures rows now have the full Landing tooltip on hover (restock ETA, ‘tops out ~N’, etc.) and the ⚠ full-load flag — same juicy info as the table."] },
     { v: "1.56.0", d: "Aug 12, 2026", c: ["📊 $/min now ranks by what you can REALISTICALLY buy, not a fantasy full load. Each item's $/min = profit for the quantity it actually stocks (min of your Cap and its peak stock) minus that quantity's pro-rated share of the airfare (the flight is spread across your whole load), over the round trip. So a trickle-restock item like Neumune (+3) ranks as its real 3-slot contribution — no longer inflated by a 28-load fantasy, but not over-punished by the full fare as if you flew there only for it. Items with plenty of stock are unchanged. (Profit ×N still shows the full-load figure with its ⚠.)", "🛬 The “◐ Maybe” Landing tooltip now includes the next-restock estimate + batch too (not just the cycle length)."] },
     { v: "1.55.1", d: "Aug 12, 2026", c: ["⚠ Reality check on “Profit ×N”: for items whose stock tops out below your Cap (e.g. a rare item that only restocks +3), the Profit column now shows a ⚠ and the Landing tooltip spells it out — “Tops out ~3 in stock — cannot fill a 28 load; a realistic trip nets ~$2.1M, not $20.1M.” So a big full-load number on a trickle-restock item won’t lure you into a 4-hour flight for three items."] },
     { v: "1.55.0", d: "Aug 12, 2026", c: ["🔄 Auto-refresh: while the panel is open on the board, it now re-pulls live data ~every 2.5 minutes on its own, so it catches restocks without you clicking ↻. Great for parking abroad and waiting for a restock — the “↻ due” flips to “✓ In stock” the moment it lands. (Only runs while open; a manual refresh and the auto one won’t overlap.)"] },
@@ -2413,10 +2457,13 @@
           '<div class="tdk-filter" id="tdk-filter"></div>' +
           '<div class="tdk-best" id="tdk-best"><div class="l">Best play</div><div class="p">—</div></div>' +
           '<div class="tdk-vsw" id="tdk-vsw">' +
-            '<button data-view="table" title="Table view">▤</button>' +
-            '<button data-view="cards" title="Card view">▭</button>' +
-            '<button data-view="bars" title="Leaderboard view">▬</button>' +
-            '<button data-view="dep" title="Departures board">✈</button>' +
+            '<span class="tdk-sortwrap">Sort <select id="tdk-sortsel"><option value="landing">Landing</option><option value="ppm">$/min</option><option value="fullprofit">Profit</option><option value="stock">Stock</option></select></span>' +
+            '<span class="tdk-vswbtns">' +
+              '<button data-view="table" title="Table view">▤</button>' +
+              '<button data-view="cards" title="Card view">▭</button>' +
+              '<button data-view="bars" title="Leaderboard view">▬</button>' +
+              '<button data-view="dep" title="Departures board">✈</button>' +
+            '</span>' +
           '</div>' +
           '<table class="tdk"><thead><tr><th class="l">Item <span class="thsub">buy → resale · load</span></th><th id="tdk-th-full" class="so" data-sort="fullprofit" title="Total profit for a full load (profit/ea × cap), before airfare. Set Cap to 1 to see per-item profit.">Profit ×' + state.cap + '</th><th class="so" data-sort="stock">Stock</th><th class="so ld" data-sort="landing" title="Predicted stock when you touch down if you flew there from Torn right now. Sort groups what will be in stock on arrival first, then by $/min.">Landing</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
           '<div id="tdk-lens" style="display:none"></div>' +
@@ -2465,6 +2512,9 @@
     host.querySelector("#tdk-vsw").addEventListener("click", function (e) {
       const vb = e.target.closest("button[data-view]"); if (!vb) return;
       state.boardView = vb.getAttribute("data-view"); GM_setValue("boardView", state.boardView); render();
+    });
+    host.querySelector("#tdk-sortsel").addEventListener("change", function () {
+      state.sort = this.value; GM_setValue("sort", state.sort); render(); // works in every view (the lenses have no column headers)
     });
     host.querySelector("#tdk-ainc").addEventListener("click", function () { state.scale = Math.min(1.6, +(state.scale + 0.1).toFixed(2)); GM_setValue("scale", state.scale); applyScale(); });
     host.querySelector("#tdk-adec").addEventListener("click", function () { state.scale = Math.max(0.9, +(state.scale - 0.1).toFixed(2)); GM_setValue("scale", state.scale); applyScale(); });
