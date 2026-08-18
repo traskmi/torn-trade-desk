@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.59.4
+// @version      1.59.5
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2924,3 +2924,4 @@
   // Auto-refresh the board while the panel is open (board view) so it catches restocks live — ~every 2.5 min.
   setInterval(function () { try { if (panel && panel.classList.contains("open") && state.view !== "inv" && Date.now() - (state._lastRefreshAt || 0) > 145000) refresh(true); } catch (e) { } }, 30 * 1000);
 })();
+// >>>>> TDK-END-OF-FILE-MARKER-1595 <<<<<
