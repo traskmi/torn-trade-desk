@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.62.0
+// @version      1.63.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -935,13 +935,13 @@
       #tdk-btn{bottom:64px;right:14px;width:50px;height:50px;font-size:21px} /* clear Torn PDA's bottom nav bar */
       #tdk-panel{left:5px;right:5px;top:5px;bottom:5px;width:auto;max-height:none;border-radius:12px}
       .tdk-col{max-height:none}
-      .tdk-rail{flex:0 0 46px;width:46px;padding:8px 5px;gap:5px}
-      .tdk-rail .tdk-btn2{width:38px;height:38px} /* keep tap targets ~38px */
+      .tdk-rail{flex:0 0 46px;width:46px;padding:8px 3px;gap:5px}
+      .tdk-rail .tdk-btn2{width:40px;height:40px} /* bigger tap targets */
       .tdk-rail .tdk-btn2 i{font-size:19px}
       .tdk-topbar{padding:10px 42px 8px 12px;gap:7px}
       .tdk-vsw{flex-wrap:wrap;padding:0 12px 8px}
-      .tdk-vsw button{width:34px;height:30px}
-      .tdk-sortwrap select{min-height:30px}
+      .tdk-vsw button{width:38px;height:34px;font-size:15px}
+      .tdk-sortwrap select{min-height:34px;font-size:13px}
       #tdk-board table.tdk th,#tdk-board table.tdk td{padding-left:5px;padding-right:5px}
       #tdk-board table.tdk{font-size:11.5px}
       #tdk-board table.tdk th[data-sort="fullprofit"]{width:60px}
@@ -951,6 +951,15 @@
       #tdk-board table.tdk td.ppm,#tdk-board table.tdk th[data-sort="ppm"]{padding-right:8px}
       .tk-cards,.tk-lb,.tk-flipwrap{padding-left:8px;padding-right:8px}
       .tdk-picks{font-size:12px}
+      /* buyers / trade / happy / settings overlay → full-screen sheet on a phone (was a small offset popover) */
+      #tdk-buyers{top:5px;left:5px;right:5px;bottom:5px;width:auto;max-height:none;border-radius:12px;resize:none}
+      .tdk-bx{font-size:26px;padding:0 6px} /* bigger close hit-area */
+      /* fatter tap targets: trade/copy actions, buyer rows, inputs (16px input font avoids mobile zoom quirks) */
+      .tdk-trade,.tdk-cp{padding:9px 12px;font-size:13px}
+      .tdk-brow{gap:9px;padding:11px 0}
+      .tdk-calc input,.tdk-cap,#tdk-qty{font-size:16px;padding:8px 9px}
+      .tdk-cap{width:64px}
+      #tdk-adec,#tdk-ainc{min-width:36px;min-height:32px}
     }`;
   }
   function setStatus(msg, err) { const s = host.querySelector("#tdk-status"); if (s) { s.textContent = msg; s.className = "tdk-status" + (err ? " err" : ""); } }
@@ -1961,6 +1970,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.63.0", d: "Aug 18, 2026", c: ["📱 Mobile ergonomics: the buyers/trade popover now opens as a full-screen sheet on a phone (it used to be a cramped, offset popover), rail icons and view/sort controls got bigger tap targets, and inputs are finger-sized. Desktop unchanged."] },
     { v: "1.62.0", d: "Aug 18, 2026", c: ["🛬 Landing ‘Empty’ now always shows the next-restock estimate + batch when we have the cadence — even for items that still have stock but sell out mid-flight (e.g. Jaguar Plushie). If no cadence is recorded yet, it says so instead of staying blank.", "🔄 Self-heal the shared restock/seasonal feed: Refresh now pulls it automatically if it isn’t loaded (fixes fresh installs — and mobile, where the feed sync used to fail for the same CORS reason as the board). This is what restores real restock estimates in the Landing tooltip."] },
     { v: "1.61.1", d: "Aug 18, 2026", c: ["🧹 Removed the temporary green ‘TDK loaded’ boot chip / diagnostics used to debug Torn PDA. Mobile is confirmed working via the minified PDA build."] },
     { v: "1.61.0", d: "Aug 18, 2026", c: ["📱 Mobile fix: data now loads on Torn PDA. PDA's GM_xmlhttpRequest can't make cross-origin calls, so YATA/feed/Torn-API fetches failed with ‘network’. Since all those hosts allow CORS, the fetcher now falls back to a plain fetch() when GM_xmlhttpRequest errors — desktop is unchanged (still uses GM_xmlhttpRequest). Runs from the minified PDA build (torn-trade-desk.pda.user.js)."] },
