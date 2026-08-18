@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.59.2
+// @version      1.59.3
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
 // @author       Tekim
-// @match        *://*.torn.com/*
 // @match        https://www.torn.com/*
+// @match        *://*.torn.com/*
 // @connect      yata.yt
 // @connect      api.torn.com
 // @connect      weav3r.dev
