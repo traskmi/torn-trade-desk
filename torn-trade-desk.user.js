@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.61.1
+// @version      1.62.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -447,7 +447,8 @@
     }
     const rsAfterOut = (rp && rp.outDur) ? outAt + rp.outDur : nextRs; // the restock following this stock selling out
     if (rsAfterOut && rsAfterOut <= arr) return { cls: "good", txt: "✓ In stock", tip: "Sells out mid-flight, but should restock before " + landTxt + "." + rsNote };
-    return { cls: "bad", txt: "✗ Empty", tip: "Likely sold out before " + landTxt + "." + rsNote };
+    const emptyNote = rsNote || " No restock cadence recorded yet — hit ↻ Refresh to pull the shared history.";
+    return { cls: "bad", txt: "✗ Empty", tip: "Likely sold out before " + landTxt + "." + emptyNote };
   }
   // Wrap the outlook: flag items whose stock tops out below your Cap, so the "Profit ×N" full-load figure (and its
   // $/min) aren't mistaken for reality — a rare item that restocks +3 will never fill a 28 load, however good /ea.
@@ -502,6 +503,9 @@
     const key = tornKey();
     if (!key) { if (!silent) setStatus("Need a Torn API key.", true); return; }
     state._refreshing = true; state._lastRefreshAt = Date.now();
+    // Self-heal: if the shared restock/seasonal feed isn't loaded (e.g. a first run, or an install whose earlier
+    // sync failed), pull it now so Landing predictions get real restock cadence instead of sparse local data.
+    try { if (!sharedFresh() && Date.now() - (state._sharedTry || 0) > 60000) { state._sharedTry = Date.now(); syncShared(false); } } catch (e) { }
     if (!silent) setStatus("Refreshing…");
     const w3b = GM_getValue("w3b_key", "");
     try {
@@ -1957,6 +1961,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.62.0", d: "Aug 18, 2026", c: ["🛬 Landing ‘Empty’ now always shows the next-restock estimate + batch when we have the cadence — even for items that still have stock but sell out mid-flight (e.g. Jaguar Plushie). If no cadence is recorded yet, it says so instead of staying blank.", "🔄 Self-heal the shared restock/seasonal feed: Refresh now pulls it automatically if it isn’t loaded (fixes fresh installs — and mobile, where the feed sync used to fail for the same CORS reason as the board). This is what restores real restock estimates in the Landing tooltip."] },
     { v: "1.61.1", d: "Aug 18, 2026", c: ["🧹 Removed the temporary green ‘TDK loaded’ boot chip / diagnostics used to debug Torn PDA. Mobile is confirmed working via the minified PDA build."] },
     { v: "1.61.0", d: "Aug 18, 2026", c: ["📱 Mobile fix: data now loads on Torn PDA. PDA's GM_xmlhttpRequest can't make cross-origin calls, so YATA/feed/Torn-API fetches failed with ‘network’. Since all those hosts allow CORS, the fetcher now falls back to a plain fetch() when GM_xmlhttpRequest errors — desktop is unchanged (still uses GM_xmlhttpRequest). Runs from the minified PDA build (torn-trade-desk.pda.user.js)."] },
     { v: "1.60.0", d: "Aug 17, 2026", c: ["⚡ Buyers panel now finds the best REACHABLE buyer. It used to only check whether the top 6 were online — so if the whole top of the book was offline you just got ‘None online’. Now it scans online status ~20 deep and surfaces the highest-priced <b>online (or idle)</b> buyer, with a sell-now-vs-wait readout: how much less per-item they pay than the top (offline) offer and where they rank (e.g. ‘#6 of 399’). That buyer’s row is also added to the list so you can see their rep before trading."] },
