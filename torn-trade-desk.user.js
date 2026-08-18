@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.63.1
+// @version      1.64.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -340,6 +340,8 @@
     const ts = rs.map(function (e) { return e[0]; });
     const gaps = []; for (let i = 1; i < ts.length; i++) gaps.push(ts[i] - ts[i - 1]);
     const interval = med(gaps);
+    const sg = gaps.slice().sort(function (a, b) { return a - b; }); // spread of restock gaps (for a range readout)
+    const gapLo = sg.length ? sg[0] : 0, gapHi = sg.length ? sg[sg.length - 1] : 0;
     const lastRs = ts[ts.length - 1], nextAt = lastRs + interval;
     const batch = med(rs.map(function (e) { return e[1]; }).filter(function (a) { return a > 0; }));
     const so = (rec.so || []).slice().sort(function (a, b) { return a - b; });
@@ -347,7 +349,7 @@
     so.forEach(function (st) { let pr = 0; for (let i = 0; i < ts.length; i++) { if (ts[i] < st) pr = ts[i]; else break; } if (pr) durs.push(st - pr); });
     const selloutDur = med(durs);
     const outDur = (interval && selloutDur && interval > selloutDur) ? interval - selloutDur : 0;
-    return { interval: interval, lastRs: lastRs, nextAt: nextAt, n: ts.length, lastSo: so.length ? so[so.length - 1] : 0, batch: batch, selloutDur: selloutDur, outDur: outDur, nSo: durs.length };
+    return { interval: interval, lastRs: lastRs, nextAt: nextAt, n: ts.length, lastSo: so.length ? so[so.length - 1] : 0, batch: batch, selloutDur: selloutDur, outDur: outDur, nSo: durs.length, gapLo: gapLo, gapHi: gapHi };
   }
 
   const POLL_MS = 5 * 60 * 1000;
@@ -415,12 +417,19 @@
     let nextRs = null, overdue = false; // next predicted restock; overdue = a predicted restock already passed unseen (data likely stale)
     if (rp && rp.nextAt && rp.interval > 0) {
       nextRs = rp.nextAt;
+      // If a sellout is MORE RECENT than our last logged restock, the restock that refilled it went unrecorded
+      // (the feed missed the +event) → lastRs+interval is stale/bogus. Re-anchor on that sellout + the typical
+      // empty gap, which is what actually predicts "when can I buy again."
+      if (rp.lastSo && rp.lastSo > rp.lastRs && rp.outDur > 0) nextRs = rp.lastSo + rp.outDur;
       if (nextRs < nowS) {
         if (nowS - nextRs < rp.interval) overdue = true;                       // just passed — it probably restocked; our stock data is stale
         else { let g = 0; while (nextRs < nowS && g++ < 5000) nextRs += rp.interval; } // long overdue → roll to the next future cycle
       }
     }
-    const rsNote = (nextRs && rp && nextRs >= nowS) ? " Next restock ~" + dur(nextRs - nowS) + " (≈" + new Date(nextRs * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + ")" + (rp.batch ? ", ~+" + rp.batch.toLocaleString() : "") + " — from " + rp.n + " seen, ~every " + dur(rp.interval) + "." : "";
+    // Highly irregular items (Xanax, Tequila…) have a wide gap spread — flag it so a point estimate reads as a window.
+    const wide = !!(rp && rp.interval > 0 && (rp.gapHi >= rp.interval * 2 || (rp.gapLo > 0 && rp.gapLo <= rp.interval / 3)));
+    const rangeTxt = wide ? " Irregular — usually ~" + dur(rp.interval) + ", but seen " + dur(rp.gapLo) + "–" + dur(rp.gapHi) + "." : "";
+    const rsNote = (nextRs && rp && nextRs >= nowS) ? " Next restock ~" + dur(nextRs - nowS) + " (≈" + new Date(nextRs * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + ")" + (rp.batch ? ", ~+" + rp.batch.toLocaleString() : "") + " — from " + rp.n + " seen, ~every " + dur(rp.interval) + "." + rangeTxt : "";
 
     // --- LONG flight: item restocks ≥1× in transit → availability is set by the CYCLE, not depletion ---
     if (rp && rp.interval > 0 && flight >= rp.interval) {
@@ -440,7 +449,7 @@
       return { cls: "warn", txt: "◐ Partial", tip: "Only " + st.toLocaleString() + " in stock — under your cap of " + cap + " (partial load) when " + landTxt + "." };
     }
     if (st <= 0) {
-      if (overdue) return { cls: "warn", txt: "↻ due", tip: "Shows as out, but a restock was due ~" + dur(nowS - rp.nextAt) + " ago (from " + rp.n + " seen, ~every " + dur(rp.interval) + ") — it may already be in stock. Hit ↻ Refresh to check." };
+      if (overdue) return { cls: "warn", txt: "↻ due", tip: "Out now and into its restock window (past the ~" + dur(rp.interval) + " average, from " + rp.n + " seen) — could pop any time." + rangeTxt + " Hit ↻ Refresh to check." };
       if (nextRs && nextRs <= arr) return { cls: "good", txt: "✓ In stock", tip: "Out now, but a fresh restock should land before " + landTxt + "." + rsNote };
       if (nextRs) return { cls: "bad", txt: "✗ Empty", tip: "Out now — restocks after " + landTxt + "." + rsNote };
       return { cls: "unk", txt: "?", tip: "Out now — not enough restock history yet to estimate the next one." };
@@ -1970,6 +1979,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.64.0", d: "Aug 18, 2026", c: ["🛬 Smarter restock ETA. When the feed misses a restock (item refilled while we weren’t polling), the old ‘last restock + interval’ estimate went stale and showed nonsense like ‘due 1h34m ago’ on an item that clearly had stock recently. Now, if a SELLOUT is more recent than the last logged restock, the ETA re-anchors on that sellout + the typical empty gap — a real forward-looking time (e.g. Bottle of Tequila: was ‘due 1h45m ago’, now ‘next restock ~24m’).", "🎲 Irregular items (Xanax, Tequila…) now show their spread in the tooltip — ‘usually ~8h, but seen 2m–13h’ — so ‘↻ due’ reads as a wide restock window, not a broken clock."] },
     { v: "1.63.1", d: "Aug 18, 2026", c: ["📱 Mobile fixes from real screenshots: (1) version now shows correctly on PDA (was ‘vUNDEFINED’ — PDA doesn’t expose GM_info.script.version, so the build injects it); (2) the Happy Jump ‘Best order’ checklist no longer scrambles into jumbled columns — the flex label was turning every bold phrase into its own column; (3) the ✈/💰 launcher button now hides behind the full-screen board on mobile instead of floating over the $/min column."] },
     { v: "1.63.0", d: "Aug 18, 2026", c: ["📱 Mobile ergonomics: the buyers/trade popover now opens as a full-screen sheet on a phone (it used to be a cramped, offset popover), rail icons and view/sort controls got bigger tap targets, and inputs are finger-sized. Desktop unchanged."] },
     { v: "1.62.0", d: "Aug 18, 2026", c: ["🛬 Landing ‘Empty’ now always shows the next-restock estimate + batch when we have the cadence — even for items that still have stock but sell out mid-flight (e.g. Jaguar Plushie). If no cadence is recorded yet, it says so instead of staying blank.", "🔄 Self-heal the shared restock/seasonal feed: Refresh now pulls it automatically if it isn’t loaded (fixes fresh installs — and mobile, where the feed sync used to fail for the same CORS reason as the board). This is what restores real restock estimates in the Landing tooltip."] },
