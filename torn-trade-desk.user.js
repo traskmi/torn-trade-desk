@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.55.1
+// @version      1.56.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -67,7 +67,7 @@
   function rtOf(cc) { const f = FLY[cc]; return f ? Math.max(1, Math.round(f.rt * travelMult())) : 0; }
   function travelLabel() { const m = (TRAVEL_METHODS[state.travelMethod] || TRAVEL_METHODS.std).short; return m + (state.travelBook ? " +book" : ""); }
   function recomputePpm() {
-    (state.rows || []).forEach(function (x) { const f = FLY[x.cc]; if (!f) return; x.ppm = Math.round((x.ppi * state.cap - f.fare) / rtOf(x.cc)); x.full = x.buy * state.cap; });
+    (state.rows || []).forEach(function (x) { const f = FLY[x.cc]; if (!f) return; x.ppm = loadPpm(x.cc, x.id, x.ppi, x.stock); x.full = x.buy * state.cap; });
     state.rows.sort(function (a, b) { return b.ppm - a.ppm; });
   }
   const TIME_OPTS = [[0, "⏱ Any time"], [60, "≤ 1h"], [90, "≤ 1½h"], [120, "≤ 2h"], [180, "≤ 3h"], [240, "≤ 4h"], [360, "≤ 6h"], [480, "≤ 8h"], [600, "≤ 10h"]];
@@ -255,6 +255,22 @@
     const ev = state._ev || (function () { try { return GM_getValue("stock_events", null) || {}; } catch (e) { return {}; } })();
     return ev[key];
   }
+  // Realistic single-trip buyable quantity for an item = the peak stock we've ever seen (or current, if higher).
+  // A trickle-restock item that tops out at 3 can only ever contribute ~3 to a load, however good its /ea profit.
+  function stockCeiling(cc, id, curStock) {
+    const rec = evRecord(cc, id);
+    return Math.max((rec && rec.max) || 0, curStock || 0);
+  }
+  // $/min the item realistically contributes to a shared-fare load: profit for the qty you can actually buy
+  // (min(cap, ceiling)), minus that qty's PRO-RATED share of the airfare (the flight is spread over the whole
+  // load), over the round trip. So a +3 item is ranked as its 3-slot contribution — not a fantasy full load, and
+  // not over-punished by the full fare as if you flew there only for it.
+  function loadPpm(cc, id, ppi, curStock) {
+    const f = FLY[cc]; if (!f) return 0;
+    const cap = state.cap, ceil = stockCeiling(cc, id, curStock);
+    const q = ceil > 0 ? Math.min(cap, ceil) : cap; // no stock evidence → assume it can fill (don't penalize unknowns)
+    return Math.round((ppi * q - f.fare * (q / cap)) / rtOf(cc));
+  }
   function seasonalRecord(cc, id) {
     const key = cc + ":" + id, sd = sharedFresh();
     if (sd && sd.seasonal && sd.seasonal[key]) return sd.seasonal[key];
@@ -369,9 +385,9 @@
     // --- LONG flight: item restocks ≥1× in transit → availability is set by the CYCLE, not depletion ---
     if (rp && rp.interval > 0 && flight >= rp.interval) {
       const frac = (rp.selloutDur > 0 && rp.interval > 0) ? Math.min(1, rp.selloutDur / rp.interval) : (st > 0 ? 1 : 0); // share of each cycle it holds stock ≈ odds it's up on arrival
-      if (rp.nSo === 0 || frac >= 0.6) return { cls: "good", txt: "✓ In stock", tip: "Usually in stock — should be available when " + landTxt + "." };
-      if (frac >= 0.25) return { cls: "warn", txt: "◐ Maybe", tip: "In stock only ~" + Math.round(frac * 100) + "% of the time — best right after a restock (~every " + dur(rp.interval) + ")." };
-      return { cls: "warn", txt: "◐ Maybe", tip: "Sells out fast — usually empty except just after a restock (~every " + dur(rp.interval) + ")." };
+      if (rp.nSo === 0 || frac >= 0.6) return { cls: "good", txt: "✓ In stock", tip: "Usually in stock — should be available when " + landTxt + "." + rsNote };
+      if (frac >= 0.25) return { cls: "warn", txt: "◐ Maybe", tip: "In stock only ~" + Math.round(frac * 100) + "% of the time — best right after a restock." + rsNote };
+      return { cls: "warn", txt: "◐ Maybe", tip: "Sells out fast — usually empty between restocks." + rsNote };
     }
 
     // --- SHORT hop (or no cycle data): does CURRENT stock survive, and does a restock beat you there? ---
@@ -398,8 +414,8 @@
   function arrivalOutlook(x) {
     const o = arrivalOutlookCore(x);
     if (o && x.ppi > 0) {
-      const rp = restockPredict(x.cc, x.id), rec = evRecord(x.cc, x.id);
-      const maxQ = Math.max((rec && rec.max) || 0, x.stock || 0); // realistic single-trip ceiling = peak stock ever seen
+      const rp = restockPredict(x.cc, x.id);
+      const maxQ = stockCeiling(x.cc, x.id, x.stock); // realistic single-trip ceiling = peak stock ever seen
       const cap = state.cap;
       if (maxQ > 0 && maxQ < cap) {
         o.underLoad = true; o.maxQ = maxQ;
@@ -471,7 +487,7 @@
           const ppi = sell - it.cost;
           if (ppi <= 0) return;
           const cap = state.cap;
-          const ppm = Math.round((ppi * cap - f.fare) / rtOf(cc));
+          const ppm = loadPpm(cc, it.id, ppi, it.quantity);
           rows.push({ id: it.id, name: it.name, cc: cc, country: f.name, buy: it.cost, sell: sell, stock: it.quantity, ppi: ppi, ppm: ppm, full: it.cost * cap, freshS: state.updates[cc], isTraderPrice: state.priceBasis === "trader" && traderSell > 0 });
         });
       });
@@ -1820,6 +1836,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.56.0", d: "Aug 12, 2026", c: ["📊 $/min now ranks by what you can REALISTICALLY buy, not a fantasy full load. Each item's $/min = profit for the quantity it actually stocks (min of your Cap and its peak stock) minus that quantity's pro-rated share of the airfare (the flight is spread across your whole load), over the round trip. So a trickle-restock item like Neumune (+3) ranks as its real 3-slot contribution — no longer inflated by a 28-load fantasy, but not over-punished by the full fare as if you flew there only for it. Items with plenty of stock are unchanged. (Profit ×N still shows the full-load figure with its ⚠.)", "🛬 The “◐ Maybe” Landing tooltip now includes the next-restock estimate + batch too (not just the cycle length)."] },
     { v: "1.55.1", d: "Aug 12, 2026", c: ["⚠ Reality check on “Profit ×N”: for items whose stock tops out below your Cap (e.g. a rare item that only restocks +3), the Profit column now shows a ⚠ and the Landing tooltip spells it out — “Tops out ~3 in stock — cannot fill a 28 load; a realistic trip nets ~$2.1M, not $20.1M.” So a big full-load number on a trickle-restock item won’t lure you into a 4-hour flight for three items."] },
     { v: "1.55.0", d: "Aug 12, 2026", c: ["🔄 Auto-refresh: while the panel is open on the board, it now re-pulls live data ~every 2.5 minutes on its own, so it catches restocks without you clicking ↻. Great for parking abroad and waiting for a restock — the “↻ due” flips to “✓ In stock” the moment it lands. (Only runs while open; a manual refresh and the auto one won’t overlap.)"] },
     { v: "1.54.6", d: "Aug 12, 2026", c: ["🛬 Restock ETA no longer silently jumps a whole cycle when the predicted time passes. When a restock was due but the board hasn’t caught it yet, Landing shows “↻ due” (amber) with “restock was due ~Xm ago — may already be in stock, hit ↻ Refresh” instead of quietly rolling the estimate to the next cycle."] },
