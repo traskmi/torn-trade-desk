@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.59.5
+// @version      1.60.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -889,6 +889,8 @@
     .tdk-bestonline{display:block;margin:8px 0 4px;padding:9px 12px;border:1px solid #4cc281;border-radius:99px;background:#16241c;color:#bfe9cf;text-decoration:none;font-size:13px}
     .tdk-bestonline:hover{background:#1c2f24}
     .tdk-bestonline b{color:#eafff2}
+    .tdk-bestonline .bo-rank{color:#8fd6a8;font-weight:400;font-size:11px;margin-left:7px}
+    .tdk-bestonline .bo-cmp{display:block;color:#a9d9bd;font-weight:400;font-size:11.5px;margin-top:4px;line-height:1.45}
     .tdk-brow{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid #2c2a21}
     .tdk-brow:last-child{border-bottom:none}
     .tdk-brow .bn{font-weight:700}
@@ -1242,10 +1244,12 @@
     if (!key) { const t = bx.querySelector(".tt"); if (t) t.innerHTML = 'Buyers · ' + name + '<small> — a W3B key is needed</small>'; return; }
     try {
       const j = await gmGet("https://weav3r.dev/api/marketplace/" + id + "/traders?apiKey=" + encodeURIComponent(key));
-      const traders = (j.traders || []).slice(0, 6);
+      const all = j.traders || [];
+      const traders = all.slice(0, 6);          // top buyers by price — the primary list
+      const pool = all.slice(0, 20);            // scan status deeper so an offline top-of-book still yields a reachable buyer
       const tkey = GM_getValue("torn_key", ""), status = {};
-      if (tkey && traders.length) {
-        await Promise.all(traders.map(function (t) {
+      if (tkey && pool.length) {
+        await Promise.all(pool.map(function (t) {
           return gmGet("https://api.torn.com/user/" + t.player_id + "/?selections=profile&key=" + encodeURIComponent(tkey))
             .then(function (p) { status[t.player_id] = (p && p.last_action && p.last_action.status) || "?"; })
             .catch(function () { status[t.player_id] = "?"; });
@@ -1253,14 +1257,33 @@
       }
       const dot = function (s) { return STATUS_DOT[s] || "❔"; };
       const tradeUrl = function (pid) { return "https://www.torn.com/trade.php#step=start&userID=" + pid; };
-      const bestOn = traders.find(function (t) { return status[t.player_id] === "Online"; }) ||
-        traders.find(function (t) { return status[t.player_id] === "Idle"; });
-      const head = '<div class="tdk-bh"><div class="tt">Buyers · ' + name + '<small> — ' + (j.total_count || traders.length) + ' buying' + (tkey ? ' · online first' : '') + '</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>';
-      const banner = bestOn
-        ? '<a class="tdk-bestonline" href="' + tradeUrl(bestOn.player_id) + '" target="_blank" rel="noopener" data-uid="' + bestOn.player_id + '" data-price="' + bestOn.price + '">⚡ Trade best ' + (status[bestOn.player_id] === "Online" ? "online" : "idle") + ': <b>' + bestOn.player_name + '</b> @ $' + bestOn.price.toLocaleString() + ' ' + dot(status[bestOn.player_id]) + '</a>'
-        : '<div class="tdk-sub" style="padding:6px 2px">' + (tkey ? 'None of the top buyers are online right now.' : 'Add your Torn API key to flag who’s online.') + '</div>';
+      // Best REACHABLE buyer: highest-priced Online (then Idle) anywhere in the scanned pool — not just the top 6.
+      const bestOn = pool.find(function (t) { return status[t.player_id] === "Online"; }) ||
+        pool.find(function (t) { return status[t.player_id] === "Idle"; });
+      const topOffer = all[0];
+      const total = j.total_count || all.length;
+      const head = '<div class="tdk-bh"><div class="tt">Buyers · ' + name + '<small> — ' + total + ' buying' + (tkey ? ' · best online flagged' : '') + '</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>';
+      let banner;
+      if (!tkey) {
+        banner = '<div class="tdk-sub" style="padding:6px 2px">Add your Torn API key to flag who’s online.</div>';
+      } else if (!bestOn) {
+        banner = '<div class="tdk-sub" style="padding:6px 2px">None of the top ' + pool.length + ' buyers are online — best price is ' + (topOffer ? '<b>' + topOffer.player_name + '</b> @ $' + topOffer.price.toLocaleString() : '<b>—</b>') + ' (offline). Check back for a live buyer.</div>';
+      } else {
+        const onLbl = status[bestOn.player_id] === "Online" ? "online" : "idle";
+        const rankIdx = all.findIndex(function (t) { return t.player_id === bestOn.player_id; });
+        const isTop = topOffer && bestOn.player_id === topOffer.player_id;
+        const gap = topOffer ? topOffer.price - bestOn.price : 0;
+        const pct = (topOffer && topOffer.price) ? (gap / topOffer.price * 100) : 0;
+        const cmp = isTop
+          ? 'this is the top buyer — grab it'
+          : 'sell now for <b>$' + gap.toLocaleString() + '</b>/ea less (' + pct.toFixed(1) + '%) than the top offer — ' + topOffer.player_name + ' @ $' + topOffer.price.toLocaleString() + ' (offline). Sell now, or wait for a higher buyer to log on.';
+        banner = '<a class="tdk-bestonline" href="' + tradeUrl(bestOn.player_id) + '" target="_blank" rel="noopener" data-uid="' + bestOn.player_id + '" data-price="' + bestOn.price + '">⚡ Best ' + onLbl + ': <b>' + bestOn.player_name + '</b> @ $' + bestOn.price.toLocaleString() + ' ' + dot(status[bestOn.player_id]) + '<span class="bo-rank">#' + (rankIdx + 1) + ' of ' + total + '</span><span class="bo-cmp">' + cmp + '</span></a>';
+      }
       const rank = function (t) { const s = status[t.player_id]; return s === "Online" ? 0 : s === "Idle" ? 1 : s === "Offline" ? 3 : 2; };
-      const sorted = traders.map(function (t, i) { return { t: t, i: i }; })
+      // Show the top 6 by price, plus the best online buyer if they rank deeper than that, so their rating/profile is visible too.
+      const displaySet = traders.slice();
+      if (bestOn && !displaySet.some(function (t) { return t.player_id === bestOn.player_id; })) displaySet.push(bestOn);
+      const sorted = displaySet.map(function (t, i) { return { t: t, i: i }; })
         .sort(function (a, b) { return (rank(a.t) - rank(b.t)) || (a.i - b.i); }).map(function (x) { return x.t; });
       let owned = 0, ownedStale = false;
       if (tkey) { try { const inv = await loadInv(tkey); if (inv.length) { const f = inv.find(function (it) { return (it.ID || it.id || it.item_id) == id; }); owned = f ? (f.quantity || 0) : 0; } } catch (e) { } }
@@ -1939,6 +1962,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.60.0", d: "Aug 17, 2026", c: ["⚡ Buyers panel now finds the best REACHABLE buyer. It used to only check whether the top 6 were online — so if the whole top of the book was offline you just got ‘None online’. Now it scans online status ~20 deep and surfaces the highest-priced <b>online (or idle)</b> buyer, with a sell-now-vs-wait readout: how much less per-item they pay than the top (offline) offer and where they rank (e.g. ‘#6 of 399’). That buyer’s row is also added to the list so you can see their rep before trading."] },
     { v: "1.59.0", d: "Aug 17, 2026", c: ["📱 Mobile-ready. Added a responsive layout (≤560px) so the panel fills the screen, the icon rail + buttons get finger-sized tap targets, and the 5-column board shrinks to fit a phone without horizontal scroll. Runs the SAME script on Android — install it in <b>Torn PDA</b> (userscripts), or Firefox/Kiwi + Tampermonkey. Desktop layout is unchanged. (If a call to YATA/the shared feed is blocked inside PDA, that's the GM bridge — ping me and I'll add a fallback.)"] },
     { v: "1.58.0", d: "Aug 17, 2026", c: ["✈ ‘Best trip’ now shows TWO plays: <b>all funds</b> (the best load if you liquidate stocks — cash + stock value) and <b>cash only</b> (the best load your cash in hand covers right now). Each is budget-capped — it fills only what you can actually afford (after airfare) — so the cash-only pick may be a smaller load or a different country. If your cash already covers the best play, it collapses to one line (‘affordable now’)."] },
     { v: "1.57.0", d: "Aug 12, 2026", c: ["✈ New ‘Best trip’ up top: picks the destination whose best FULL LOAD earns the most $/min — fills your Cap with the highest profit/ea items it actually stocks (e.g. 3× Neumune + the rest) — and shows what to buy, the net after airfare, and the load cost. Respects your country filter.", "🔀 Sort dropdown (Landing / $/min / Profit / Stock) next to the view buttons, so you can sort in ANY view — e.g. flip to Departures and sort Landing to float all the BOARDING ones to the top. (Table column headers still work too.)", "🛬 Departures rows now have the full Landing tooltip on hover (restock ETA, ‘tops out ~N’, etc.) and the ⚠ full-load flag — same juicy info as the table."] },
