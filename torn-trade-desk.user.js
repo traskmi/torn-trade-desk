@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.55.0
+// @version      1.55.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -346,7 +346,7 @@
   //    item holds stock = selloutDur/interval), NOT by draining current stock to zero;
   //  - a SHORT hop (< one restock cycle, or no cycle data) → the near-term question: does CURRENT stock survive the
   //    trip, and if it sells out, does a restock land before you do?
-  function arrivalOutlook(x) {
+  function arrivalOutlookCore(x) {
     if (!FLY[x.cc]) return null;
     const nowS = Math.floor(Date.now() / 1000);
     let arr;
@@ -392,6 +392,22 @@
     const rsAfterOut = (rp && rp.outDur) ? outAt + rp.outDur : nextRs; // the restock following this stock selling out
     if (rsAfterOut && rsAfterOut <= arr) return { cls: "good", txt: "✓ In stock", tip: "Sells out mid-flight, but should restock before " + landTxt + "." + rsNote };
     return { cls: "bad", txt: "✗ Empty", tip: "Likely sold out before " + landTxt + "." + rsNote };
+  }
+  // Wrap the outlook: flag items whose stock tops out below your Cap, so the "Profit ×N" full-load figure (and its
+  // $/min) aren't mistaken for reality — a rare item that restocks +3 will never fill a 28 load, however good /ea.
+  function arrivalOutlook(x) {
+    const o = arrivalOutlookCore(x);
+    if (o && x.ppi > 0) {
+      const rp = restockPredict(x.cc, x.id), rec = evRecord(x.cc, x.id);
+      const maxQ = Math.max((rec && rec.max) || 0, x.stock || 0); // realistic single-trip ceiling = peak stock ever seen
+      const cap = state.cap;
+      if (maxQ > 0 && maxQ < cap) {
+        o.underLoad = true; o.maxQ = maxQ;
+        o.tip += ' ⚠ Tops out ~' + maxQ.toLocaleString() + ' in stock' + (rp && rp.batch ? ' (restocks ~+' + rp.batch.toLocaleString() + ')' : '') +
+          " — you can't fill a " + cap + " load, so a realistic trip nets ~" + money(x.ppi * maxQ) + ", not the " + money(x.ppi * cap) + " full-load figure.";
+      }
+    }
+    return o;
   }
 
   async function loadOC(key) {
@@ -571,6 +587,7 @@
     #tdk-board table.tdk td.l .nm,#tdk-board table.tdk td.l .cy,#tdk-board table.tdk td.l .cy2{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .ppm{color:#d9b441;font-weight:800}
     .gd{color:#4cc281;font-weight:700}
+    .loadwarn{color:#e2933f;font-size:11px;cursor:help;margin-left:2px}
     .chip{font-family:system-ui,sans-serif;font-size:10px;font-weight:700;padding:2px 7px;border-radius:999px}
     .c-ok{color:#4cc281;background:#16281d}.c-low{color:#e2933f;background:#2c2114}.c-out{color:#e5615c;background:#2c1717}
     .tk-tr{font-size:9px;margin-right:4px;vertical-align:middle}.tk-tr.up{color:#4cc281}.tk-tr.dn{color:#e5615c}
@@ -1028,6 +1045,7 @@
       const ol = x._ol;
       const sellTag = x.isTraderPrice ? ' <span style="font-size:9px;color:#d9b441;" title="Priced off top trader buy-offer">⚡</span>' : '';
       const profit = money(x.ppi * cap), ppmTxt = '$' + x.ppm.toLocaleString();
+      const loadWarn = (ol && ol.underLoad) ? ' <span class="loadwarn" title="' + escAttr("Tops out ~" + ol.maxQ + " in stock — cannot fill a full " + cap + " load; a realistic trip nets ~" + money(x.ppi * ol.maxQ)) + '">⚠</span>' : '';
       const ldPill = ol ? '<span class="ld ld-' + ol.cls + '" title="' + escAttr(ol.tip) + '">' + ol.txt + '</span>' : '<span class="ld ld-unk">·</span>';
       const nm = '<span class="nm">' + x.name + mark + '</span>';
       const dataAttr = ' data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '"';
@@ -1061,7 +1079,7 @@
         '<td class="l">' + nm +
           '<div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + rtTxt + ago(x.freshS) + ' old' + ocBadge + '</div>' +
           '<div class="cy2">' + money(x.buy) + ' → ' + money(x.sell) + sellTag + ' · ' + loadInline + '</div></td>' +
-        '<td class="gd">' + profit + '</td>' +
+        '<td class="gd">' + profit + loadWarn + '</td>' +
         '<td>' + sc + '</td>' +
         '<td class="ldc">' + ldPill + '</td>' +
         '<td class="ppm">' + ppmTxt + '</td></tr>';
@@ -1802,6 +1820,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.55.1", d: "Aug 12, 2026", c: ["⚠ Reality check on “Profit ×N”: for items whose stock tops out below your Cap (e.g. a rare item that only restocks +3), the Profit column now shows a ⚠ and the Landing tooltip spells it out — “Tops out ~3 in stock — cannot fill a 28 load; a realistic trip nets ~$2.1M, not $20.1M.” So a big full-load number on a trickle-restock item won’t lure you into a 4-hour flight for three items."] },
     { v: "1.55.0", d: "Aug 12, 2026", c: ["🔄 Auto-refresh: while the panel is open on the board, it now re-pulls live data ~every 2.5 minutes on its own, so it catches restocks without you clicking ↻. Great for parking abroad and waiting for a restock — the “↻ due” flips to “✓ In stock” the moment it lands. (Only runs while open; a manual refresh and the auto one won’t overlap.)"] },
     { v: "1.54.6", d: "Aug 12, 2026", c: ["🛬 Restock ETA no longer silently jumps a whole cycle when the predicted time passes. When a restock was due but the board hasn’t caught it yet, Landing shows “↻ due” (amber) with “restock was due ~Xm ago — may already be in stock, hit ↻ Refresh” instead of quietly rolling the estimate to the next cycle."] },
     { v: "1.54.5", d: "Aug 12, 2026", c: ["🛬 Landing tooltip now shows the next-restock estimate when an item is Empty (or about to sell out): “Next restock ~in 14m (≈3:42 PM), ~+250 — from 8 seen, ~every 4h.” Great for deciding whether to wait for a restock while you’re already abroad."] },
