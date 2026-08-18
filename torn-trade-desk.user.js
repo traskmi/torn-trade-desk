@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.58.0
+// @version      1.59.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -908,7 +908,28 @@
     .tdk-pkedit{cursor:pointer;margin-left:6px;opacity:.7;font-weight:400}
     .tdk-pkedit:hover{opacity:1;color:#d9b441}
     .tdk-pdq{width:80px}
-    `;
+    /* ---- Mobile / Torn PDA (narrow webview): fill the screen, fatten touch targets, shrink the board so 5 cols still fit ---- */
+    @media (max-width: 560px) {
+      #tdk-btn{bottom:64px;right:14px;width:50px;height:50px;font-size:21px} /* clear Torn PDA's bottom nav bar */
+      #tdk-panel{left:5px;right:5px;top:5px;bottom:5px;width:auto;max-height:none;border-radius:12px}
+      .tdk-col{max-height:none}
+      .tdk-rail{flex:0 0 46px;width:46px;padding:8px 5px;gap:5px}
+      .tdk-rail .tdk-btn2{width:38px;height:38px} /* keep tap targets ~38px */
+      .tdk-rail .tdk-btn2 i{font-size:19px}
+      .tdk-topbar{padding:10px 42px 8px 12px;gap:7px}
+      .tdk-vsw{flex-wrap:wrap;padding:0 12px 8px}
+      .tdk-vsw button{width:34px;height:30px}
+      .tdk-sortwrap select{min-height:30px}
+      #tdk-board table.tdk th,#tdk-board table.tdk td{padding-left:5px;padding-right:5px}
+      #tdk-board table.tdk{font-size:11.5px}
+      #tdk-board table.tdk th[data-sort="fullprofit"]{width:60px}
+      #tdk-board table.tdk th[data-sort="stock"]{width:46px}
+      #tdk-board table.tdk th.ld{width:62px}
+      #tdk-board table.tdk th[data-sort="ppm"]{width:56px}
+      #tdk-board table.tdk td.ppm,#tdk-board table.tdk th[data-sort="ppm"]{padding-right:8px}
+      .tk-cards,.tk-lb,.tk-flipwrap{padding-left:8px;padding-right:8px}
+      .tdk-picks{font-size:12px}
+    }`;
   }
   function setStatus(msg, err) { const s = host.querySelector("#tdk-status"); if (s) { s.textContent = msg; s.className = "tdk-status" + (err ? " err" : ""); } }
   const KEYERR = /incorrect key|key is empty|key.*disabled|access level|owner of this|invalid/i;
@@ -1897,6 +1918,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.59.0", d: "Aug 17, 2026", c: ["📱 Mobile-ready. Added a responsive layout (≤560px) so the panel fills the screen, the icon rail + buttons get finger-sized tap targets, and the 5-column board shrinks to fit a phone without horizontal scroll. Runs the SAME script on Android — install it in <b>Torn PDA</b> (userscripts), or Firefox/Kiwi + Tampermonkey. Desktop layout is unchanged. (If a call to YATA/the shared feed is blocked inside PDA, that's the GM bridge — ping me and I'll add a fallback.)"] },
     { v: "1.58.0", d: "Aug 17, 2026", c: ["✈ ‘Best trip’ now shows TWO plays: <b>all funds</b> (the best load if you liquidate stocks — cash + stock value) and <b>cash only</b> (the best load your cash in hand covers right now). Each is budget-capped — it fills only what you can actually afford (after airfare) — so the cash-only pick may be a smaller load or a different country. If your cash already covers the best play, it collapses to one line (‘affordable now’)."] },
     { v: "1.57.0", d: "Aug 12, 2026", c: ["✈ New ‘Best trip’ up top: picks the destination whose best FULL LOAD earns the most $/min — fills your Cap with the highest profit/ea items it actually stocks (e.g. 3× Neumune + the rest) — and shows what to buy, the net after airfare, and the load cost. Respects your country filter.", "🔀 Sort dropdown (Landing / $/min / Profit / Stock) next to the view buttons, so you can sort in ANY view — e.g. flip to Departures and sort Landing to float all the BOARDING ones to the top. (Table column headers still work too.)", "🛬 Departures rows now have the full Landing tooltip on hover (restock ETA, ‘tops out ~N’, etc.) and the ⚠ full-load flag — same juicy info as the table."] },
     { v: "1.56.0", d: "Aug 12, 2026", c: ["📊 $/min now ranks by what you can REALISTICALLY buy, not a fantasy full load. Each item's $/min = profit for the quantity it actually stocks (min of your Cap and its peak stock) minus that quantity's pro-rated share of the airfare (the flight is spread across your whole load), over the round trip. So a trickle-restock item like Neumune (+3) ranks as its real 3-slot contribution — no longer inflated by a 28-load fantasy, but not over-punished by the full fare as if you flew there only for it. Items with plenty of stock are unchanged. (Profit ×N still shows the full-load figure with its ⚠.)", "🛬 The “◐ Maybe” Landing tooltip now includes the next-restock estimate + batch too (not just the cycle length)."] },
