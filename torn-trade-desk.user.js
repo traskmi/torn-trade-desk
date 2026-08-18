@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.61.0
+// @version      1.61.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -24,26 +24,6 @@
 
 (function () {
   "use strict";
-
-  /* ---------- boot diagnostic (temporary; helps confirm injection on Torn PDA / mobile) ----------
-     A green "TDK loaded" chip proves the script injected even if it later crashes; an uncaught error
-     paints a red chip with the message so we can see WHY the panel didn't draw. Both self-remove. */
-  try {
-    window.addEventListener("error", function (ev) {
-      try {
-        if (document.getElementById("tdk-err")) return;
-        var d = document.createElement("div"); d.id = "tdk-err";
-        d.textContent = "TDK error: " + ((ev && (ev.message || (ev.error && ev.error.message))) || "unknown");
-        d.style.cssText = "position:fixed;left:6px;right:6px;bottom:6px;z-index:2147483647;background:#2a1414;color:#ff9a9a;border:1px solid #d9534f;border-radius:8px;padding:7px 10px;font:12px system-ui,-apple-system,sans-serif;white-space:pre-wrap";
-        (document.body || document.documentElement).appendChild(d);
-      } catch (_) { }
-    });
-    var _boot = document.createElement("div"); _boot.id = "tdk-boot";
-    _boot.textContent = "TDK loaded" + (typeof GM_getValue === "function" ? " · GM ok" : " · NO GM");
-    _boot.style.cssText = "position:fixed;left:6px;bottom:6px;z-index:2147483647;background:#14130f;color:#4cc281;border:1px solid #4cc281;border-radius:8px;padding:4px 8px;font:12px system-ui,-apple-system,sans-serif";
-    (document.body || document.documentElement).appendChild(_boot);
-    setTimeout(function () { try { if (_boot && _boot.parentNode) _boot.parentNode.removeChild(_boot); } catch (_) { } }, 10000);
-  } catch (_) { }
 
   /* ---------- static: flights (round-trip minutes + airfare), no private island ---------- */
   const FLY = {
@@ -1977,6 +1957,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.61.1", d: "Aug 18, 2026", c: ["🧹 Removed the temporary green ‘TDK loaded’ boot chip / diagnostics used to debug Torn PDA. Mobile is confirmed working via the minified PDA build."] },
     { v: "1.61.0", d: "Aug 18, 2026", c: ["📱 Mobile fix: data now loads on Torn PDA. PDA's GM_xmlhttpRequest can't make cross-origin calls, so YATA/feed/Torn-API fetches failed with ‘network’. Since all those hosts allow CORS, the fetcher now falls back to a plain fetch() when GM_xmlhttpRequest errors — desktop is unchanged (still uses GM_xmlhttpRequest). Runs from the minified PDA build (torn-trade-desk.pda.user.js)."] },
     { v: "1.60.0", d: "Aug 17, 2026", c: ["⚡ Buyers panel now finds the best REACHABLE buyer. It used to only check whether the top 6 were online — so if the whole top of the book was offline you just got ‘None online’. Now it scans online status ~20 deep and surfaces the highest-priced <b>online (or idle)</b> buyer, with a sell-now-vs-wait readout: how much less per-item they pay than the top (offline) offer and where they rank (e.g. ‘#6 of 399’). That buyer’s row is also added to the list so you can see their rep before trading."] },
     { v: "1.59.0", d: "Aug 17, 2026", c: ["📱 Mobile-ready. Added a responsive layout (≤560px) so the panel fills the screen, the icon rail + buttons get finger-sized tap targets, and the 5-column board shrinks to fit a phone without horizontal scroll. Runs the SAME script on Android — install it in <b>Torn PDA</b> (userscripts), or Firefox/Kiwi + Tampermonkey. Desktop layout is unchanged. (If a call to YATA/the shared feed is blocked inside PDA, that's the GM bridge — ping me and I'll add a fallback.)"] },
@@ -2964,4 +2945,3 @@
   // Auto-refresh the board while the panel is open (board view) so it catches restocks live — ~every 2.5 min.
   setInterval(function () { try { if (panel && panel.classList.contains("open") && state.view !== "inv" && Date.now() - (state._lastRefreshAt || 0) > 145000) refresh(true); } catch (e) { } }, 30 * 1000);
 })();
-// >>>>> TDK-END-OF-FILE-MARKER-1595 <<<<<
