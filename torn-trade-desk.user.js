@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.60.0
+// @version      1.61.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -97,15 +97,30 @@
   function gmGet(url, timeoutMs) {
     return new Promise(function (resolve, reject) {
       function fail(kind, msg, status) { const err = new Error(msg); err.kind = kind; err.url = url; if (status) err.status = status; reject(err); }
-      GM_xmlhttpRequest({
-        method: "GET", url: url, timeout: timeoutMs || 20000,
-        onload: function (r) {
-          if (r.status < 200 || r.status >= 300) return fail("http", "HTTP " + r.status, r.status);
-          try { resolve(JSON.parse(r.responseText)); } catch (e) { fail("json", "bad JSON from " + url); }
-        },
-        onerror: function () { fail("network", "network error: " + url); },
-        ontimeout: function () { fail("timeout", "timeout: " + url); }
-      });
+      // Fallback for environments whose GM_xmlhttpRequest can't do cross-origin (e.g. Torn PDA's webview):
+      // all our data hosts send Access-Control-Allow-Origin:*, so a plain fetch works there.
+      function tryFetch() {
+        if (typeof fetch !== "function") return fail("network", "no fetch: " + url);
+        const ctrl = (typeof AbortController === "function") ? new AbortController() : null;
+        const to = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) { } }, timeoutMs || 20000) : null;
+        fetch(url, ctrl ? { signal: ctrl.signal } : undefined).then(function (r) {
+          if (to) clearTimeout(to);
+          if (!r.ok) return fail("http", "HTTP " + r.status, r.status);
+          return r.text().then(function (t) { try { resolve(JSON.parse(t)); } catch (e) { fail("json", "bad JSON from " + url); } });
+        }).catch(function () { if (to) clearTimeout(to); fail("network", "network error: " + url); });
+      }
+      if (typeof GM_xmlhttpRequest !== "function") return tryFetch();
+      try {
+        GM_xmlhttpRequest({
+          method: "GET", url: url, timeout: timeoutMs || 20000,
+          onload: function (r) {
+            if (r.status < 200 || r.status >= 300) return fail("http", "HTTP " + r.status, r.status);
+            try { resolve(JSON.parse(r.responseText)); } catch (e) { fail("json", "bad JSON from " + url); }
+          },
+          onerror: function () { tryFetch(); },   // PDA's GM_xhr can't cross-origin → retry with fetch (CORS-allowed hosts)
+          ontimeout: function () { tryFetch(); }
+        });
+      } catch (e) { tryFetch(); }
     });
   }
   function tornKey() {
@@ -1962,6 +1977,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.61.0", d: "Aug 18, 2026", c: ["📱 Mobile fix: data now loads on Torn PDA. PDA's GM_xmlhttpRequest can't make cross-origin calls, so YATA/feed/Torn-API fetches failed with ‘network’. Since all those hosts allow CORS, the fetcher now falls back to a plain fetch() when GM_xmlhttpRequest errors — desktop is unchanged (still uses GM_xmlhttpRequest). Runs from the minified PDA build (torn-trade-desk.pda.user.js)."] },
     { v: "1.60.0", d: "Aug 17, 2026", c: ["⚡ Buyers panel now finds the best REACHABLE buyer. It used to only check whether the top 6 were online — so if the whole top of the book was offline you just got ‘None online’. Now it scans online status ~20 deep and surfaces the highest-priced <b>online (or idle)</b> buyer, with a sell-now-vs-wait readout: how much less per-item they pay than the top (offline) offer and where they rank (e.g. ‘#6 of 399’). That buyer’s row is also added to the list so you can see their rep before trading."] },
     { v: "1.59.0", d: "Aug 17, 2026", c: ["📱 Mobile-ready. Added a responsive layout (≤560px) so the panel fills the screen, the icon rail + buttons get finger-sized tap targets, and the 5-column board shrinks to fit a phone without horizontal scroll. Runs the SAME script on Android — install it in <b>Torn PDA</b> (userscripts), or Firefox/Kiwi + Tampermonkey. Desktop layout is unchanged. (If a call to YATA/the shared feed is blocked inside PDA, that's the GM bridge — ping me and I'll add a fallback.)"] },
     { v: "1.58.0", d: "Aug 17, 2026", c: ["✈ ‘Best trip’ now shows TWO plays: <b>all funds</b> (the best load if you liquidate stocks — cash + stock value) and <b>cash only</b> (the best load your cash in hand covers right now). Each is budget-capped — it fills only what you can actually afford (after airfare) — so the cash-only pick may be a smaller load or a different country. If your cash already covers the best play, it collapses to one line (‘affordable now’)."] },
