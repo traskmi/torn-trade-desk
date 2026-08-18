@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.59.0
+// @version      1.59.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -23,6 +23,26 @@
 
 (function () {
   "use strict";
+
+  /* ---------- boot diagnostic (temporary; helps confirm injection on Torn PDA / mobile) ----------
+     A green "TDK loaded" chip proves the script injected even if it later crashes; an uncaught error
+     paints a red chip with the message so we can see WHY the panel didn't draw. Both self-remove. */
+  try {
+    window.addEventListener("error", function (ev) {
+      try {
+        if (document.getElementById("tdk-err")) return;
+        var d = document.createElement("div"); d.id = "tdk-err";
+        d.textContent = "TDK error: " + ((ev && (ev.message || (ev.error && ev.error.message))) || "unknown");
+        d.style.cssText = "position:fixed;left:6px;right:6px;bottom:6px;z-index:2147483647;background:#2a1414;color:#ff9a9a;border:1px solid #d9534f;border-radius:8px;padding:7px 10px;font:12px system-ui,-apple-system,sans-serif;white-space:pre-wrap";
+        (document.body || document.documentElement).appendChild(d);
+      } catch (_) { }
+    });
+    var _boot = document.createElement("div"); _boot.id = "tdk-boot";
+    _boot.textContent = "TDK loaded" + (typeof GM_getValue === "function" ? " · GM ok" : " · NO GM");
+    _boot.style.cssText = "position:fixed;left:6px;bottom:6px;z-index:2147483647;background:#14130f;color:#4cc281;border:1px solid #4cc281;border-radius:8px;padding:4px 8px;font:12px system-ui,-apple-system,sans-serif";
+    (document.body || document.documentElement).appendChild(_boot);
+    setTimeout(function () { try { if (_boot && _boot.parentNode) _boot.parentNode.removeChild(_boot); } catch (_) { } }, 10000);
+  } catch (_) { }
 
   /* ---------- static: flights (round-trip minutes + airfare), no private island ---------- */
   const FLY = {
