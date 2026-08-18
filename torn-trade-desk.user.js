@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.54.4
+// @version      1.54.5
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -358,6 +358,7 @@
     const dur = function (s) { return fmtDur(Math.max(0, Math.round(s))); };
     let nextRs = null; // next predicted restock at/after now
     if (rp && rp.nextAt && rp.interval > 0) { nextRs = rp.nextAt; let g = 0; while (nextRs < nowS && g++ < 5000) nextRs += rp.interval; }
+    const rsNote = (nextRs && rp) ? " Next restock ~" + dur(nextRs - nowS) + " (≈" + new Date(nextRs * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + ")" + (rp.batch ? ", ~+" + rp.batch.toLocaleString() : "") + " — from " + rp.n + " seen, ~every " + dur(rp.interval) + "." : "";
 
     // --- LONG flight: item restocks ≥1× in transit → availability is set by the CYCLE, not depletion ---
     if (rp && rp.interval > 0 && flight >= rp.interval) {
@@ -377,13 +378,13 @@
       return { cls: "warn", txt: "◐ Partial", tip: "Only " + st.toLocaleString() + " in stock — under your cap of " + cap + " (partial load) when " + landTxt + "." };
     }
     if (st <= 0) {
-      if (nextRs && nextRs <= arr) return { cls: "good", txt: "✓ In stock", tip: "Out now, but a fresh restock should land before " + landTxt + "." };
-      if (nextRs) return { cls: "bad", txt: "✗ Empty", tip: "Out now — next restock is after " + landTxt + "." };
-      return { cls: "unk", txt: "?", tip: "Out now — not enough history yet to predict the next restock." };
+      if (nextRs && nextRs <= arr) return { cls: "good", txt: "✓ In stock", tip: "Out now, but a fresh restock should land before " + landTxt + "." + rsNote };
+      if (nextRs) return { cls: "bad", txt: "✗ Empty", tip: "Out now — restocks after " + landTxt + "." + rsNote };
+      return { cls: "unk", txt: "?", tip: "Out now — not enough restock history yet to estimate the next one." };
     }
     const rsAfterOut = (rp && rp.outDur) ? outAt + rp.outDur : nextRs; // the restock following this stock selling out
-    if (rsAfterOut && rsAfterOut <= arr) return { cls: "good", txt: "✓ In stock", tip: "Sells out mid-flight, but should restock before " + landTxt + "." };
-    return { cls: "bad", txt: "✗ Empty", tip: "Likely sold out before " + landTxt + "." };
+    if (rsAfterOut && rsAfterOut <= arr) return { cls: "good", txt: "✓ In stock", tip: "Sells out mid-flight, but should restock before " + landTxt + "." + rsNote };
+    return { cls: "bad", txt: "✗ Empty", tip: "Likely sold out before " + landTxt + "." + rsNote };
   }
 
   async function loadOC(key) {
@@ -1792,6 +1793,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.54.5", d: "Aug 12, 2026", c: ["🛬 Landing tooltip now shows the next-restock estimate when an item is Empty (or about to sell out): “Next restock ~in 14m (≈3:42 PM), ~+250 — from 8 seen, ~every 4h.” Great for deciding whether to wait for a restock while you’re already abroad."] },
     { v: "1.54.4", d: "Aug 12, 2026", c: ["🛒 Fixed the Item Market info banner colliding with the listings header (Torn reshaped that page). It now sits above the whole listings block and spans full width in either layout, so it no longer overlaps the first rows."] },
     { v: "1.54.3", d: "Aug 12, 2026", c: ["😊 Dropped Box of Tissues from the jump checklist — they’re too marginal (5–20 happy, capped ~20% of max) to be worth the step. Step 3 now just: candies, then eDVDs, up to ~50,000."] },
     { v: "1.54.2", d: "Aug 12, 2026", c: ["😊 Happy Jump checklist now says where to get Box of Tissues — Bits ’n’ Bobs (~$20 each), with a direct shop link. (Heads-up: tissues are a minor happy source, capped ~20% of your max, so candies/eDVDs still do the real work.)"] },
