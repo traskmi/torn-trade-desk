@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.57.0
+// @version      1.58.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -274,16 +274,18 @@
   // Best TRIP: for each destination, fill your Cap slots with the highest profit/ea items it actually stocks
   // (3 of a +3 item, then the rest with the next-best), and rank destinations by the whole load's $/min. This is
   // the honest "where should I fly + what do I buy" — the airfare is shared across the full load, not one item.
-  function bestTrip(rows) {
+  function bestTrip(rows, budget) {
     const cap = state.cap, byCC = {};
     (rows || state.rows || []).forEach(function (r) { (byCC[r.cc] || (byCC[r.cc] = [])).push(r); });
     let best = null;
     Object.keys(byCC).forEach(function (cc) {
       const f = FLY[cc]; if (!f) return;
+      const goods = (budget != null) ? Math.max(0, budget - f.fare) : null; // spend cap on goods, after the airfare
       const items = byCC[cc].slice().sort(function (a, b) { return b.ppi - a.ppi; });
       let remaining = cap, loadProfit = 0, loadCost = 0; const picks = [];
       for (let i = 0; i < items.length && remaining > 0; i++) {
-        const it = items[i], take = Math.min(remaining, stockCeiling(it.cc, it.id, it.stock));
+        const it = items[i]; let take = Math.min(remaining, stockCeiling(it.cc, it.id, it.stock));
+        if (goods != null && it.buy > 0) take = Math.min(take, Math.floor(Math.max(0, goods - loadCost) / it.buy)); // stop at what you can afford
         if (take <= 0) continue;
         picks.push({ name: it.name, qty: take }); loadProfit += it.ppi * take; loadCost += it.buy * take; remaining -= take;
       }
@@ -591,6 +593,8 @@
     .tdk-best .k{color:#928b78;font-size:12px;margin-top:4px}
     .tdk-best .k b{color:#d9b441;font-family:ui-monospace,monospace}
     .tdk-besttrip{padding-bottom:9px;margin-bottom:9px;border-bottom:1px dashed #3a3729}
+    .tdk-besttrip.cashonly{border-left:2px solid #4a7c4a;padding-left:8px;margin-left:-2px}
+    .tdk-besttrip.cashonly .l{color:#7fbf7f}
     .tdk-picks{font-size:11.5px;color:#c3bda9;margin-top:5px;line-height:1.55}
     .tdk-picks b{color:#d9b441;font-family:ui-monospace,monospace;font-weight:700}
     #tdk-best .hv{color:#928b78;font-size:11px}
@@ -1040,19 +1044,33 @@
           : 'Everything’s out of stock here — check back after restocks.';
       html = '<div class="l">Best now</div><div class="p">' + msg + '</div>';
     }
-    const bt = bestTrip(rows);
+    const tripBlock = function (t, label, cls, note) {
+      if (!t || t.tripPpm <= 0) return "";
+      const pk = t.picks.slice(0, 5).map(function (p) { return p.name + ' <b>×' + p.qty.toLocaleString() + '</b>'; }).join(' · ') + (t.picks.length > 5 ? ' · <span class="hv">+' + (t.picks.length - 5) + ' more</span>' : '');
+      return '<div class="tdk-besttrip' + (cls ? ' ' + cls : '') + '">' +
+        '<div class="l">' + label + (travelMult() < 1 ? ' · ' + travelLabel() : '') + '</div>' +
+        '<div class="p">' + t.country + ' <span>· fills ' + t.filled + '/' + cap + ' slots</span></div>' +
+        '<div class="k"><b>$' + t.tripPpm.toLocaleString() + '</b>/min · net ' + money(t.loadProfit - t.fare) + ' · costs ' + money(t.loadCost) + '</div>' +
+        '<div class="tdk-picks">Buy: ' + pk + '</div>' + (note || '') + '</div>';
+    };
+    // Two plays: what you can run on ALL funds (cash + stocks liquidated), and what fits your CASH in hand right now.
+    const fundBt = bestTrip(rows, funds);
+    const cashBt = cash != null ? bestTrip(rows, cash) : null;
     let btHtml = "";
-    if (bt && bt.tripPpm > 0) {
-      const pickTxt = bt.picks.slice(0, 5).map(function (p) { return p.name + ' <b>×' + p.qty.toLocaleString() + '</b>'; }).join(' · ') + (bt.picks.length > 5 ? ' · <span class="hv">+' + (bt.picks.length - 5) + ' more</span>' : '');
-      btHtml = '<div class="tdk-besttrip">' +
-        '<div class="l">✈ Best trip' + (travelMult() < 1 ? ' · ' + travelLabel() : '') + '</div>' +
-        '<div class="p">' + bt.country + ' <span>· fills ' + bt.filled + '/' + cap + ' slots</span></div>' +
-        '<div class="k"><b>$' + bt.tripPpm.toLocaleString() + '</b>/min · net ' + money(bt.loadProfit - bt.fare) + ' · costs ' + money(bt.loadCost) + '</div>' +
-        '<div class="tdk-picks">Buy: ' + pickTxt + '</div>' +
-        (cash != null && bt.loadCost > cash ? '<div class="tdk-fund2">💵 Free ' + money(bt.loadCost - cash) + ' from stocks to full-load this trip.</div>' : '') +
-        '</div>';
+    if (fundBt) {
+      if (cash == null) {
+        btHtml = tripBlock(fundBt, "✈ Best trip", "");
+      } else if (cashBt && cashBt.cc === fundBt.cc && cashBt.loadProfit === fundBt.loadProfit) {
+        btHtml = tripBlock(fundBt, "✈ Best trip · affordable now", ""); // cash already covers the best play
+      } else {
+        btHtml = tripBlock(fundBt, "✈ Best trip · all funds (" + money(funds) + ")", "",
+          fundBt.loadCost > cash ? '<div class="tdk-fund2">💵 Free ' + money(fundBt.loadCost - cash) + ' from your ' + money(stocks) + ' in stocks to run this.</div>' : "") +
+          (cashBt
+            ? tripBlock(cashBt, "💵 Best trip · cash only (" + money(cash) + ")", "cashonly", "")
+            : '<div class="tdk-besttrip cashonly"><div class="l">💵 Best trip · cash only (' + money(cash) + ')</div><div class="tdk-picks">Nothing affordable on cash alone — free some stock cash first.</div></div>');
+      }
     }
-    b.innerHTML = btHtml + html;
+    b.innerHTML = btHtml || html;
 
     const body = host.querySelector("#tdk-body");
     let sm = state.sort || "ppm";
@@ -1879,6 +1897,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.58.0", d: "Aug 17, 2026", c: ["✈ ‘Best trip’ now shows TWO plays: <b>all funds</b> (the best load if you liquidate stocks — cash + stock value) and <b>cash only</b> (the best load your cash in hand covers right now). Each is budget-capped — it fills only what you can actually afford (after airfare) — so the cash-only pick may be a smaller load or a different country. If your cash already covers the best play, it collapses to one line (‘affordable now’)."] },
     { v: "1.57.0", d: "Aug 12, 2026", c: ["✈ New ‘Best trip’ up top: picks the destination whose best FULL LOAD earns the most $/min — fills your Cap with the highest profit/ea items it actually stocks (e.g. 3× Neumune + the rest) — and shows what to buy, the net after airfare, and the load cost. Respects your country filter.", "🔀 Sort dropdown (Landing / $/min / Profit / Stock) next to the view buttons, so you can sort in ANY view — e.g. flip to Departures and sort Landing to float all the BOARDING ones to the top. (Table column headers still work too.)", "🛬 Departures rows now have the full Landing tooltip on hover (restock ETA, ‘tops out ~N’, etc.) and the ⚠ full-load flag — same juicy info as the table."] },
     { v: "1.56.0", d: "Aug 12, 2026", c: ["📊 $/min now ranks by what you can REALISTICALLY buy, not a fantasy full load. Each item's $/min = profit for the quantity it actually stocks (min of your Cap and its peak stock) minus that quantity's pro-rated share of the airfare (the flight is spread across your whole load), over the round trip. So a trickle-restock item like Neumune (+3) ranks as its real 3-slot contribution — no longer inflated by a 28-load fantasy, but not over-punished by the full fare as if you flew there only for it. Items with plenty of stock are unchanged. (Profit ×N still shows the full-load figure with its ⚠.)", "🛬 The “◐ Maybe” Landing tooltip now includes the next-restock estimate + batch too (not just the cycle length)."] },
     { v: "1.55.1", d: "Aug 12, 2026", c: ["⚠ Reality check on “Profit ×N”: for items whose stock tops out below your Cap (e.g. a rare item that only restocks +3), the Profit column now shows a ⚠ and the Landing tooltip spells it out — “Tops out ~3 in stock — cannot fill a 28 load; a realistic trip nets ~$2.1M, not $20.1M.” So a big full-load number on a trickle-restock item won’t lure you into a 4-hour flight for three items."] },
