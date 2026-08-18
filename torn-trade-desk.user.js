@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.54.5
+// @version      1.54.6
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -356,9 +356,15 @@
     const flight = arr - nowS, landTxt = flight <= 30 ? "you arrive" : "you land in ~" + fmtDur(flight);
     const cap = state.cap, st = x.stock, rp = restockPredict(x.cc, x.id);
     const dur = function (s) { return fmtDur(Math.max(0, Math.round(s))); };
-    let nextRs = null; // next predicted restock at/after now
-    if (rp && rp.nextAt && rp.interval > 0) { nextRs = rp.nextAt; let g = 0; while (nextRs < nowS && g++ < 5000) nextRs += rp.interval; }
-    const rsNote = (nextRs && rp) ? " Next restock ~" + dur(nextRs - nowS) + " (≈" + new Date(nextRs * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + ")" + (rp.batch ? ", ~+" + rp.batch.toLocaleString() : "") + " — from " + rp.n + " seen, ~every " + dur(rp.interval) + "." : "";
+    let nextRs = null, overdue = false; // next predicted restock; overdue = a predicted restock already passed unseen (data likely stale)
+    if (rp && rp.nextAt && rp.interval > 0) {
+      nextRs = rp.nextAt;
+      if (nextRs < nowS) {
+        if (nowS - nextRs < rp.interval) overdue = true;                       // just passed — it probably restocked; our stock data is stale
+        else { let g = 0; while (nextRs < nowS && g++ < 5000) nextRs += rp.interval; } // long overdue → roll to the next future cycle
+      }
+    }
+    const rsNote = (nextRs && rp && nextRs >= nowS) ? " Next restock ~" + dur(nextRs - nowS) + " (≈" + new Date(nextRs * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + ")" + (rp.batch ? ", ~+" + rp.batch.toLocaleString() : "") + " — from " + rp.n + " seen, ~every " + dur(rp.interval) + "." : "";
 
     // --- LONG flight: item restocks ≥1× in transit → availability is set by the CYCLE, not depletion ---
     if (rp && rp.interval > 0 && flight >= rp.interval) {
@@ -378,6 +384,7 @@
       return { cls: "warn", txt: "◐ Partial", tip: "Only " + st.toLocaleString() + " in stock — under your cap of " + cap + " (partial load) when " + landTxt + "." };
     }
     if (st <= 0) {
+      if (overdue) return { cls: "warn", txt: "↻ due", tip: "Shows as out, but a restock was due ~" + dur(nowS - rp.nextAt) + " ago (from " + rp.n + " seen, ~every " + dur(rp.interval) + ") — it may already be in stock. Hit ↻ Refresh to check." };
       if (nextRs && nextRs <= arr) return { cls: "good", txt: "✓ In stock", tip: "Out now, but a fresh restock should land before " + landTxt + "." + rsNote };
       if (nextRs) return { cls: "bad", txt: "✗ Empty", tip: "Out now — restocks after " + landTxt + "." + rsNote };
       return { cls: "unk", txt: "?", tip: "Out now — not enough restock history yet to estimate the next one." };
@@ -1793,6 +1800,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.54.6", d: "Aug 12, 2026", c: ["🛬 Restock ETA no longer silently jumps a whole cycle when the predicted time passes. When a restock was due but the board hasn’t caught it yet, Landing shows “↻ due” (amber) with “restock was due ~Xm ago — may already be in stock, hit ↻ Refresh” instead of quietly rolling the estimate to the next cycle."] },
     { v: "1.54.5", d: "Aug 12, 2026", c: ["🛬 Landing tooltip now shows the next-restock estimate when an item is Empty (or about to sell out): “Next restock ~in 14m (≈3:42 PM), ~+250 — from 8 seen, ~every 4h.” Great for deciding whether to wait for a restock while you’re already abroad."] },
     { v: "1.54.4", d: "Aug 12, 2026", c: ["🛒 Fixed the Item Market info banner colliding with the listings header (Torn reshaped that page). It now sits above the whole listings block and spans full width in either layout, so it no longer overlaps the first rows."] },
     { v: "1.54.3", d: "Aug 12, 2026", c: ["😊 Dropped Box of Tissues from the jump checklist — they’re too marginal (5–20 happy, capped ~20% of max) to be worth the step. Step 3 now just: candies, then eDVDs, up to ~50,000."] },
