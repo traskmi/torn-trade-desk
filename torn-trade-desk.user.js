@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.63.0
+// @version      1.63.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -868,8 +868,8 @@
     .tdk-happy a.prof{color:#d9b441;text-decoration:none;border-bottom:1px dotted #4a4536;cursor:pointer}
     .tdk-happy ul.horder{margin:6px 0 0;padding-left:0;list-style:none;color:#c3bda9;font-size:12.5px;line-height:1.5}
     .tdk-happy ul.horder li{margin:5px 0}
-    .tdk-happy ul.horder li label{display:flex;gap:8px;align-items:flex-start;cursor:pointer}
-    .tdk-happy ul.horder li input{margin-top:2px;flex:0 0 auto;width:15px;height:15px;accent-color:#d9b441}
+    .tdk-happy ul.horder li label{display:block;position:relative;padding-left:24px;cursor:pointer}
+    .tdk-happy ul.horder li input{position:absolute;left:0;top:3px;width:15px;height:15px;accent-color:#d9b441}
     .tdk-happy ul.horder li.done{opacity:.5}
     .tdk-happy ul.horder li.done label{text-decoration:line-through}
     .tdk-happy .hchk label{cursor:pointer}
@@ -932,7 +932,7 @@
     .tdk-pdq{width:80px}
     /* ---- Mobile / Torn PDA (narrow webview): fill the screen, fatten touch targets, shrink the board so 5 cols still fit ---- */
     @media (max-width: 560px) {
-      #tdk-btn{bottom:64px;right:14px;width:50px;height:50px;font-size:21px} /* clear Torn PDA's bottom nav bar */
+      #tdk-btn{bottom:64px;right:14px;width:50px;height:50px;font-size:21px;z-index:2147482900} /* clear PDA's bottom nav; sit BELOW the panel so the full-screen board covers it when open */
       #tdk-panel{left:5px;right:5px;top:5px;bottom:5px;width:auto;max-height:none;border-radius:12px}
       .tdk-col{max-height:none}
       .tdk-rail{flex:0 0 46px;width:46px;padding:8px 3px;gap:5px}
@@ -1970,6 +1970,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.63.1", d: "Aug 18, 2026", c: ["📱 Mobile fixes from real screenshots: (1) version now shows correctly on PDA (was ‘vUNDEFINED’ — PDA doesn’t expose GM_info.script.version, so the build injects it); (2) the Happy Jump ‘Best order’ checklist no longer scrambles into jumbled columns — the flex label was turning every bold phrase into its own column; (3) the ✈/💰 launcher button now hides behind the full-screen board on mobile instead of floating over the $/min column."] },
     { v: "1.63.0", d: "Aug 18, 2026", c: ["📱 Mobile ergonomics: the buyers/trade popover now opens as a full-screen sheet on a phone (it used to be a cramped, offset popover), rail icons and view/sort controls got bigger tap targets, and inputs are finger-sized. Desktop unchanged."] },
     { v: "1.62.0", d: "Aug 18, 2026", c: ["🛬 Landing ‘Empty’ now always shows the next-restock estimate + batch when we have the cadence — even for items that still have stock but sell out mid-flight (e.g. Jaguar Plushie). If no cadence is recorded yet, it says so instead of staying blank.", "🔄 Self-heal the shared restock/seasonal feed: Refresh now pulls it automatically if it isn’t loaded (fixes fresh installs — and mobile, where the feed sync used to fail for the same CORS reason as the board). This is what restores real restock estimates in the Landing tooltip."] },
     { v: "1.61.1", d: "Aug 18, 2026", c: ["🧹 Removed the temporary green ‘TDK loaded’ boot chip / diagnostics used to debug Torn PDA. Mobile is confirmed working via the minified PDA build."] },
@@ -2007,7 +2008,7 @@
   ];
 
   const RAW_URL = "https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js";
-  function curVersion() { return (typeof GM_info !== "undefined" && GM_info.script && GM_info.script.version) || "0"; }
+  function curVersion() { return (typeof GM_info !== "undefined" && GM_info.script && GM_info.script.version) || "__TDK_VER__"; }
   function cmpVer(a, b) {
     const pa = String(a).split("."), pb = String(b).split(".");
     for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
@@ -2542,7 +2543,7 @@
       '</aside>' +
       '<div class="tdk-col">' +
         '<div class="tdk-topbar">' +
-          '<div class="t">Trade Desk<small>$/min · <span class="tdk-ver" id="tdk-ver" title="View changelog">v' + (typeof GM_info !== "undefined" && GM_info.script ? GM_info.script.version : "") + '</span></small></div><div class="sp"></div>' +
+          '<div class="t">Trade Desk<small>$/min · <span class="tdk-ver" id="tdk-ver" title="View changelog">v' + curVersion() + '</span></small></div><div class="sp"></div>' +
           '<span class="capw">Cap <input class="tdk-cap" id="tdk-cap" type="number" min="1" max="60" value="' + state.cap + '"></span>' +
           '<button class="tdk-btn2 tdk-sm" id="tdk-adec" title="Smaller text">A−</button>' +
           '<button class="tdk-btn2 tdk-sm" id="tdk-ainc" title="Bigger text">A+</button>' +

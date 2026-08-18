@@ -38,4 +38,6 @@ cat > "$OUT" <<HDR
 HDR
 cat "$TMP" >> "$OUT"
 rm -f "$TMP"
+# PDA's GM_info.script.version is undefined → inject the real version into the __TDK_VER__ fallback.
+sed -i "s/__TDK_VER__/$VER/g" "$OUT"
 node --check "$OUT" && echo "Built $OUT v$VER ($(wc -c < "$OUT") bytes)"
