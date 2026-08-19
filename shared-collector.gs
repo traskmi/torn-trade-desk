@@ -86,15 +86,14 @@ function poll() {
       if (!prev || prev[0] === upd) return;         // no prior sample, or YATA hasn't refreshed this country
       var prevT = prev[0], prevQ = prev[1], dq = q - prevQ;
 
-      var rec = d.events[key] || (d.events[key] = { rs: [], so: [], up: [], q: null, max: 0 });
+      var rec = d.events[key] || (d.events[key] = { rs: [], so: [], q: null, max: 0 });
       rec.max = Math.max(rec.max || 0, prevQ, q);
-      if (dq > 0) rec.up.push([upd, dq, prevQ]);
+      if (rec.up) delete rec.up;                       // up[] (raw increases) is unused by every client prediction — drop it; it was ~30% of the feed
       if (isRealRestock_(dq, prevQ, rec.max)) rec.rs.push([upd, dq]);
       else if (prevQ > 0 && q === 0) rec.so.push(upd);
       rec.q = q;
       rec.rs = rec.rs.filter(function (e) { return e[0] >= evCut; }); if (rec.rs.length > EV_MAX) rec.rs.splice(0, rec.rs.length - EV_MAX);
       rec.so = rec.so.filter(function (t) { return t >= evCut; });    if (rec.so.length > EV_MAX) rec.so.splice(0, rec.so.length - EV_MAX);
-      rec.up = rec.up.filter(function (e) { return e[0] >= evCut; }); if (rec.up.length > UP_MAX) rec.up.splice(0, rec.up.length - UP_MAX);
 
       // Seasonal: attribute each SELLING interval's sold-qty + seconds to its day-of-week×hour bucket (UTC = TCT).
       if (dq < 0) {
@@ -148,12 +147,15 @@ function seedFromBlob() {
 /** Web-app read endpoint: returns the collected dataset in the same shape the userscript's ⬇ Export uses. */
 function doGet(e) {
   var d = load_();
+  // Strip any residual up[] (unused by clients; poll() drops it going forward, this covers records not yet re-polled).
+  var events = {}, src = d.events || {};
+  Object.keys(src).forEach(function (k) { var r = src[k]; events[k] = { rs: r.rs || [], so: r.so || [], q: r.q, max: r.max }; });
   var out = {
     kind: 'tdk-restock-export',
     source: 'shared-collector',
     at: d.updated || Math.floor(Date.now() / 1000),
-    fields: 'events[cc:id]={rs:[[t,amt]],so:[t],up:[[t,dq,prevQ]],q,max}; seasonal[cc:id]={bucket->[soldQty,seconds,samples]}, bucket=UTCday(0=Sun..6)*24+UTChour(0..23)',
-    events: d.events || {},
+    fields: 'events[cc:id]={rs:[[t,amt]],so:[t],q,max}; seasonal[cc:id]={bucket->[soldQty,seconds,samples]}, bucket=UTCday(0=Sun..6)*24+UTChour(0..23)',
+    events: events,
     seasonal: d.seasonal || {}
   };
   return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
