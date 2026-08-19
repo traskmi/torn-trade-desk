@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.64.0
+// @version      1.65.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -398,6 +398,24 @@
     if (secs <= 0 || sold <= 0) return null;
     return { perMin: sold / (secs / 60), coverage: span > 0 ? covered / span : 0, minSamp: minSamp === Infinity ? 0 : minSamp };
   }
+  // Item's overall selling tempo across ALL day×hour buckets — the baseline to judge "faster/slower than usual".
+  function seasonalOverall(cc, id) {
+    const sea = seasonalRecord(cc, id); if (!sea) return null;
+    let sold = 0, sec = 0, samp = 0;
+    Object.keys(sea).forEach(function (b) { const c = sea[b]; sold += c[0]; sec += c[1]; samp += c[2]; });
+    if (sec <= 0 || sold <= 0) return null;
+    return { perMin: sold / (sec / 60), samples: samp };
+  }
+  // Robust sell rate for the specific day×hour bucket containing ts, lightly shrunk toward the item's overall rate
+  // (a thin bucket leans on the baseline), falling back to the baseline when that exact bucket is empty.
+  function seasonalRateAt(cc, id, ts, ov) {
+    const sea = seasonalRecord(cc, id); if (!sea) return null;
+    ov = ov || seasonalOverall(cc, id); if (!ov) return null;
+    const dt = new Date(ts * 1000), cell = sea[dt.getUTCDay() * 24 + dt.getUTCHours()];
+    if (!cell || cell[1] <= 0 || cell[0] <= 0) return ov.perMin;         // no data this hour → baseline
+    const rate = cell[0] / (cell[1] / 60), K = 4;                        // empirical-Bayes shrink toward baseline
+    return (rate * cell[2] + ov.perMin * K) / (cell[2] + K);
+  }
 
   // "Landing": predicted stock when you'd touch down if you flew NOW. Foreign stock RESTOCKS on a short cycle, so:
   //  - a LONG flight spans many restock cycles → availability is governed by the CYCLE (how much of each cycle the
@@ -431,12 +449,21 @@
     const rangeTxt = wide ? " Irregular — usually ~" + dur(rp.interval) + ", but seen " + dur(rp.gapLo) + "–" + dur(rp.gapHi) + "." : "";
     const rsNote = (nextRs && rp && nextRs >= nowS) ? " Next restock ~" + dur(nextRs - nowS) + " (≈" + new Date(nextRs * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + ")" + (rp.batch ? ", ~+" + rp.batch.toLocaleString() : "") + " — from " + rp.n + " seen, ~every " + dur(rp.interval) + "." + rangeTxt : "";
 
+    // Seasonal tempo: how fast this item sells at your ARRIVAL hour (day×hour bucket) vs its own all-time average.
+    // >1 = you land in a busier window (stock evaporates faster); <1 = a quiet window (more forgiving).
+    const seaOv = seasonalOverall(x.cc, x.id), seaAt = seasonalRateAt(x.cc, x.id, arr, seaOv);
+    const tempo = (seaOv && seaOv.perMin > 0 && seaAt > 0) ? seaAt / seaOv.perMin : 1;
+    const whenTxt = flight <= 30 ? "now" : "when you land";
+    const tempoNote = tempo >= 1.2 ? " ⏱ Sells ~" + Math.round((tempo - 1) * 100) + "% faster than usual " + whenTxt + " — grab it quick."
+      : tempo <= 0.84 ? " ⏱ Sells ~" + Math.round((1 - tempo) * 100) + "% slower than usual " + whenTxt + " — more forgiving." : "";
+
     // --- LONG flight: item restocks ≥1× in transit → availability is set by the CYCLE, not depletion ---
     if (rp && rp.interval > 0 && flight >= rp.interval) {
-      const frac = (rp.selloutDur > 0 && rp.interval > 0) ? Math.min(1, rp.selloutDur / rp.interval) : (st > 0 ? 1 : 0); // share of each cycle it holds stock ≈ odds it's up on arrival
-      if (rp.nSo === 0 || frac >= 0.6) return { cls: "good", txt: "✓ In stock", tip: "Usually in stock — should be available when " + landTxt + "." + rsNote };
-      if (frac >= 0.25) return { cls: "warn", txt: "◐ Maybe", tip: "In stock only ~" + Math.round(frac * 100) + "% of the time — best right after a restock." + rsNote };
-      return { cls: "warn", txt: "◐ Maybe", tip: "Sells out fast — usually empty between restocks." + rsNote };
+      const selloutAdj = rp.selloutDur > 0 ? rp.selloutDur / tempo : 0; // faster arrival hour (tempo>1) → shorter time in stock each cycle
+      const frac = selloutAdj > 0 ? Math.min(1, selloutAdj / rp.interval) : (st > 0 ? 1 : 0); // share of each cycle it holds stock ≈ odds it's up on arrival
+      if (rp.nSo === 0 || frac >= 0.6) return { cls: "good", txt: "✓ In stock", tip: "Usually in stock — should be available when " + landTxt + "." + tempoNote + rsNote };
+      if (frac >= 0.25) return { cls: "warn", txt: "◐ Maybe", tip: "In stock ~" + Math.round(frac * 100) + "% of each restock cycle — best right after a restock." + tempoNote + rsNote };
+      return { cls: "warn", txt: "◐ Maybe", tip: "Sells out fast — usually empty between restocks." + tempoNote + rsNote };
     }
 
     // --- SHORT hop (or no cycle data): does CURRENT stock survive, and does a restock beat you there? ---
@@ -445,8 +472,8 @@
     let outAt = Infinity;
     if (st <= 0) outAt = nowS; else if (rate > 0) outAt = nowS + (st / rate) * 60;
     if (st > 0 && outAt > arr) {
-      if (st >= cap) return { cls: "good", txt: "✓ In stock", tip: "In stock now and should last until " + landTxt + "." };
-      return { cls: "warn", txt: "◐ Partial", tip: "Only " + st.toLocaleString() + " in stock — under your cap of " + cap + " (partial load) when " + landTxt + "." };
+      if (st >= cap) return { cls: "good", txt: "✓ In stock", tip: "In stock now and should last until " + landTxt + "." + tempoNote };
+      return { cls: "warn", txt: "◐ Partial", tip: "Only " + st.toLocaleString() + " in stock — under your cap of " + cap + " (partial load) when " + landTxt + "." + tempoNote };
     }
     if (st <= 0) {
       if (overdue) return { cls: "warn", txt: "↻ due", tip: "Out now and into its restock window (past the ~" + dur(rp.interval) + " average, from " + rp.n + " seen) — could pop any time." + rangeTxt + " Hit ↻ Refresh to check." };
@@ -1979,6 +2006,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.65.0", d: "Aug 18, 2026", c: ["🕐 Seasonal Landing model — the day×hour sell-rate history we’ve been collecting now sharpens long-flight predictions. Instead of a flat ‘in stock X% of each cycle’, it scales by how fast the item sells AT YOUR ARRIVAL HOUR vs its own average. Example: Xanax→UK reads ~60% in-stock if you land at a quiet 2:00 TCT, but ~28% at the 18:00 TCT rush — same item, same flight, honest odds. The tooltip flags it: ‘⏱ Sells ~44% faster than usual when you land — grab it quick’ (or ‘slower — more forgiving’). Hour-of-day turns out to matter far more than weekday/weekend. Falls back exactly to the old estimate when there’s no seasonal data for that item."] },
     { v: "1.64.0", d: "Aug 18, 2026", c: ["🛬 Smarter restock ETA. When the feed misses a restock (item refilled while we weren’t polling), the old ‘last restock + interval’ estimate went stale and showed nonsense like ‘due 1h34m ago’ on an item that clearly had stock recently. Now, if a SELLOUT is more recent than the last logged restock, the ETA re-anchors on that sellout + the typical empty gap — a real forward-looking time (e.g. Bottle of Tequila: was ‘due 1h45m ago’, now ‘next restock ~24m’).", "🎲 Irregular items (Xanax, Tequila…) now show their spread in the tooltip — ‘usually ~8h, but seen 2m–13h’ — so ‘↻ due’ reads as a wide restock window, not a broken clock."] },
     { v: "1.63.1", d: "Aug 18, 2026", c: ["📱 Mobile fixes from real screenshots: (1) version now shows correctly on PDA (was ‘vUNDEFINED’ — PDA doesn’t expose GM_info.script.version, so the build injects it); (2) the Happy Jump ‘Best order’ checklist no longer scrambles into jumbled columns — the flex label was turning every bold phrase into its own column; (3) the ✈/💰 launcher button now hides behind the full-screen board on mobile instead of floating over the $/min column."] },
     { v: "1.63.0", d: "Aug 18, 2026", c: ["📱 Mobile ergonomics: the buyers/trade popover now opens as a full-screen sheet on a phone (it used to be a cramped, offset popover), rail icons and view/sort controls got bigger tap targets, and inputs are finger-sized. Desktop unchanged."] },
