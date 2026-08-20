@@ -28,8 +28,8 @@
 var YATA_URL = 'https://yata.yt/api/v1/travel/export/';
 var FILE_NAME = 'tdk_shared_data.json';
 var GAP_MAX = 3600;               // skip selling intervals longer than 1h (browser/poll gap → unreliable rate)
+var SAMPLE_MAX = 1800;            // only log restock/sellout events from samples ≤30min apart (a longer YATA-stale gap can hide multiple cycles)
 var EV_MAX = 200;                 // cap restock/sellout events kept per item
-var UP_MAX = 300;                 // cap raw-increase samples kept per item
 var EV_AGE = 45 * 86400;          // prune events older than 45 days
 
 /** Run once (and any time you want to (re)install the trigger). */
@@ -84,13 +84,18 @@ function poll() {
       var prev = d.last[key];                       // [updTs, qty]
       d.last[key] = [upd, q];
       if (!prev || prev[0] === upd) return;         // no prior sample, or YATA hasn't refreshed this country
-      var prevT = prev[0], prevQ = prev[1], dq = q - prevQ;
+      var prevT = prev[0], prevQ = prev[1], dq = q - prevQ, sampleDt = upd - prevT;
 
       var rec = d.events[key] || (d.events[key] = { rs: [], so: [], q: null, max: 0 });
       rec.max = Math.max(rec.max || 0, prevQ, q);
       if (rec.up) delete rec.up;                       // up[] (raw increases) is unused by every client prediction — drop it; it was ~30% of the feed
-      if (isRealRestock_(dq, prevQ, rec.max)) rec.rs.push([upd, dq]);
-      else if (prevQ > 0 && q === 0) rec.so.push(upd);
+      // Only trust restock/sellout EVENTS from a short sample interval. For low-traffic countries YATA refreshes
+      // rarely, so a jump measured across a multi-hour stale gap can hide several real restock/sellout cycles —
+      // logging one event there pollutes the cadence with misleading sparse gaps (the old 50–75h Canada entries).
+      if (sampleDt <= SAMPLE_MAX) {
+        if (isRealRestock_(dq, prevQ, rec.max)) rec.rs.push([upd, dq]);
+        else if (prevQ > 0 && q === 0) rec.so.push(upd);
+      }
       rec.q = q;
       rec.rs = rec.rs.filter(function (e) { return e[0] >= evCut; }); if (rec.rs.length > EV_MAX) rec.rs.splice(0, rec.rs.length - EV_MAX);
       rec.so = rec.so.filter(function (t) { return t >= evCut; });    if (rec.so.length > EV_MAX) rec.so.splice(0, rec.so.length - EV_MAX);
