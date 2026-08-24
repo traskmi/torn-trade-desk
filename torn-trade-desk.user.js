@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.76.0
+// @version      1.77.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -970,6 +970,8 @@
     .skbn{font-size:11px;color:#c9a94a;margin-top:3px}.skbn.ok{color:#4cc281}
     .skbar{display:inline-block;width:70px;height:6px;background:#211f18;border-radius:3px;overflow:hidden;vertical-align:middle;margin-right:6px}
     .skbar i{display:block;height:100%;background:#d9b441}
+    .skspk{flex:0 0 auto;align-self:center;line-height:0}
+    .skspark{display:block}
     .tdk-solo{font-size:11px;color:#c3bda9;white-space:nowrap;cursor:pointer}
     .bnty{display:flex;align-items:center;gap:12px;padding:8px 12px;border-bottom:1px solid #211f18}
     .bnty.na{opacity:.55}
@@ -1659,6 +1661,27 @@
     if (st.pos >= 0.8) return '<span class="sktag high">▲ near high</span>';
     return '<span class="sktag mid">mid-range</span>';
   }
+  // Mini price sparkline from the recorded history (state._stkHist). Coloured by where the current price sits in its range: near-low = cheap = green, near-high = red, else gold.
+  function sparkline(id) {
+    const hist = state._stkHist || (function () { try { return GM_getValue("stk_hist", null) || {}; } catch (e) { return {}; } })();
+    const arr = hist[id]; if (!arr || arr.length < 3) return '';
+    const w = 76, h = 22, pad = 2.5;
+    let lo = Infinity, hi = -Infinity;
+    arr.forEach(function (p) { lo = Math.min(lo, p[1]); hi = Math.max(hi, p[1]); });
+    const t0 = arr[0][0], t1 = arr[arr.length - 1][0], span = (t1 - t0) || 1, rng = (hi - lo) || 1;
+    const X = function (t) { return pad + (t - t0) / span * (w - 2 * pad); };
+    const Y = function (v) { return pad + (1 - (v - lo) / rng) * (h - 2 * pad); };
+    const pts = arr.map(function (p) { return X(p[0]).toFixed(1) + ',' + Y(p[1]).toFixed(1); });
+    const st = stkStats(id), pos = st ? st.pos : 0.5;
+    const col = pos <= 0.2 ? '#4cc281' : pos >= 0.8 ? '#e5615c' : '#d9b441';
+    const last = pts[pts.length - 1].split(',');
+    const area = 'M' + X(t0).toFixed(1) + ',' + (h - pad) + ' L' + pts.join(' L') + ' L' + X(t1).toFixed(1) + ',' + (h - pad) + ' Z';
+    const tip = st ? Math.round(st.spanH) + 'h range $' + lo + '–$' + hi + ' · now $' + st.cur : '';
+    return '<span class="skspk" title="' + tip + '"><svg class="skspark" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" aria-hidden="true">' +
+      '<path d="' + area + '" fill="' + col + '" fill-opacity="0.12"/>' +
+      '<polyline points="' + pts.join(' ') + '" fill="none" stroke="' + col + '" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/>' +
+      '<circle cx="' + last[0] + '" cy="' + last[1] + '" r="1.9" fill="' + col + '"/></svg></span>';
+  }
   function benefitAwareHint(r, st) {
     const s = r.s, req = s.benefit && s.benefit.requirement;
     const shares = r.held ? (state.stkMine[r.id].total_shares || 0) : 0;
@@ -1702,6 +1725,7 @@
         return '<div class="skrow"><div class="skmain"><div class="skn">' + s.acronym + ' <span>' + s.name + '</span></div>' +
           '<div class="sksub">' + shares.toLocaleString() + ' sh @ $' + cost.toFixed(2) + ' → $' + cur + (st ? ' ' + rangeTag(st) : '') + '</div>' +
           '<div class="sknet">net if sold now <b class="' + (net >= 0 ? 'up' : 'dn') + '">' + (net >= 0 ? '+' : '') + money(net) + '</b> <span>after 0.1% sell fee −' + money(fee) + '</span></div>' + benefit + '</div>' +
+          sparkline(id) +
           '<div class="skpl"><div class="' + (pl >= 0 ? 'up' : 'dn') + '">' + (pl >= 0 ? '+' : '') + money(pl) + '</div><div class="skpct">' + (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%</div></div></div>';
       }).join('');
       portHtml = '<div class="sksec">Your portfolio · value ' + money(totalVal) + ' · gross P&amp;L <b class="' + (totalPL >= 0 ? 'up' : 'dn') + '">' + (totalPL >= 0 ? '+' : '') + money(totalPL) + '</b> · net after fees <b class="' + (totalPL - totalFee >= 0 ? 'up' : 'dn') + '">' + (totalPL - totalFee >= 0 ? '+' : '') + money(totalPL - totalFee) + '</b></div>' + body;
@@ -1718,7 +1742,7 @@
       scanHtml = '<div class="sksec">Buy-low scanner · ' + withHist.length + ' with history · most-below-average first</div>' + withHist.map(function (r) {
         const s = r.s, st = r.st, hint = benefitAwareHint(r, st);
         return '<div class="skrow"><div class="skmain"><div class="skn">' + s.acronym + ' <span>' + s.name + '</span>' + (r.held ? ' <b class="skhold" title="You hold this">•held</b>' : '') + '</div>' +
-          '<div class="sksub">$' + s.current_price + ' · ' + (st.vsAvg >= 0 ? '+' : '') + (st.vsAvg * 100).toFixed(1) + '% vs ' + Math.round(st.spanH) + 'h avg ' + rangeTag(st) + '</div>' + (hint ? '<div class="skhint">' + hint + '</div>' : '') + '</div></div>';
+          '<div class="sksub">$' + s.current_price + ' · ' + (st.vsAvg >= 0 ? '+' : '') + (st.vsAvg * 100).toFixed(1) + '% vs ' + Math.round(st.spanH) + 'h avg ' + rangeTag(st) + '</div>' + (hint ? '<div class="skhint">' + hint + '</div>' : '') + '</div>' + sparkline(r.id) + '</div>';
       }).join('');
     }
     bx.innerHTML = '<div class="tdk-bh"><div class="tt">📊 Stocks<small> — as of ' + asOf + (traveling ? ' · ✈ look-only while traveling' : '') + '</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
@@ -2186,6 +2210,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.77.0", d: "Aug 24, 2026", c: ["📈 Stocks now show a price sparkline (redesign part 3). Every holding and every buy-low-scanner row gets a little trend line drawn from the price history the tool records (~every 10 min), so you can see a stock’s recent shape at a glance instead of just a number. It’s colour-coded to match the range tag — green when the price is near its recent low (cheap), red near its high, gold in between — with a dot on the latest price; hover it for the range (‘14h range $920–$965 · now $931’). Appears once there are a few hours of history."] },
     { v: "1.76.0", d: "Aug 24, 2026", c: ["📦 Bag snapshot: you can now just hit the <b>All</b> filter on your Items page and scroll to catalog your whole inventory in one pass — no more clicking every category tab. Fixed the bug that made this unsafe before: Torn’s Items page loads rows as you scroll (virtualized), so the old ‘sold’ cleanup would see a category partly on-screen and wrongly drop items you owned but had scrolled past. It now only runs that cleanup from a single-category tab (which shows that category in full); the All view purely adds/updates counts. Note: an item you’ve fully sold out of vanishes from the list entirely, so to remove it, open its category tab or hit ↻ Rescan."] },
     { v: "1.75.0", d: "Aug 24, 2026", c: ["🏪 Shop Flips is now grouped by shop (redesign part 3). Instead of one flat list, each buy-low→sell-market flip sits under the Torn shop that actually sells it — Big Al's, Bits ’n’ Bobs, Recycling Center, Docks, Pharmacy, and so on — with each shop headed by its item count and best spread, and shops ordered by their top opportunity. So you can plan one shopping trip per shop instead of hopping around. (Shop names come from Torn’s v2 item catalog, cached for a week; everything else — prices, ⚡ buyers, 🛒 market link — works exactly as before.)"] },
     { v: "1.74.0", d: "Aug 24, 2026", c: ["📦 Bag facelift (redesign part 3): the sellable-junk list is now the same value-card layout as the travel board instead of a cramped table. Each item is a card — name + 🎁 pack open-EV on the left, its total $ value big on the right, with 🧺 market · ⚡ find-buyers · 🔒/🔓 sell-ok toggle underneath. Tap anywhere on a ‘safe to sell’ card to pull up its buyers (same as ⚡). Held-back items use the same card, dimmed, with just the 🔓 allow toggle. Same data and totals as before — it just reads cleanly on desktop and phone now."] },
