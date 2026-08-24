@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.73.0
+// @version      1.74.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -824,6 +824,15 @@
     .tk-card .tk-cppm{font-family:ui-monospace,monospace;color:#d9b441;font-weight:800;font-size:16px}
     .tk-card .tk-cppm small{color:#8f886f;font-weight:500;font-size:11px}
     .tk-card .tk-csub{font-size:11px;color:#8f886f;margin-top:3px;font-family:ui-monospace,monospace}
+    /* Bag cards (reuse .tk-card) */
+    .tk-card.bag{align-items:center}
+    .tk-card.bag.noclk{cursor:default}
+    .tk-card.bag.noclk:hover{background:#1e1b12}
+    .tk-card.bag.ovr{border-color:#5a4d23;background:#211d10}
+    .tk-card.bag .tk-cppm{font-size:15px}
+    .tk-card.bag .cy .tdk-pk{white-space:normal;font-family:inherit}
+    .bag-act{margin-top:7px;white-space:nowrap;text-align:right}
+    .bag-act .tdk-bmkt,.bag-act .tdk-bzap,.bag-act .tdk-tog{font-size:15px;margin:0 0 0 12px}
     /* leaderboard lens */
     .tk-lb{display:flex;flex-direction:column;gap:8px;padding:0 12px 12px}
     .tk-bar{position:relative;display:flex;align-items:center;gap:12px;min-height:46px;border:1px solid #332e1e;border-radius:10px;background:#1f1c11;padding-right:14px;overflow:hidden;cursor:pointer}
@@ -2056,20 +2065,18 @@
     sell.sort(function (a, b) { return b.total - a.total; });
     keep.sort(function (a, b) { return b.total - a.total; });
     const esc = function (s) { return String(s || "").replace(/"/g, "&quot;"); };
-    const rowsHtml = function (arr, sellable) {
-      return arr.map(function (x) {
+    const cardsHtml = function (arr, sellable) {
+      return '<div class="tk-cards bag-cards">' + arr.map(function (x) {
         const tog = '<span class="tdk-tog" data-id="' + x.id + '" data-eff="' + (sellable ? 1 : 0) + '" title="' + (sellable ? 'Mark as keep' : 'Allow selling this item') + (x.ov ? ' — override set' : '') + '">' + (sellable ? '🔒' : '🔓') + '</span>';
         const basket = sellable ? '<a class="tdk-bmkt" href="' + marketUrl(x.id, x.name, x.type) + '" target="_blank" rel="noopener" title="Open Item Market">🧺</a>' : '';
         const zap = sellable ? '<span class="tdk-bzap" data-id="' + x.id + '" data-name="' + esc(x.name) + '" title="Find buyers for this item">⚡</span>' : '';
-        return '<tr' + (x.ov ? ' class="tdk-ovr"' : '') + '><td class="l"><span class="nm">' + x.name + '</span>' + packHintHtml(x.name, x.unit) + '</td>' +
-          '<td class="l"><span class="cy">' + typeIcon(x.type) + ' ' + x.type + '</span></td>' +
-          '<td class="num">' + x.qty.toLocaleString() + ' × ' + full$(x.unit) + '</td>' +
-          '<td class="num gd">' + full$(x.total) + '</td>' +
-          '<td class="tdk-act">' + basket + zap + tog + '</td></tr>';
-      }).join("");
-    };
-    const table = function (arr, sellable) {
-      return '<table class="tdk"><thead><tr><th class="l">Item</th><th class="l">Category</th><th>Qty × Sell</th><th>Expected $</th><th></th></tr></thead><tbody>' + rowsHtml(arr, sellable) + '</tbody></table>';
+        return '<div class="tk-card bag' + (sellable ? '' : ' noclk') + (x.ov ? ' ovr' : '') + '"' +
+          (sellable ? ' data-id="' + x.id + '" data-name="' + esc(x.name) + '" title="Find buyers for this item"' : '') + '>' +
+          '<div class="tk-cl"><span class="nm">' + x.name + '</span>' + packHintHtml(x.name, x.unit) +
+            '<div class="cy">' + typeIcon(x.type) + ' ' + x.type + ' · ' + x.qty.toLocaleString() + ' × ' + full$(x.unit) + '</div></div>' +
+          '<div class="tk-cr"><div class="tk-cppm">' + full$(x.total) + '</div>' +
+            '<div class="bag-act">' + basket + zap + tog + '</div></div></div>';
+      }).join("") + '</div>';
     };
     const scanNote = src.source === "scan" ? ' <span class="tdk-keep">· scraped snapshot' + (src.at ? ' ' + ago(Math.floor((Date.now() - src.at) / 1000)) + ' old' : '') + ' (inventory API down)</span>' : '';
     const rescanBtn = src.source === "scan" ? ' <button class="tdk-btn2 tdk-sm" id="tdk-invclear" title="Sold something that still shows here? Wipe the scraped snapshot and rebuild it by reopening your Items-page tabs.">↻ Rescan</button>' : '';
@@ -2087,23 +2094,28 @@
     let html = '<div class="tdk-best"><div class="l">Safe to sell · ' + sell.length + ' item' + (sell.length === 1 ? '' : 's') + scanNote + '</div>' +
       '<div class="p">' + money(grand) + ' <span>expected if you dump it all</span></div>' +
       '<div class="k">🧺 open market · ⚡ find buyers · 🔒 held back / 🔓 allow (saved). Links only open Torn’s market — nothing sells for you.' + rescanBtn + packNote + '</div></div>';
-    html += sell.length ? table(sell, true) : '<div class="tdk-sub">Nothing marked sell-ok right now.</div>';
+    html += sell.length ? cardsHtml(sell, true) : '<div class="tdk-sub">Nothing marked sell-ok right now.</div>';
     if (keep.length) {
       const kept = keep.reduce(function (s, x) { return s + x.total; }, 0);
-      html += '<div class="tdk-keephdr">🔒 Held back · ' + keep.length + ' item' + (keep.length === 1 ? '' : 's') + ' · ' + money(kept) + ' <span>(use-items, gear &amp; untrusted types — click 🔓 to allow one)</span></div>' + table(keep, false);
+      html += '<div class="tdk-keephdr">🔒 Held back · ' + keep.length + ' item' + (keep.length === 1 ? '' : 's') + ' · ' + money(kept) + ' <span>(use-items, gear &amp; untrusted types — click 🔓 to allow one)</span></div>' + cardsHtml(keep, false);
     }
     box.innerHTML = html;
+    box.querySelectorAll(".tk-card.bag[data-id]").forEach(function (el) {
+      el.addEventListener("click", function () { openBuyers(+this.getAttribute("data-id"), this.getAttribute("data-name")); });
+    });
+    box.querySelectorAll(".bag-act .tdk-bmkt").forEach(function (a) { a.addEventListener("click", function (e) { e.stopPropagation(); }); });
     box.querySelectorAll(".tdk-tog").forEach(function (el) {
-      el.addEventListener("click", function () {
+      el.addEventListener("click", function (e) {
+        e.stopPropagation();
         toggleOverride(+this.getAttribute("data-id"), this.getAttribute("data-eff") === "1");
         paintInv();
       });
     });
     box.querySelectorAll(".tdk-bzap").forEach(function (el) {
-      el.addEventListener("click", function () { openBuyers(+this.getAttribute("data-id"), this.getAttribute("data-name")); });
+      el.addEventListener("click", function (e) { e.stopPropagation(); openBuyers(+this.getAttribute("data-id"), this.getAttribute("data-name")); });
     });
     box.querySelectorAll(".tdk-pkedit").forEach(function (el) {
-      el.addEventListener("click", function () { openPackOdds(this.getAttribute("data-pack")); });
+      el.addEventListener("click", function (e) { e.stopPropagation(); openPackOdds(this.getAttribute("data-pack")); });
     });
     const clr = box.querySelector("#tdk-invclear");
     if (clr) clr.addEventListener("click", function () {
@@ -2144,6 +2156,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.74.0", d: "Aug 24, 2026", c: ["📦 Bag facelift (redesign part 3): the sellable-junk list is now the same value-card layout as the travel board instead of a cramped table. Each item is a card — name + 🎁 pack open-EV on the left, its total $ value big on the right, with 🧺 market · ⚡ find-buyers · 🔒/🔓 sell-ok toggle underneath. Tap anywhere on a ‘safe to sell’ card to pull up its buyers (same as ⚡). Held-back items use the same card, dimmed, with just the 🔓 allow toggle. Same data and totals as before — it just reads cleanly on desktop and phone now."] },
     { v: "1.73.0", d: "Aug 20, 2026", c: ["🃏 Cards view now carries the full detail line: 📦 current stock · ⚡ how fast it’s selling (~/min) + when it’d sell out · ↻ restock cadence (~every X, +batch) · 🎲 arrival odds (when abroad). All the numbers that used to live only in the Landing hover are now on the face of the card. (Switch to Card view via the ▭ button; it’s the default on mobile.)"] },
     { v: "1.72.1", d: "Aug 20, 2026", c: ["🎲 Clarity: dropped the ✓/✗ glyph from the Landing % — ‘✗ 24%’ read backwards (looked like 24% empty). It’s now just a colour-coded number that ALWAYS means the chance it’s IN STOCK when you land (green ≥60%, amber ≥30%, red below). So Jaguar Plushie at a red ‘24%’ = 24% chance in stock (~76% likely sold out). ↻ still marks an overdue restock."] },
     { v: "1.72.0", d: "Aug 20, 2026", c: ["🎲 Landing is now an ODDS SHEET. Instead of ✓/◐/✗ buckets it shows an actual in-stock probability — ‘✓ 92%’, ‘◐ 46%’, ‘✗ 12%’, ‘↻ 46%’ — coloured by likelihood (green ≥60%, amber ≥30%, red below). It’s built from the seasonal cycle-occupancy rate, then nudged by current state (in stock & surviving → high; out & overdue → the odds it pops back before you land; the more overdue, the higher). Since Torn deliberately randomises restocks, this is honestly a bet, not a promise — the % just lets you play the odds. Landing sort now ranks by probability. (Partial loads still show the count, e.g. ‘◐ 5/28’.)"] },
