@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.74.0
+// @version      1.75.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -1737,6 +1737,18 @@
     } catch (e) { state.foreignIds = new Set(); }
     return state.foreignIds;
   }
+  // item → selling shop (v2 catalog; the vendor mapping is static, so cache hard). Kept separate from loadResale (v1) so nothing else is disturbed.
+  async function loadVendors(key) {
+    if (state.itemShop) return state.itemShop;
+    try { const c = GM_getValue("shop_map", null); if (c && c.map && c.at && Date.now() - c.at < 7 * 24 * 3600 * 1000) { state.itemShop = c.map; return c.map; } } catch (e) { }
+    const j = await gmGet("https://api.torn.com/v2/torn/items?key=" + encodeURIComponent(key), 30000);
+    const its = (j && j.items) || [];
+    const map = {};
+    its.forEach(function (it) { const v = it && it.value && it.value.vendor; if (v && v.name) map[it.id] = { n: v.name, c: v.country || "Torn" }; });
+    state.itemShop = map;
+    try { GM_setValue("shop_map", { map: map, at: Date.now() }); } catch (e) { }
+    return map;
+  }
   async function openShopFlips() {
     const bx = host.querySelector("#tdk-buyers");
     bx.classList.add("open");
@@ -1748,6 +1760,7 @@
     try {
       await loadResale(key);
       const foreign = await ensureForeignIds();
+      let shopMap = {}; try { shopMap = await loadVendors(key); } catch (e) { shopMap = {}; }
       const meta = state.itemMeta || {};
       const cashCeil = (state.cash && state.cash > 0) ? state.cash : 50e6;
       const cand = [];
@@ -1760,10 +1773,9 @@
         cand.push({ id: +id, name: m.name, type: m.type, buy: buy, mkt: mkt, spread: spread, marg: marg });
       });
       cand.sort(function (a, b) { return b.spread - a.spread; });
-      const top = cand.slice(0, 20);
-      if (!top.length) { setTitle("nothing above threshold"); bx.querySelector(".br").textContent = "No shop→market flips over $500 spread right now."; return; }
+      if (!cand.length) { setTitle("nothing above threshold"); bx.querySelector(".br").textContent = "No shop→market flips over $500 spread right now."; return; }
       const cat = function (id) { return (meta[id] && meta[id].type) || ""; };
-      const rows = top.map(function (c) {
+      const shopCard = function (c) {
         const marg = Math.round(c.marg * 100);
         const net = c.spread - c.mkt * 0.01;
         const warn = marg > 500 ? ' <span class="fwarn" title="Huge % on a cheap item — small cash and usually restock-capped; verify it\'s in the shop">⚠</span>' : '';
@@ -1772,11 +1784,29 @@
           '<div class="fn">' + c.name + ' <span class="skhold" style="color:#928b78">' + c.type + '</span>' + warn +
           '<div class="fs">shop <b>' + full$(c.buy) + '</b> → market <b>' + full$(c.mkt) + '</b> <a class="fbuy" href="' + mUrl + '" target="_blank" rel="noopener" title="Open the Item Market to sell (1% fee) or check price">🛒 Market</a> <span>· net +' + money(net) + ' after 1% list fee · ⚡ click row for buyers</span></div></div>' +
           '<div class="fp"><div class="fpv">+' + money(c.spread) + '</div><div class="fpm">' + marg + '% /ea</div></div></div>';
-      }).join("");
-      setTitle("Torn city shops · buy low → sell on market · top " + top.length);
-      bx.innerHTML = '<div class="tdk-bh"><div class="tt">🏪 Shop Flips<small> — Torn city shops · top ' + top.length + '</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
-        '<div class="tdk-sub" style="padding:6px 12px">Buy at the fixed shop price, sell on the market. Shop price is a catalog constant — <b>verify the item is actually stocked</b> (shops have limited stock, caps &amp; restocks; the market can\'t absorb unlimited). Selling on the Item Market costs 1% (a direct ⚡ trade is fee-free). Travel items are excluded — the board covers those.</div>' +
-        '<div id="tdk-flips">' + rows + '</div>';
+      };
+      // Group each candidate under the shop that sells it, order shops by their best single flip.
+      const grouped = {};
+      cand.forEach(function (c) {
+        const v = shopMap[c.id];
+        const gk = v ? (v.c + "|" + v.n) : "~|Other shops";
+        (grouped[gk] || (grouped[gk] = { n: v ? v.n : "Other shops", c: v ? v.c : "", items: [] })).items.push(c);
+      });
+      const shopList = Object.keys(grouped).map(function (k) {
+        const g = grouped[k]; g.items.sort(function (a, b) { return b.spread - a.spread; }); g.best = g.items[0].spread; return g;
+      }).sort(function (a, b) { return b.best - a.best; });
+      let total = 0, shown = 0; const BUDGET = 30;
+      const sections = shopList.map(function (g) {
+        if (total >= BUDGET) return '';
+        const use = g.items.slice(0, Math.min(g.items.length, BUDGET - total, 8));
+        total += use.length; shown++;
+        const cc = (g.c && g.c !== "Torn") ? ' <span class="skhold" style="color:#928b78">' + g.c + '</span>' : '';
+        return '<div class="sksec">🏪 ' + g.n + cc + ' · ' + use.length + ' flip' + (use.length === 1 ? '' : 's') + ' · best +' + money(g.best) + '</div>' + use.map(shopCard).join('');
+      }).join('');
+      setTitle("buy low → sell on market · " + shown + " shop" + (shown === 1 ? '' : 's') + " · " + total + " flips");
+      bx.innerHTML = '<div class="tdk-bh"><div class="tt">🏪 Shop Flips<small> — grouped by shop · ' + shown + ' shop' + (shown === 1 ? '' : 's') + '</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
+        '<div class="tdk-sub" style="padding:6px 12px">Grouped by the shop that sells each item — plan one shopping trip per shop. Buy at the fixed shop price, sell on the market. Shop price is a catalog constant — <b>verify the item is actually stocked</b> (shops have limited stock, caps &amp; restocks; the market can\'t absorb unlimited). Selling on the Item Market costs 1% (a direct ⚡ trade is fee-free). Travel items are excluded — the board covers those.</div>' +
+        '<div id="tdk-flips">' + sections + '</div>';
       bindClose(bx);
       bx.querySelectorAll(".tdk-flip .fbuy").forEach(function (a) { a.addEventListener("click", function (e) { e.stopPropagation(); }); });
       bx.querySelectorAll(".tdk-flip").forEach(function (el) { el.addEventListener("click", function () { openBuyers(+this.getAttribute("data-id"), this.getAttribute("data-name")); }); });
@@ -2156,6 +2186,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.75.0", d: "Aug 24, 2026", c: ["🏪 Shop Flips is now grouped by shop (redesign part 3). Instead of one flat list, each buy-low→sell-market flip sits under the Torn shop that actually sells it — Big Al's, Bits ’n’ Bobs, Recycling Center, Docks, Pharmacy, and so on — with each shop headed by its item count and best spread, and shops ordered by their top opportunity. So you can plan one shopping trip per shop instead of hopping around. (Shop names come from Torn’s v2 item catalog, cached for a week; everything else — prices, ⚡ buyers, 🛒 market link — works exactly as before.)"] },
     { v: "1.74.0", d: "Aug 24, 2026", c: ["📦 Bag facelift (redesign part 3): the sellable-junk list is now the same value-card layout as the travel board instead of a cramped table. Each item is a card — name + 🎁 pack open-EV on the left, its total $ value big on the right, with 🧺 market · ⚡ find-buyers · 🔒/🔓 sell-ok toggle underneath. Tap anywhere on a ‘safe to sell’ card to pull up its buyers (same as ⚡). Held-back items use the same card, dimmed, with just the 🔓 allow toggle. Same data and totals as before — it just reads cleanly on desktop and phone now."] },
     { v: "1.73.0", d: "Aug 20, 2026", c: ["🃏 Cards view now carries the full detail line: 📦 current stock · ⚡ how fast it’s selling (~/min) + when it’d sell out · ↻ restock cadence (~every X, +batch) · 🎲 arrival odds (when abroad). All the numbers that used to live only in the Landing hover are now on the face of the card. (Switch to Card view via the ▭ button; it’s the default on mobile.)"] },
     { v: "1.72.1", d: "Aug 20, 2026", c: ["🎲 Clarity: dropped the ✓/✗ glyph from the Landing % — ‘✗ 24%’ read backwards (looked like 24% empty). It’s now just a colour-coded number that ALWAYS means the chance it’s IN STOCK when you land (green ≥60%, amber ≥30%, red below). So Jaguar Plushie at a red ‘24%’ = 24% chance in stock (~76% likely sold out). ↻ still marks an overdue restock."] },
