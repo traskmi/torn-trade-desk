@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.68.0
+// @version      1.69.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -312,6 +312,43 @@
     });
     return best;
   }
+  // NEXT TURN: plan the trip AFTER this one, from wherever you are now. Projects the arrival at each destination as
+  // (time to fly home to Torn) + (outbound leg), then predicts Landing at THAT future hour (seasonal) so you can pick
+  // your next hop while still in the air. Ranks land-in-stock first, then $/min. No turnaround time modeled (selling
+  // is ~instant); affordability is shown as a note.
+  function nextTurnPlan() {
+    const now = Math.floor(Date.now() / 1000), cap = state.cap;
+    const here = state.loc || (state.travelWhere === "flying" ? state.flyTo : null);
+    let returnLeg = 0; // seconds to get back to Torn from where you are (0 if already home)
+    if (state.travelWhere === "flying" && state.flyEta > 0) {
+      // flying home (flyTo null) → just the remaining time; still outbound → reach the dest, then fly back home
+      returnLeg = state.flyEta + (state.flyTo && FLY[state.flyTo] ? Math.round(rtOf(state.flyTo) / 2) * 60 : 0);
+    } else if (here && FLY[here]) {
+      returnLeg = Math.round(rtOf(here) / 2) * 60;
+    }
+    const byCC = {}; (state.rows || []).forEach(function (r) { (byCC[r.cc] || (byCC[r.cc] = [])).push(r); });
+    const plans = [];
+    Object.keys(byCC).forEach(function (cc) {
+      const f = FLY[cc]; if (!f) return;
+      const outbound = Math.round(rtOf(cc) / 2) * 60;
+      const arr = now + returnLeg + outbound;                 // when you'd touch down at cc on the next turn
+      const items = byCC[cc].slice().sort(function (a, b) { return b.ppi - a.ppi; });
+      let remaining = cap, loadProfit = 0, loadCost = 0; const picks = []; let anchor = null;
+      for (let i = 0; i < items.length && remaining > 0; i++) {
+        const it = items[i], take = Math.min(remaining, stockCeiling(it.cc, it.id, it.stock));
+        if (take <= 0) continue;
+        if (!anchor) anchor = it;
+        picks.push({ name: it.name, qty: take }); loadProfit += it.ppi * take; loadCost += it.buy * take; remaining -= take;
+      }
+      if (!picks.length) return;
+      const ol = anchor ? arrivalOutlook(anchor, arr) : null;  // Landing of the load's best item at the projected arrival hour
+      const tripPpm = Math.round((loadProfit - f.fare) / rtOf(cc));
+      plans.push({ cc: cc, country: f.name, arr: arr, outbound: outbound, loadProfit: loadProfit, loadCost: loadCost, fare: f.fare, picks: picks, filled: cap - remaining, ol: ol, tripPpm: tripPpm });
+    });
+    const rk = function (p) { const c = p.ol ? p.ol.cls : "unk"; return c === "good" ? 0 : c === "warn" ? 1 : c === "bad" ? 2 : 3; };
+    plans.sort(function (a, b) { return (rk(a) - rk(b)) || (b.tripPpm - a.tripPpm); }); // land-in-stock first, then $/min
+    return { returnLeg: returnLeg, here: here, now: now, plans: plans };
+  }
   function seasonalRecord(cc, id) {
     const key = cc + ":" + id, sd = sharedFresh();
     if (sd && sd.seasonal && sd.seasonal[key]) return sd.seasonal[key];
@@ -429,11 +466,12 @@
   //    item holds stock = selloutDur/interval), NOT by draining current stock to zero;
   //  - a SHORT hop (< one restock cycle, or no cycle data) → the near-term question: does CURRENT stock survive the
   //    trip, and if it sells out, does a restock land before you do?
-  function arrivalOutlookCore(x) {
+  function arrivalOutlookCore(x, arrOverride) {
     if (!FLY[x.cc]) return null;
     const nowS = Math.floor(Date.now() / 1000);
     let arr;
-    if (state.travelWhere === "abroad" && x.cc === state.loc) arr = nowS;
+    if (arrOverride != null) arr = arrOverride;                            // explicit arrival time (Next-Turn planner projects a future landing)
+    else if (state.travelWhere === "abroad" && x.cc === state.loc) arr = nowS;
     else if (state.travelWhere === "flying" && x.cc === state.flyTo && state.arrivalTs) arr = state.arrivalTs;
     else arr = nowS + Math.round(rtOf(x.cc) / 2) * 60;
     const flight = arr - nowS, landTxt = flight <= 30 ? "you arrive" : "you land in ~" + fmtDur(flight);
@@ -499,8 +537,8 @@
   }
   // Wrap the outlook: flag items whose stock tops out below your Cap, so the "Profit ×N" full-load figure (and its
   // $/min) aren't mistaken for reality — a rare item that restocks +3 will never fill a 28 load, however good /ea.
-  function arrivalOutlook(x) {
-    const o = arrivalOutlookCore(x);
+  function arrivalOutlook(x, arrOverride) {
+    const o = arrivalOutlookCore(x, arrOverride);
     if (o && x.ppi > 0) {
       const rp = restockPredict(x.cc, x.id);
       const maxQ = stockCeiling(x.cc, x.id, x.stock); // realistic single-trip ceiling = peak stock ever seen
@@ -665,6 +703,20 @@
     .tdk-picks{font-size:11.5px;color:#c3bda9;margin-top:5px;line-height:1.55}
     .tdk-picks b{color:#d9b441;font-family:ui-monospace,monospace;font-weight:700}
     #tdk-best .hv{color:#928b78;font-size:11px}
+    .tdk-ntwrap{margin-top:4px}
+    .tdk-nt{border:1px solid #332e1e;border-radius:10px;background:#1e1b12;padding:9px 12px;margin-bottom:7px}
+    .tdk-nt.best{border-color:#d9b441;background:#221d10}
+    .tdk-nt .nt-h{display:flex;align-items:center;gap:8px}
+    .tdk-nt .nt-dest{font-weight:800;font-size:14px;color:#ece7d8}
+    .tdk-nt .nt-ppm{margin-left:auto;font-family:ui-monospace,monospace;font-weight:800;color:#d9b441}
+    .tdk-nt .nt-ppm small{color:#928b78;font-weight:400}
+    .tdk-nt .nt-sub{font-size:11.5px;color:#c3bda9;margin-top:4px;line-height:1.5}
+    .tdk-nt .nt-sub b{color:#ece7d8;font-family:ui-monospace,monospace}
+    .tdk-nt .nt-picks{font-size:11px;color:#8f886f;margin-top:3px}
+    .tdk-nt .nt-aff{color:#d9b441}.tdk-nt .nt-over{color:#e2933f}
+    .tdk-ntteaser{border:1px solid #4a90d9;background:#152230;color:#cfe3f7;border-radius:10px;padding:8px 11px;margin-bottom:9px;font-size:12.5px;cursor:pointer}
+    .tdk-ntteaser:hover{background:#1a2a3d}
+    .tdk-ntteaser b{color:#eaf3ff}.tdk-ntteaser .hv{color:#7fa8cf}
     table.tdk{width:100%;border-collapse:collapse}
     table.tdk th{position:sticky;top:0;text-align:right;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#928b78;
       font-weight:700;padding:9px 14px;border-bottom:1px solid #3a3729;background:#201e17;white-space:nowrap}
@@ -1167,7 +1219,17 @@
             : '<div class="tdk-besttrip cashonly"><div class="l">💵 Best trip · cash only (' + money(cash) + ')</div><div class="tdk-picks">Nothing affordable on cash alone — free some stock cash first.</div></div>');
       }
     }
-    b.innerHTML = btHtml || html;
+    // When you're abroad/flying, lead with a one-line 'best next turn' teaser (return leg + projected arrival), linking to the full 🧭 planner.
+    let ntTeaser = "";
+    if (state.travelWhere === "abroad" || state.travelWhere === "flying") {
+      const np = nextTurnPlan();
+      if (np.returnLeg > 0 && np.plans.length) {
+        const p = np.plans[0], ol = p.ol, clk = new Date(p.arr * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        ntTeaser = '<div class="tdk-ntteaser" id="tdk-ntteaser" title="Open the Next-turn planner">🧭 <b>Best next turn: ' + p.country + '</b> — land ~' + clk + ' TCT · <span class="ld ld-' + (ol ? ol.cls : "unk") + '">' + (ol ? ol.txt : "?") + '</span> · $' + p.tripPpm.toLocaleString() + '/min <span class="hv">· tap for all →</span></div>';
+      }
+    }
+    b.innerHTML = ntTeaser + (btHtml || html);
+    const _ntt = host.querySelector("#tdk-ntteaser"); if (_ntt) _ntt.addEventListener("click", openNextTurn);
 
     const body = host.querySelector("#tdk-body");
     let sm = state.sort || "ppm";
@@ -2025,6 +2087,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.69.0", d: "Aug 20, 2026", c: ["🧭 Next-turn planner — plan your NEXT hop while you’re still flying home, so you don’t waste time deciding when you land. New 🧭 rail button opens a list of every destination ranked by what’ll be <b>in stock when you’d actually arrive</b> (it projects your fly-home + outbound time and predicts Landing at that future hour using the seasonal model), then $/min. Each shows the projected arrival clock (TCT), the net after airfare, the load to buy, and an affordability note (free $X from stocks). When you’re abroad/flying, a blue ‘Best next turn’ teaser also appears atop the board — tap it for the full list. No turnaround time is assumed (selling is ~instant)."] },
     { v: "1.68.0", d: "Aug 20, 2026", c: ["🔀 Stock & Landing merged into ONE context column, since only one ever applies: it shows the <b>Landing</b> prediction when you’re in Torn or flying (what’ll be there when you arrive), and flips to <b>live Stock</b> when you’re abroad (what you can actually buy right now). One less column, no redundant info — cleaner on every view (table, cards, leaderboard)."] },
     { v: "1.67.0", d: "Aug 20, 2026", c: ["📱 The board now defaults to Cards view on a phone (full item names, thumb-friendly) and Table on desktop — until you pick a view yourself, after which your choice sticks on that device. Doesn’t override a view you’ve already chosen."] },
     { v: "1.66.1", d: "Aug 20, 2026", c: ["🛬 The ‘↻ due’ tooltip now tells you HOW far past due it is — ‘~1h20m past due — 35% over the ~3h45m average’ plus how long since the last restock. Way easier to judge stay-or-go: 10% over → wait it out; 90% over on a wide-range item → maybe move on."] },
@@ -2110,6 +2173,38 @@
     const beforeFlat = Math.min(flat, Math.max(0, Math.floor(HAPPY_CAP / 2) - start));
     const doubled = Math.min(HAPPY_CAP, (start + beforeFlat) * 2);
     return Math.min(HAPPY_CAP, doubled + (flat - beforeFlat));
+  }
+  function openNextTurn() {
+    const bx = host.querySelector("#tdk-buyers");
+    bx.classList.add("open");
+    const plan = nextTurnPlan(), cap = state.cap;
+    const cash = state.cash, stocks = state.stocks || 0, funds = cash == null ? null : cash + stocks;
+    const clock = function (ts) { return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); };
+    const whereTxt = plan.here && FLY[plan.here] ? "in " + FLY[plan.here].name
+      : (state.travelWhere === "flying" && state.flyTo && FLY[state.flyTo] ? "en route from " + FLY[state.flyTo].name : "in Torn");
+    const legTxt = plan.returnLeg > 0 ? "fly home ~" + fmtDur(plan.returnLeg) + ", then out" : "you're home — straight out";
+    const head = '<div class="tdk-bh"><div class="tt">🧭 Next turn<small> — ' + whereTxt + ' · ' + legTxt + '</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>';
+    let body;
+    if (!plan.plans.length) {
+      body = '<div class="tdk-sub" style="padding:10px 4px">No destinations with a profitable load right now — hit ↻ Refresh.</div>';
+    } else {
+      body = plan.plans.map(function (p, i) {
+        const ol = p.ol, cls = ol ? ol.cls : "unk", txt = ol ? ol.txt : "?";
+        const affNote = (funds != null && p.loadCost > (cash || 0))
+          ? (p.loadCost <= funds ? ' · <span class="nt-aff">💵 free ' + money(p.loadCost - (cash || 0)) + ' from stocks</span>' : ' · <span class="nt-over">⚠ needs ' + money(p.loadCost) + '</span>')
+          : '';
+        const picks = p.picks.slice(0, 4).map(function (q) { return q.name + ' ×' + q.qty.toLocaleString(); }).join(' · ') + (p.picks.length > 4 ? ' · +' + (p.picks.length - 4) + ' more' : '');
+        return '<div class="tdk-nt' + (i === 0 ? ' best' : '') + '">' +
+          '<div class="nt-h"><span class="nt-dest">' + (i === 0 ? '★ ' : '') + p.country + '</span>' +
+            '<span class="ld ld-' + cls + '" title="' + escAttr(ol ? ol.tip : '') + '">' + txt + '</span>' +
+            '<span class="nt-ppm">$' + p.tripPpm.toLocaleString() + '<small>/min</small></span></div>' +
+          '<div class="nt-sub">land ~<b>' + clock(p.arr) + '</b> TCT · out ' + fmtDur(p.outbound) + ' · net ' + money(p.loadProfit - p.fare) + ' · fills ' + p.filled + '/' + cap + affNote + '</div>' +
+          '<div class="nt-picks">' + picks + '</div></div>';
+      }).join("");
+    }
+    const foot = plan.plans.length ? '<div class="tdk-sub" style="padding:8px 4px 2px">Ranked by what will be <b>in stock when you land</b>, then $/min. Times are TCT (=UTC). Selling your current load adds cash — affordability shown vs your cash + stocks now.</div>' : '';
+    bx.innerHTML = head + '<div class="tdk-ntwrap">' + body + foot + '</div>';
+    bindClose(bx);
   }
   async function openHappy() {
     const bx = host.querySelector("#tdk-buyers");
@@ -2593,6 +2688,7 @@
       '<aside class="tdk-rail">' +
         '<button class="tdk-btn2" id="tdk-invbtn" title="Bag — your sellable-junk inventory"><i>📦</i><span>Bag</span></button>' +
         '<button class="tdk-btn2" id="tdk-fund" title="Travel board — best $/min plays for your flight time, plus over-budget plays with how to fund them from stocks"><i>✈</i><span>Travel</span></button>' +
+        '<button class="tdk-btn2" id="tdk-next" title="Next turn — plan your next hop while flying home: fly-home + out timing, projected arrival, and what will be in stock when you land"><i>🧭</i><span>Next</span></button>' +
         '<button class="tdk-btn2" id="tdk-happy" title="Happy-jump calculator — max happy, best order &amp; reset timer"><i>😊</i><span>Happy</span></button>' +
         '<button class="tdk-btn2" id="tdk-flip" title="Quick flips — buy cheap, sell to the highest live trader"><i>💱</i><span>Flip</span></button>' +
         '<button class="tdk-btn2" id="tdk-shop" title="Shop flips — Torn city-shop items worth more on the market"><i>🏪</i><span>Shop</span></button>' +
@@ -2638,6 +2734,7 @@
     host.querySelector("#tdk-close").addEventListener("click", function () { panel.classList.remove("open"); });
     host.querySelector("#tdk-settings").addEventListener("click", openSettings);
     host.querySelector("#tdk-happy").addEventListener("click", openHappy);
+    host.querySelector("#tdk-next").addEventListener("click", openNextTurn);
     host.querySelector("#tdk-flip").addEventListener("click", openFlip);
     host.querySelector("#tdk-shop").addEventListener("click", openShopFlips);
     host.querySelector("#tdk-stk").addEventListener("click", openStocks);
