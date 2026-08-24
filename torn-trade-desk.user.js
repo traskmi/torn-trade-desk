@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.75.0
+// @version      1.76.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2114,7 +2114,7 @@
       box.innerHTML = '<div class="tdk-best"><div class="l">Bag</div>' +
         '<div class="p">' + (src.source === "none" ? 'Nothing catalogued yet' : 'Nothing sellable found') + '</div>' +
         '<div class="k">' + (src.source === "none"
-          ? 'Torn’s inventory API is down for their migration, so open your <b>Items page</b> and click through the category tabs (Candy, Drugs, Plushies, …) once — the tool catalogs what you hold as you browse, then shows every sellable item here in one place.'
+          ? 'Torn’s inventory API is down for their migration, so open your <b>Items page</b>, hit the <b>All</b> filter and scroll to the bottom once — the tool catalogs what you hold as you browse, then shows every sellable item here in one place. (To also clear out something you’ve fully sold, open that item’s category tab, or hit ↻ Rescan.)'
           : 'Nothing here is currently sellable on the market.') + '</div></div>';
       return;
     }
@@ -2186,6 +2186,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.76.0", d: "Aug 24, 2026", c: ["📦 Bag snapshot: you can now just hit the <b>All</b> filter on your Items page and scroll to catalog your whole inventory in one pass — no more clicking every category tab. Fixed the bug that made this unsafe before: Torn’s Items page loads rows as you scroll (virtualized), so the old ‘sold’ cleanup would see a category partly on-screen and wrongly drop items you owned but had scrolled past. It now only runs that cleanup from a single-category tab (which shows that category in full); the All view purely adds/updates counts. Note: an item you’ve fully sold out of vanishes from the list entirely, so to remove it, open its category tab or hit ↻ Rescan."] },
     { v: "1.75.0", d: "Aug 24, 2026", c: ["🏪 Shop Flips is now grouped by shop (redesign part 3). Instead of one flat list, each buy-low→sell-market flip sits under the Torn shop that actually sells it — Big Al's, Bits ’n’ Bobs, Recycling Center, Docks, Pharmacy, and so on — with each shop headed by its item count and best spread, and shops ordered by their top opportunity. So you can plan one shopping trip per shop instead of hopping around. (Shop names come from Torn’s v2 item catalog, cached for a week; everything else — prices, ⚡ buyers, 🛒 market link — works exactly as before.)"] },
     { v: "1.74.0", d: "Aug 24, 2026", c: ["📦 Bag facelift (redesign part 3): the sellable-junk list is now the same value-card layout as the travel board instead of a cramped table. Each item is a card — name + 🎁 pack open-EV on the left, its total $ value big on the right, with 🧺 market · ⚡ find-buyers · 🔒/🔓 sell-ok toggle underneath. Tap anywhere on a ‘safe to sell’ card to pull up its buyers (same as ⚡). Held-back items use the same card, dimmed, with just the 🔓 allow toggle. Same data and totals as before — it just reads cleanly on desktop and phone now."] },
     { v: "1.73.0", d: "Aug 20, 2026", c: ["🃏 Cards view now carries the full detail line: 📦 current stock · ⚡ how fast it’s selling (~/min) + when it’d sell out · ↻ restock cadence (~every X, +batch) · 🎲 arrival odds (when abroad). All the numbers that used to live only in the Landing hover are now on the face of the card. (Switch to Card view via the ▭ button; it’s the default on mobile.)"] },
@@ -2952,11 +2953,16 @@
       // Track equipped state (item.php marks worn items) so the Bag never lists a worn item as sellable.
       if (li.getAttribute("data-equipped") === "true") equip[id] = 1; else delete equip[id];
     });
-    Object.keys(map).forEach(function (id) {
-      if (seen[id]) return;
-      const cat = meta[id] && meta[id].type;
-      if (cat && catsPresent[cat]) { delete map[id]; delete equip[id]; }
-    });
+    // Prune "sold to zero" items only from a SINGLE-category tab, which renders that category's full set.
+    // item.php virtualizes the "All"/mixed view (rows load as you scroll), so a present category is only
+    // partially in the DOM there — pruning against it would wrongly drop items you own but scrolled past.
+    if (Object.keys(catsPresent).length === 1) {
+      Object.keys(map).forEach(function (id) {
+        if (seen[id]) return;
+        const cat = meta[id] && meta[id].type;
+        if (cat && catsPresent[cat]) { delete map[id]; delete equip[id]; }
+      });
+    }
     GM_setValue("inv_counts", { map: map, equip: equip, at: Date.now() });
   }
   function annotateItemsPage() {
