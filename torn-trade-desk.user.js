@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.72.1
+// @version      1.73.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -819,6 +819,7 @@
     .tk-card .tk-cl{min-width:0;flex:1}
     .tk-card .tk-cl .cy{color:#a49c88;font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .tk-card .tk-cl .cy2{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:#8f886f;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .tk-card .tk-cl .tk-cd{font-size:10.5px;color:#a49c88;margin-top:5px;line-height:1.55;border-top:1px solid #2a2619;padding-top:5px}
     .tk-card .tk-cr{text-align:right;white-space:nowrap}
     .tk-card .tk-cppm{font-family:ui-monospace,monospace;color:#d9b441;font-weight:800;font-size:16px}
     .tk-card .tk-cppm small{color:#8f886f;font-weight:500;font-size:11px}
@@ -1345,10 +1346,18 @@
       const dataAttr = ' data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '"';
 
       if (view === "cards") {
+        const rpd = restockPredict(x.cc, x.id);
+        const dparts = ['📦 ' + (x.stock > 0 ? x.stock.toLocaleString() + ' now' : 'out')];
+        if (tr && tr.dq < 0 && tr.perMin) { const rr = Math.abs(Math.round(tr.perMin)); if (rr > 0) dparts.push('⚡ ~' + rr + '/min' + (x.stock > 0 ? ', out in ~' + fmtDur(Math.round(x.stock / rr * 60)) : '')); }
+        else if (tr && tr.dq > 0) dparts.push('▲ restocked +' + tr.dq.toLocaleString());
+        if (rpd) dparts.push('↻ ~every ' + fmtDur(rpd.interval) + (rpd.batch ? ' (+' + rpd.batch.toLocaleString() + ')' : ''));
+        if (ol && ol.p != null && abroadMode) dparts.push('🎲 ~' + Math.round(ol.p * 100) + '% in stock on arrival');
+        const detail = '<div class="tk-cd">' + dparts.join(' · ') + '</div>';
         return '<div class="tk-card ' + cls + '"' + dataAttr + '>' +
           '<div class="tk-cl">' + nm +
             '<div class="cy">' + x.country + ' ✈ · ' + rtTxt + ago(x.freshS) + ' old' + ocBadge + '</div>' +
-            '<div class="cy2">' + money(x.buy) + ' → ' + money(x.sell) + sellTag + ' · ' + loadInline + '</div></div>' +
+            '<div class="cy2">' + money(x.buy) + ' → ' + money(x.sell) + sellTag + ' · ' + loadInline + '</div>' +
+            detail + '</div>' +
           '<div class="tk-cr"><div class="tk-cppm">' + ppmTxt + '<small>/min</small></div>' +
             '<div class="tk-csub">' + availCell + ' · <b class="gd">+' + profit + '</b></div></div></div>';
       }
@@ -2135,6 +2144,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.73.0", d: "Aug 20, 2026", c: ["🃏 Cards view now carries the full detail line: 📦 current stock · ⚡ how fast it’s selling (~/min) + when it’d sell out · ↻ restock cadence (~every X, +batch) · 🎲 arrival odds (when abroad). All the numbers that used to live only in the Landing hover are now on the face of the card. (Switch to Card view via the ▭ button; it’s the default on mobile.)"] },
     { v: "1.72.1", d: "Aug 20, 2026", c: ["🎲 Clarity: dropped the ✓/✗ glyph from the Landing % — ‘✗ 24%’ read backwards (looked like 24% empty). It’s now just a colour-coded number that ALWAYS means the chance it’s IN STOCK when you land (green ≥60%, amber ≥30%, red below). So Jaguar Plushie at a red ‘24%’ = 24% chance in stock (~76% likely sold out). ↻ still marks an overdue restock."] },
     { v: "1.72.0", d: "Aug 20, 2026", c: ["🎲 Landing is now an ODDS SHEET. Instead of ✓/◐/✗ buckets it shows an actual in-stock probability — ‘✓ 92%’, ‘◐ 46%’, ‘✗ 12%’, ‘↻ 46%’ — coloured by likelihood (green ≥60%, amber ≥30%, red below). It’s built from the seasonal cycle-occupancy rate, then nudged by current state (in stock & surviving → high; out & overdue → the odds it pops back before you land; the more overdue, the higher). Since Torn deliberately randomises restocks, this is honestly a bet, not a promise — the % just lets you play the odds. Landing sort now ranks by probability. (Partial loads still show the count, e.g. ‘◐ 5/28’.)"] },
     { v: "1.71.0", d: "Aug 20, 2026", c: ["🧭 The Next-turn planner (teaser + 🧭 panel) now honors your ≤Nh trip-time filter — it was suggesting long-hauls like South Africa (~9h) even with ‘≤2h’ set. Set a limit and next-turn options stay within it."] },
