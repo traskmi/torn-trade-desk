@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.69.1
+// @version      1.70.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -278,6 +278,16 @@
     const rec = evRecord(cc, id);
     return Math.max((rec && rec.max) || 0, curStock || 0);
   }
+  // How many of an item a trip load should count on — gated by the arrival prediction so we never recommend buying
+  // something that won't be there. Predicted Empty → 0; out right now and NOT confidently restocked by arrival → 0;
+  // otherwise the realistic ceiling. (arrOverride lets the Next-turn planner judge availability at a FUTURE landing.)
+  function loadAvail(it, arrOverride) {
+    const ol = (arrOverride != null) ? arrivalOutlook(it, arrOverride) : it._ol;
+    const cls = ol ? ol.cls : null;
+    if (cls === "bad") return 0;                              // predicted empty when you land
+    if ((it.stock || 0) <= 0 && cls !== "good") return 0;     // out now, and not a confident restock-on-arrival
+    return stockCeiling(it.cc, it.id, it.stock);
+  }
   // $/min the item realistically contributes to a shared-fare load: profit for the qty you can actually buy
   // (min(cap, ceiling)), minus that qty's PRO-RATED share of the airfare (the flight is spread over the whole
   // load), over the round trip. So a +3 item is ranked as its 3-slot contribution — not a fantasy full load, and
@@ -299,16 +309,21 @@
       const f = FLY[cc]; if (!f) return;
       const goods = (budget != null) ? Math.max(0, budget - f.fare) : null; // spend cap on goods, after the airfare
       const items = byCC[cc].slice().sort(function (a, b) { return b.ppi - a.ppi; });
-      let remaining = cap, loadProfit = 0, loadCost = 0; const picks = [];
+      let remaining = cap, loadProfit = 0, loadCost = 0; const picks = []; let pending = null;
       for (let i = 0; i < items.length && remaining > 0; i++) {
-        const it = items[i]; let take = Math.min(remaining, stockCeiling(it.cc, it.id, it.stock));
+        const it = items[i], avail = loadAvail(it); // gated by the arrival prediction — won't load an out/empty item
+        if (avail <= 0) { // couldn't include it — if it's a high-value item that's just OUT (not empty-forever), note it as "if it restocks"
+          if ((it.stock || 0) <= 0 && it.ppi > 0 && it._ol && it._ol.cls !== "bad" && (!pending || it.ppi > pending.ppi)) pending = { name: it.name, txt: it._ol.txt, ppi: it.ppi };
+          continue;
+        }
+        let take = Math.min(remaining, avail);
         if (goods != null && it.buy > 0) take = Math.min(take, Math.floor(Math.max(0, goods - loadCost) / it.buy)); // stop at what you can afford
         if (take <= 0) continue;
         picks.push({ name: it.name, qty: take }); loadProfit += it.ppi * take; loadCost += it.buy * take; remaining -= take;
       }
       if (!picks.length) return;
       const tripPpm = Math.round((loadProfit - f.fare) / rtOf(cc));
-      if (!best || tripPpm > best.tripPpm) best = { cc: cc, country: f.name, tripPpm: tripPpm, loadProfit: loadProfit, loadCost: loadCost, fare: f.fare, picks: picks, filled: cap - remaining };
+      if (!best || tripPpm > best.tripPpm) best = { cc: cc, country: f.name, tripPpm: tripPpm, loadProfit: loadProfit, loadCost: loadCost, fare: f.fare, picks: picks, filled: cap - remaining, pending: pending };
     });
     return best;
   }
@@ -333,15 +348,17 @@
       const outbound = Math.round(rtOf(cc) / 2) * 60;
       const arr = now + returnLeg + outbound;                 // when you'd touch down at cc on the next turn
       const items = byCC[cc].slice().sort(function (a, b) { return b.ppi - a.ppi; });
-      let remaining = cap, loadProfit = 0, loadCost = 0; const picks = []; let anchor = null;
+      let remaining = cap, loadProfit = 0, loadCost = 0; const picks = []; let anchorOl = null;
       for (let i = 0; i < items.length && remaining > 0; i++) {
-        const it = items[i], take = Math.min(remaining, stockCeiling(it.cc, it.id, it.stock));
-        if (take <= 0) continue;
-        if (!anchor) anchor = it;
+        const it = items[i], iol = arrivalOutlook(it, arr), cls = iol ? iol.cls : null; // availability at the PROJECTED arrival
+        const avail = (cls === "bad" || ((it.stock || 0) <= 0 && cls !== "good")) ? 0 : stockCeiling(it.cc, it.id, it.stock);
+        if (avail <= 0) continue;
+        if (!anchorOl) anchorOl = iol; // Landing of the load's best fillable item at the projected arrival hour
+        const take = Math.min(remaining, avail);
         picks.push({ name: it.name, qty: take }); loadProfit += it.ppi * take; loadCost += it.buy * take; remaining -= take;
       }
       if (!picks.length) return;
-      const ol = anchor ? arrivalOutlook(anchor, arr) : null;  // Landing of the load's best item at the projected arrival hour
+      const ol = anchorOl;
       const tripPpm = Math.round((loadProfit - f.fare) / rtOf(cc));
       plans.push({ cc: cc, country: f.name, arr: arr, outbound: outbound, loadProfit: loadProfit, loadCost: loadCost, fare: f.fare, picks: picks, filled: cap - remaining, ol: ol, tripPpm: tripPpm });
     });
@@ -1200,7 +1217,9 @@
         '<div class="l">' + label + (travelMult() < 1 ? ' · ' + travelLabel() : '') + '</div>' +
         '<div class="p">' + t.country + ' <span>· fills ' + t.filled + '/' + cap + ' slots</span></div>' +
         '<div class="k"><b>$' + t.tripPpm.toLocaleString() + '</b>/min · net ' + money(t.loadProfit - t.fare) + ' · costs ' + money(t.loadCost) + '</div>' +
-        '<div class="tdk-picks">Buy: ' + pk + '</div>' + (note || '') + '</div>';
+        '<div class="tdk-picks">Buy: ' + pk + '</div>' +
+        (t.pending ? '<div class="tdk-fund2">⏳ <b>' + t.pending.name + '</b> is out (' + t.pending.txt + ') — the top play here if it restocks; not counted in this load.</div>' : '') +
+        (note || '') + '</div>';
     };
     // Two plays: what you can run on ALL funds (cash + stocks liquidated), and what fits your CASH in hand right now.
     const fundBt = bestTrip(rows, funds);
@@ -2087,6 +2106,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.70.0", d: "Aug 20, 2026", c: ["🎯 Best trip & Next turn no longer tell you to buy items that aren’t in stock. The load-fill was using an item’s PEAK stock ever seen, so it happily loaded up on something showing ✗ Empty / ↻ due (e.g. ‘Buy Xanax ×27’ when Xanax was out). Now it only fills with what the Landing prediction says will actually be there on arrival — an item that’s out now and not confidently restocked by the time you land is left out. If that item is a high-value one that’s merely due (could restock), it’s called out separately: ‘⏳ Xanax is out (↻ due) — the top play here if it restocks; not counted in this load.’"] },
     { v: "1.69.1", d: "Aug 20, 2026", c: ["🧭 Fix: the ‘Best next turn’ teaser didn’t appear when you’d just started flying outbound — opening the panel only refreshed when it had NO data, so it kept the stale pre-takeoff ‘home’ state (no return leg → no teaser). Opening the panel now also refreshes when the data is >60s old, so your travel state (and the next-turn teaser) is current. Tip: hit ↻ Refresh right after takeoff if the panel was already open."] },
     { v: "1.69.0", d: "Aug 20, 2026", c: ["🧭 Next-turn planner — plan your NEXT hop while you’re still flying home, so you don’t waste time deciding when you land. New 🧭 rail button opens a list of every destination ranked by what’ll be <b>in stock when you’d actually arrive</b> (it projects your fly-home + outbound time and predicts Landing at that future hour using the seasonal model), then $/min. Each shows the projected arrival clock (TCT), the net after airfare, the load to buy, and an affordability note (free $X from stocks). When you’re abroad/flying, a blue ‘Best next turn’ teaser also appears atop the board — tap it for the full list. No turnaround time is assumed (selling is ~instant)."] },
     { v: "1.68.0", d: "Aug 20, 2026", c: ["🔀 Stock & Landing merged into ONE context column, since only one ever applies: it shows the <b>Landing</b> prediction when you’re in Torn or flying (what’ll be there when you arrive), and flips to <b>live Stock</b> when you’re abroad (what you can actually buy right now). One less column, no redundant info — cleaner on every view (table, cards, leaderboard)."] },
