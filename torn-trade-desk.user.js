@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.66.1
+// @version      1.67.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -58,7 +58,8 @@
   }
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "landing"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt"), boardView: GM_getValue("boardView", "table") };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "landing"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt"), boardView: GM_getValue("boardView", null) };
+  function isMobile() { return (window.innerWidth || document.documentElement.clientWidth || 0) <= 560; } // matches the CSS breakpoint
   // One-time: make Landing (what'll be in stock when you arrive) the default board sort for existing installs still on the old $/min default.
   try { if (!GM_getValue("landing_default_v1", false)) { if (state.sort === "ppm") { state.sort = "landing"; GM_setValue("sort", "landing"); } GM_setValue("landing_default_v1", true); } } catch (e) { }
   const fmtRt = function (min) { const h = Math.floor(min / 60), m = min % 60; return (h ? h + "h" : "") + (m ? m + "m" : "") || "0m"; };
@@ -1185,7 +1186,8 @@
     const g = ocGuard();
     const pStk = primaryStockAcronym();
 
-    const view = state.boardView || "table";
+    // No explicit choice yet → pick a sensible default per screen: Cards on a phone (roomy names, thumb-friendly), Table on desktop.
+    const view = state.boardView || (isMobile() ? "cards" : "table");
     host.querySelectorAll("#tdk-vsw button").forEach(function (vb) { vb.classList.toggle("on", vb.getAttribute("data-view") === view); });
     const ssel = host.querySelector("#tdk-sortsel"); if (ssel && ssel.value !== sm) ssel.value = sm;
     const maxPpm = disp.reduce(function (m, x) { return Math.max(m, x.ppm); }, 0) || 1;
@@ -2016,6 +2018,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.67.0", d: "Aug 20, 2026", c: ["📱 The board now defaults to Cards view on a phone (full item names, thumb-friendly) and Table on desktop — until you pick a view yourself, after which your choice sticks on that device. Doesn’t override a view you’ve already chosen."] },
     { v: "1.66.1", d: "Aug 20, 2026", c: ["🛬 The ‘↻ due’ tooltip now tells you HOW far past due it is — ‘~1h20m past due — 35% over the ~3h45m average’ plus how long since the last restock. Way easier to judge stay-or-go: 10% over → wait it out; 90% over on a wide-range item → maybe move on."] },
     { v: "1.66.0", d: "Aug 20, 2026", c: ["🎯 Restock interval now tracks the RECENT cadence instead of an all-time median. If the collector missed a stretch (offline / unrecorded restocks) or the cadence changed, a flat median got badly inflated — e.g. Canada Xanax read ~15h when it really restocks ~every 3h45m. It now uses the last ~12 gaps and ignores outlier gaps (>2.2× typical, which usually mean a restock or two went unrecorded). Result: the next-restock ETA and Landing odds are honest again (Canada Xanax: ‘next ~2h31m’, not ‘due anytime’). Steady items (UK Xanax, Jaguar) are essentially unchanged."] },
     { v: "1.65.0", d: "Aug 18, 2026", c: ["🕐 Seasonal Landing model — the day×hour sell-rate history we’ve been collecting now sharpens long-flight predictions. Instead of a flat ‘in stock X% of each cycle’, it scales by how fast the item sells AT YOUR ARRIVAL HOUR vs its own average. Example: Xanax→UK reads ~60% in-stock if you land at a quiet 2:00 TCT, but ~28% at the 18:00 TCT rush — same item, same flight, honest odds. The tooltip flags it: ‘⏱ Sells ~44% faster than usual when you land — grab it quick’ (or ‘slower — more forgiving’). Hour-of-day turns out to matter far more than weekday/weekend. Falls back exactly to the old estimate when there’s no seasonal data for that item."] },
