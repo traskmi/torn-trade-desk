@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.67.0
+// @version      1.68.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -692,8 +692,7 @@
     /* Board table: fixed layout so the 5 columns always fit the panel — no horizontal scroll (scoped to #tdk-board so the Bag/pack tables are untouched) */
     #tdk-board table.tdk{table-layout:fixed}
     #tdk-board table.tdk th[data-sort="fullprofit"]{width:96px}
-    #tdk-board table.tdk th[data-sort="stock"]{width:84px}
-    #tdk-board table.tdk th.ld{width:104px}
+    #tdk-board table.tdk th.avail{width:104px}
     #tdk-board table.tdk th[data-sort="ppm"]{width:100px}
     #tdk-board table.tdk td.ppm,#tdk-board table.tdk th[data-sort="ppm"]{padding-right:22px} /* keep $/min off the panel's right edge / scrollbar */
     #tdk-board table.tdk td.l{overflow:hidden}
@@ -992,8 +991,7 @@
       #tdk-board table.tdk th,#tdk-board table.tdk td{padding-left:5px;padding-right:5px}
       #tdk-board table.tdk{font-size:11.5px}
       #tdk-board table.tdk th[data-sort="fullprofit"]{width:60px}
-      #tdk-board table.tdk th[data-sort="stock"]{width:46px}
-      #tdk-board table.tdk th.ld{width:62px}
+      #tdk-board table.tdk th.avail{width:66px}
       #tdk-board table.tdk th[data-sort="ppm"]{width:56px}
       #tdk-board table.tdk td.ppm,#tdk-board table.tdk th[data-sort="ppm"]{padding-right:8px}
       .tk-cards,.tk-lb,.tk-flipwrap{padding-left:8px;padding-right:8px}
@@ -1182,6 +1180,15 @@
     else if (sm === "ppm") disp.sort(function (a, b) { return b.ppm - a.ppm; });
     else if (sm === "fullprofit") disp.sort(function (a, b) { return b.ppi - a.ppi; });
     else disp.sort(function (a, b) { return (b[sm] || 0) - (a[sm] || 0); });
+    // Adaptive availability column: LIVE Stock when you're abroad (you can buy now), else the Landing prediction
+    // (what'll be there if you fly). Only one applies at a time, so we show just the relevant one.
+    const abroadMode = state.travelWhere === "abroad";
+    const availTh = host.querySelector("#tdk-avail");
+    if (availTh) {
+      availTh.textContent = abroadMode ? "Stock" : "Landing";
+      availTh.setAttribute("data-sort", abroadMode ? "stock" : "landing");
+      availTh.title = abroadMode ? "Live foreign stock right now — what you can buy while you're here." : "Predicted stock when you touch down if you flew there from Torn right now.";
+    }
     host.querySelectorAll("#tdk-board th.so").forEach(function (th) { th.classList.toggle("on", th.getAttribute("data-sort") === sm); });
     const g = ocGuard();
     const pStk = primaryStockAcronym();
@@ -1223,6 +1230,7 @@
       const profit = money(x.ppi * cap), ppmTxt = '$' + x.ppm.toLocaleString();
       const loadWarn = (ol && ol.underLoad) ? ' <span class="loadwarn" title="' + escAttr("Tops out ~" + ol.maxQ + " in stock — cannot fill a full " + cap + " load; a realistic trip nets ~" + money(x.ppi * ol.maxQ)) + '">⚠</span>' : '';
       const ldPill = ol ? '<span class="ld ld-' + ol.cls + '" title="' + escAttr(ol.tip) + '">' + ol.txt + '</span>' : '<span class="ld ld-unk">·</span>';
+      const availCell = abroadMode ? sc : ldPill; // abroad → live Stock; home/flying → Landing prediction
       const nm = '<span class="nm">' + x.name + mark + '</span>';
       const dataAttr = ' data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '"';
 
@@ -1232,7 +1240,7 @@
             '<div class="cy">' + x.country + ' ✈ · ' + rtTxt + ago(x.freshS) + ' old' + ocBadge + '</div>' +
             '<div class="cy2">' + money(x.buy) + ' → ' + money(x.sell) + sellTag + ' · ' + loadInline + '</div></div>' +
           '<div class="tk-cr"><div class="tk-cppm">' + ppmTxt + '<small>/min</small></div>' +
-            '<div class="tk-csub">' + ldPill + ' · <b class="gd">+' + profit + '</b> · ' + sc + '</div></div></div>';
+            '<div class="tk-csub">' + availCell + ' · <b class="gd">+' + profit + '</b></div></div></div>';
       }
       if (view === "bars") {
         const pct = Math.max(4, Math.round(x.ppm / maxPpm * 100));
@@ -1240,8 +1248,8 @@
         return '<div class="tk-bar b-' + bcl + (cls.indexOf("dim") >= 0 ? " dim" : "") + '"' + dataAttr + '>' +
           '<span class="tk-fill" style="width:' + pct + '%"></span>' +
           '<span class="tk-rank">' + (i + 1) + '</span>' +
-          '<span class="tk-bn">' + x.name + mark + '<small>' + x.country + ' · ' + fmtRt(rtOf(x.cc)) + ' rt · +' + profit + ' · ' + sc + '</small></span>' +
-          '<span class="tk-br"><span class="tk-bp">' + ppmTxt + '</span>' + ldPill + '</span></div>';
+          '<span class="tk-bn">' + x.name + mark + '<small>' + x.country + ' · ' + fmtRt(rtOf(x.cc)) + ' rt · +' + profit + '</small></span>' +
+          '<span class="tk-br"><span class="tk-bp">' + ppmTxt + '</span>' + availCell + '</span></div>';
       }
       if (view === "dep") {
         const stt = ol ? (ol.cls === "good" ? ["go", "BOARDING"] : ol.cls === "warn" ? ["warn", "LIMITED"] : ol.cls === "bad" ? ["no", "CANCELLED"] : ["mut", "—"]) : ["mut", "—"];
@@ -1257,8 +1265,7 @@
           '<div class="cy"><a class="fly" href="https://www.torn.com/page.php?sid=travel" title="Open the travel agency">' + x.country + ' ✈</a> · ' + rtTxt + ago(x.freshS) + ' old' + ocBadge + '</div>' +
           '<div class="cy2">' + money(x.buy) + ' → ' + money(x.sell) + sellTag + ' · ' + loadInline + '</div></td>' +
         '<td class="gd">' + profit + loadWarn + '</td>' +
-        '<td>' + sc + '</td>' +
-        '<td class="ldc">' + ldPill + '</td>' +
+        '<td class="ldc">' + availCell + '</td>' +
         '<td class="ppm">' + ppmTxt + '</td></tr>';
     }).join("");
 
@@ -2018,6 +2025,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.68.0", d: "Aug 20, 2026", c: ["🔀 Stock & Landing merged into ONE context column, since only one ever applies: it shows the <b>Landing</b> prediction when you’re in Torn or flying (what’ll be there when you arrive), and flips to <b>live Stock</b> when you’re abroad (what you can actually buy right now). One less column, no redundant info — cleaner on every view (table, cards, leaderboard)."] },
     { v: "1.67.0", d: "Aug 20, 2026", c: ["📱 The board now defaults to Cards view on a phone (full item names, thumb-friendly) and Table on desktop — until you pick a view yourself, after which your choice sticks on that device. Doesn’t override a view you’ve already chosen."] },
     { v: "1.66.1", d: "Aug 20, 2026", c: ["🛬 The ‘↻ due’ tooltip now tells you HOW far past due it is — ‘~1h20m past due — 35% over the ~3h45m average’ plus how long since the last restock. Way easier to judge stay-or-go: 10% over → wait it out; 90% over on a wide-range item → maybe move on."] },
     { v: "1.66.0", d: "Aug 20, 2026", c: ["🎯 Restock interval now tracks the RECENT cadence instead of an all-time median. If the collector missed a stretch (offline / unrecorded restocks) or the cadence changed, a flat median got badly inflated — e.g. Canada Xanax read ~15h when it really restocks ~every 3h45m. It now uses the last ~12 gaps and ignores outlier gaps (>2.2× typical, which usually mean a restock or two went unrecorded). Result: the next-restock ETA and Landing odds are honest again (Canada Xanax: ‘next ~2h31m’, not ‘due anytime’). Steady items (UK Xanax, Jaguar) are essentially unchanged."] },
@@ -2617,7 +2625,7 @@
               '<button data-view="dep" title="Departures board">✈</button>' +
             '</span>' +
           '</div>' +
-          '<table class="tdk"><thead><tr><th class="l">Item <span class="thsub">buy → resale · load</span></th><th id="tdk-th-full" class="so" data-sort="fullprofit" title="Total profit for a full load (profit/ea × cap), before airfare. Set Cap to 1 to see per-item profit.">Profit ×' + state.cap + '</th><th class="so" data-sort="stock">Stock</th><th class="so ld" data-sort="landing" title="Predicted stock when you touch down if you flew there from Torn right now. Sort groups what will be in stock on arrival first, then by $/min.">Landing</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
+          '<table class="tdk"><thead><tr><th class="l">Item <span class="thsub">buy → resale · load</span></th><th id="tdk-th-full" class="so" data-sort="fullprofit" title="Total profit for a full load (profit/ea × cap), before airfare. Set Cap to 1 to see per-item profit.">Profit ×' + state.cap + '</th><th class="so avail" id="tdk-avail" data-sort="landing" title="Predicted stock when you touch down if you flew there from Torn right now.">Landing</th><th class="so" data-sort="ppm">$/min</th></tr></thead><tbody id="tdk-body"></tbody></table>' +
           '<div id="tdk-lens" style="display:none"></div>' +
           '<div class="tdk-mug" id="tdk-mug"></div>' +
         '</div>' +
