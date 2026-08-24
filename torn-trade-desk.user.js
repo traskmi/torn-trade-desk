@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.69.0
+// @version      1.69.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2087,6 +2087,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.69.1", d: "Aug 20, 2026", c: ["🧭 Fix: the ‘Best next turn’ teaser didn’t appear when you’d just started flying outbound — opening the panel only refreshed when it had NO data, so it kept the stale pre-takeoff ‘home’ state (no return leg → no teaser). Opening the panel now also refreshes when the data is >60s old, so your travel state (and the next-turn teaser) is current. Tip: hit ↻ Refresh right after takeoff if the panel was already open."] },
     { v: "1.69.0", d: "Aug 20, 2026", c: ["🧭 Next-turn planner — plan your NEXT hop while you’re still flying home, so you don’t waste time deciding when you land. New 🧭 rail button opens a list of every destination ranked by what’ll be <b>in stock when you’d actually arrive</b> (it projects your fly-home + outbound time and predicts Landing at that future hour using the seasonal model), then $/min. Each shows the projected arrival clock (TCT), the net after airfare, the load to buy, and an affordability note (free $X from stocks). When you’re abroad/flying, a blue ‘Best next turn’ teaser also appears atop the board — tap it for the full list. No turnaround time is assumed (selling is ~instant)."] },
     { v: "1.68.0", d: "Aug 20, 2026", c: ["🔀 Stock & Landing merged into ONE context column, since only one ever applies: it shows the <b>Landing</b> prediction when you’re in Torn or flying (what’ll be there when you arrive), and flips to <b>live Stock</b> when you’re abroad (what you can actually buy right now). One less column, no redundant info — cleaner on every view (table, cards, leaderboard)."] },
     { v: "1.67.0", d: "Aug 20, 2026", c: ["📱 The board now defaults to Cards view on a phone (full item names, thumb-friendly) and Table on desktop — until you pick a view yourself, after which your choice sticks on that device. Doesn’t override a view you’ve already chosen."] },
@@ -2730,7 +2731,7 @@
     host.appendChild(panel);
     const buyers = document.createElement("div"); buyers.id = "tdk-buyers"; host.appendChild(buyers);
 
-    btn.addEventListener("click", function () { panel.classList.toggle("open"); if (panel.classList.contains("open")) { if (!state.rows.length) refresh(); checkInvStatus(); } });
+    btn.addEventListener("click", function () { panel.classList.toggle("open"); if (panel.classList.contains("open")) { if (!state.rows.length || Date.now() - (state._lastRefreshAt || 0) > 60000) refresh(); checkInvStatus(); } });
     host.querySelector("#tdk-close").addEventListener("click", function () { panel.classList.remove("open"); });
     host.querySelector("#tdk-settings").addEventListener("click", openSettings);
     host.querySelector("#tdk-happy").addEventListener("click", openHappy);
