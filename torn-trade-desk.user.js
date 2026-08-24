@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.70.0
+// @version      1.71.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -341,7 +341,11 @@
     } else if (here && FLY[here]) {
       returnLeg = Math.round(rtOf(here) / 2) * 60;
     }
-    const byCC = {}; (state.rows || []).forEach(function (r) { (byCC[r.cc] || (byCC[r.cc] = [])).push(r); });
+    const byCC = {};
+    (state.rows || []).forEach(function (r) {
+      if (state.maxTrip && FLY[r.cc] && rtOf(r.cc) > state.maxTrip) return; // honor the ≤Nh trip filter — no long-haul next-turns
+      (byCC[r.cc] || (byCC[r.cc] = [])).push(r);
+    });
     const plans = [];
     Object.keys(byCC).forEach(function (cc) {
       const f = FLY[cc]; if (!f) return;
@@ -2106,6 +2110,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.71.0", d: "Aug 20, 2026", c: ["🧭 The Next-turn planner (teaser + 🧭 panel) now honors your ≤Nh trip-time filter — it was suggesting long-hauls like South Africa (~9h) even with ‘≤2h’ set. Set a limit and next-turn options stay within it."] },
     { v: "1.70.0", d: "Aug 20, 2026", c: ["🎯 Best trip & Next turn no longer tell you to buy items that aren’t in stock. The load-fill was using an item’s PEAK stock ever seen, so it happily loaded up on something showing ✗ Empty / ↻ due (e.g. ‘Buy Xanax ×27’ when Xanax was out). Now it only fills with what the Landing prediction says will actually be there on arrival — an item that’s out now and not confidently restocked by the time you land is left out. If that item is a high-value one that’s merely due (could restock), it’s called out separately: ‘⏳ Xanax is out (↻ due) — the top play here if it restocks; not counted in this load.’"] },
     { v: "1.69.1", d: "Aug 20, 2026", c: ["🧭 Fix: the ‘Best next turn’ teaser didn’t appear when you’d just started flying outbound — opening the panel only refreshed when it had NO data, so it kept the stale pre-takeoff ‘home’ state (no return leg → no teaser). Opening the panel now also refreshes when the data is >60s old, so your travel state (and the next-turn teaser) is current. Tip: hit ↻ Refresh right after takeoff if the panel was already open."] },
     { v: "1.69.0", d: "Aug 20, 2026", c: ["🧭 Next-turn planner — plan your NEXT hop while you’re still flying home, so you don’t waste time deciding when you land. New 🧭 rail button opens a list of every destination ranked by what’ll be <b>in stock when you’d actually arrive</b> (it projects your fly-home + outbound time and predicts Landing at that future hour using the seasonal model), then $/min. Each shows the projected arrival clock (TCT), the net after airfare, the load to buy, and an affordability note (free $X from stocks). When you’re abroad/flying, a blue ‘Best next turn’ teaser also appears atop the board — tap it for the full list. No turnaround time is assumed (selling is ~instant)."] },
