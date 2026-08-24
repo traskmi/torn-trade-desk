@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.72.0
+// @version      1.72.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -529,9 +529,10 @@
     const selloutAdjP = (rp && rp.selloutDur > 0) ? rp.selloutDur / tempo : 0;
     const cycleFrac = (rp && rp.interval > 0 && selloutAdjP > 0) ? Math.min(1, selloutAdjP / rp.interval) : (st > 0 ? 1 : 0);
     const clampP = function (v) { return Math.max(0.02, Math.min(0.98, v)); };
-    const GLYPH = { good: "✓", warn: "◐", bad: "✗", unk: "?" };
     const clsOf = function (p) { return p >= 0.6 ? "good" : p >= 0.3 ? "warn" : "bad"; };
-    const pill = function (cls, p, pre) { return (pre || GLYPH[cls]) + " " + Math.round(p * 100) + "%"; };
+    // The % is ALWAYS the chance it's in stock on arrival; colour (green/amber/red) carries the tier. No ✓/✗ glyph —
+    // pairing "✗" with a number reads backwards ("✗ 24%" looks like 24% empty, when it means 24% in stock).
+    const pill = function (cls, p, pre) { return (pre ? pre + " " : "") + Math.round(p * 100) + "%"; };
 
     // --- LONG flight: item restocks ≥1× in transit → availability is set by the CYCLE, not depletion ---
     if (rp && rp.interval > 0 && flight >= rp.interval) {
@@ -2134,6 +2135,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.72.1", d: "Aug 20, 2026", c: ["🎲 Clarity: dropped the ✓/✗ glyph from the Landing % — ‘✗ 24%’ read backwards (looked like 24% empty). It’s now just a colour-coded number that ALWAYS means the chance it’s IN STOCK when you land (green ≥60%, amber ≥30%, red below). So Jaguar Plushie at a red ‘24%’ = 24% chance in stock (~76% likely sold out). ↻ still marks an overdue restock."] },
     { v: "1.72.0", d: "Aug 20, 2026", c: ["🎲 Landing is now an ODDS SHEET. Instead of ✓/◐/✗ buckets it shows an actual in-stock probability — ‘✓ 92%’, ‘◐ 46%’, ‘✗ 12%’, ‘↻ 46%’ — coloured by likelihood (green ≥60%, amber ≥30%, red below). It’s built from the seasonal cycle-occupancy rate, then nudged by current state (in stock & surviving → high; out & overdue → the odds it pops back before you land; the more overdue, the higher). Since Torn deliberately randomises restocks, this is honestly a bet, not a promise — the % just lets you play the odds. Landing sort now ranks by probability. (Partial loads still show the count, e.g. ‘◐ 5/28’.)"] },
     { v: "1.71.0", d: "Aug 20, 2026", c: ["🧭 The Next-turn planner (teaser + 🧭 panel) now honors your ≤Nh trip-time filter — it was suggesting long-hauls like South Africa (~9h) even with ‘≤2h’ set. Set a limit and next-turn options stay within it."] },
     { v: "1.70.0", d: "Aug 20, 2026", c: ["🎯 Best trip & Next turn no longer tell you to buy items that aren’t in stock. The load-fill was using an item’s PEAK stock ever seen, so it happily loaded up on something showing ✗ Empty / ↻ due (e.g. ‘Buy Xanax ×27’ when Xanax was out). Now it only fills with what the Landing prediction says will actually be there on arrival — an item that’s out now and not confidently restocked by the time you land is left out. If that item is a high-value one that’s merely due (could restock), it’s called out separately: ‘⏳ Xanax is out (↻ due) — the top play here if it restocks; not counted in this load.’"] },
