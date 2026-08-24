@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.66.0
+// @version      1.66.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -482,7 +482,11 @@
       return { cls: "warn", txt: "◐ Partial", tip: "Only " + st.toLocaleString() + " in stock — under your cap of " + cap + " (partial load) when " + landTxt + "." + tempoNote };
     }
     if (st <= 0) {
-      if (overdue) return { cls: "warn", txt: "↻ due", tip: "Out now and into its restock window (past the ~" + dur(rp.interval) + " average, from " + rp.n + " seen) — could pop any time." + rangeTxt + " Hit ↻ Refresh to check." };
+      if (overdue) {
+        const over = nowS - nextRs, overPct = rp.interval > 0 ? Math.round(over / rp.interval * 100) : 0;
+        const sinceLast = rp.lastRs ? " Last restock ~" + dur(nowS - rp.lastRs) + " ago." : "";
+        return { cls: "warn", txt: "↻ due", tip: "Out now, and ~" + dur(over) + " past due — " + overPct + "% over the ~" + dur(rp.interval) + " average (from " + rp.n + " seen)." + sinceLast + rangeTxt + " Could pop any time — hit ↻ Refresh to check." };
+      }
       if (nextRs && nextRs <= arr) return { cls: "good", txt: "✓ In stock", tip: "Out now, but a fresh restock should land before " + landTxt + "." + rsNote };
       if (nextRs) return { cls: "bad", txt: "✗ Empty", tip: "Out now — restocks after " + landTxt + "." + rsNote };
       return { cls: "unk", txt: "?", tip: "Out now — not enough restock history yet to estimate the next one." };
@@ -2012,6 +2016,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.66.1", d: "Aug 20, 2026", c: ["🛬 The ‘↻ due’ tooltip now tells you HOW far past due it is — ‘~1h20m past due — 35% over the ~3h45m average’ plus how long since the last restock. Way easier to judge stay-or-go: 10% over → wait it out; 90% over on a wide-range item → maybe move on."] },
     { v: "1.66.0", d: "Aug 20, 2026", c: ["🎯 Restock interval now tracks the RECENT cadence instead of an all-time median. If the collector missed a stretch (offline / unrecorded restocks) or the cadence changed, a flat median got badly inflated — e.g. Canada Xanax read ~15h when it really restocks ~every 3h45m. It now uses the last ~12 gaps and ignores outlier gaps (>2.2× typical, which usually mean a restock or two went unrecorded). Result: the next-restock ETA and Landing odds are honest again (Canada Xanax: ‘next ~2h31m’, not ‘due anytime’). Steady items (UK Xanax, Jaguar) are essentially unchanged."] },
     { v: "1.65.0", d: "Aug 18, 2026", c: ["🕐 Seasonal Landing model — the day×hour sell-rate history we’ve been collecting now sharpens long-flight predictions. Instead of a flat ‘in stock X% of each cycle’, it scales by how fast the item sells AT YOUR ARRIVAL HOUR vs its own average. Example: Xanax→UK reads ~60% in-stock if you land at a quiet 2:00 TCT, but ~28% at the 18:00 TCT rush — same item, same flight, honest odds. The tooltip flags it: ‘⏱ Sells ~44% faster than usual when you land — grab it quick’ (or ‘slower — more forgiving’). Hour-of-day turns out to matter far more than weekday/weekend. Falls back exactly to the old estimate when there’s no seasonal data for that item."] },
     { v: "1.64.0", d: "Aug 18, 2026", c: ["🛬 Smarter restock ETA. When the feed misses a restock (item refilled while we weren’t polling), the old ‘last restock + interval’ estimate went stale and showed nonsense like ‘due 1h34m ago’ on an item that clearly had stock recently. Now, if a SELLOUT is more recent than the last logged restock, the ETA re-anchors on that sellout + the typical empty gap — a real forward-looking time (e.g. Bottle of Tequila: was ‘due 1h45m ago’, now ‘next restock ~24m’).", "🎲 Irregular items (Xanax, Tequila…) now show their spread in the tooltip — ‘usually ~8h, but seen 2m–13h’ — so ‘↻ due’ reads as a wide restock window, not a broken clock."] },
