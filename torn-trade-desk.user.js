@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.71.0
+// @version      1.72.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -366,8 +366,8 @@
       const tripPpm = Math.round((loadProfit - f.fare) / rtOf(cc));
       plans.push({ cc: cc, country: f.name, arr: arr, outbound: outbound, loadProfit: loadProfit, loadCost: loadCost, fare: f.fare, picks: picks, filled: cap - remaining, ol: ol, tripPpm: tripPpm });
     });
-    const rk = function (p) { const c = p.ol ? p.ol.cls : "unk"; return c === "good" ? 0 : c === "warn" ? 1 : c === "bad" ? 2 : 3; };
-    plans.sort(function (a, b) { return (rk(a) - rk(b)) || (b.tripPpm - a.tripPpm); }); // land-in-stock first, then $/min
+    const rk = function (pl) { return pl.ol && pl.ol.p != null ? pl.ol.p : -1; }; // arrival in-stock probability
+    plans.sort(function (a, b) { return (rk(b) - rk(a)) || (b.tripPpm - a.tripPpm); }); // best odds of stock on arrival first, then $/min
     return { returnLeg: returnLeg, here: here, now: now, plans: plans };
   }
   function seasonalRecord(cc, id) {
@@ -523,13 +523,24 @@
     const tempoNote = tempo >= 1.2 ? " ⏱ Sells ~" + Math.round((tempo - 1) * 100) + "% faster than usual " + whenTxt + " — grab it quick."
       : tempo <= 0.84 ? " ⏱ Sells ~" + Math.round((1 - tempo) * 100) + "% slower than usual " + whenTxt + " — more forgiving." : "";
 
+    // Probability the item has stock (≥1) when you land. Seasonal cycle-occupancy is the base rate; current state
+    // nudges it (in stock & surviving → high; out & overdue → the odds it pops back in time). Shown as a % so
+    // Landing reads as an odds sheet — Torn's deliberately-noisy restocks mean this is a bet, not a certainty.
+    const selloutAdjP = (rp && rp.selloutDur > 0) ? rp.selloutDur / tempo : 0;
+    const cycleFrac = (rp && rp.interval > 0 && selloutAdjP > 0) ? Math.min(1, selloutAdjP / rp.interval) : (st > 0 ? 1 : 0);
+    const clampP = function (v) { return Math.max(0.02, Math.min(0.98, v)); };
+    const GLYPH = { good: "✓", warn: "◐", bad: "✗", unk: "?" };
+    const clsOf = function (p) { return p >= 0.6 ? "good" : p >= 0.3 ? "warn" : "bad"; };
+    const pill = function (cls, p, pre) { return (pre || GLYPH[cls]) + " " + Math.round(p * 100) + "%"; };
+
     // --- LONG flight: item restocks ≥1× in transit → availability is set by the CYCLE, not depletion ---
     if (rp && rp.interval > 0 && flight >= rp.interval) {
-      const selloutAdj = rp.selloutDur > 0 ? rp.selloutDur / tempo : 0; // faster arrival hour (tempo>1) → shorter time in stock each cycle
-      const frac = selloutAdj > 0 ? Math.min(1, selloutAdj / rp.interval) : (st > 0 ? 1 : 0); // share of each cycle it holds stock ≈ odds it's up on arrival
-      if (rp.nSo === 0 || frac >= 0.6) return { cls: "good", txt: "✓ In stock", tip: "Usually in stock — should be available when " + landTxt + "." + tempoNote + rsNote };
-      if (frac >= 0.25) return { cls: "warn", txt: "◐ Maybe", tip: "In stock ~" + Math.round(frac * 100) + "% of each restock cycle — best right after a restock." + tempoNote + rsNote };
-      return { cls: "warn", txt: "◐ Maybe", tip: "Sells out fast — usually empty between restocks." + tempoNote + rsNote };
+      const p = (rp.nSo === 0) ? 0.95 : clampP(cycleFrac); // cycleFrac = share of each cycle it holds stock ≈ odds it's up on a random arrival
+      const cls = p >= 0.6 ? "good" : "warn";
+      const tip = (rp.nSo === 0 || cycleFrac >= 0.6) ? "Usually in stock — should be available when " + landTxt + "."
+        : cycleFrac >= 0.25 ? "In stock ~" + Math.round(cycleFrac * 100) + "% of each restock cycle — best right after a restock."
+          : "Sells out fast — usually empty between restocks.";
+      return { cls: cls, p: p, txt: pill(cls, p), tip: tip + tempoNote + rsNote };
     }
 
     // --- SHORT hop (or no cycle data): does CURRENT stock survive, and does a restock beat you there? ---
@@ -538,23 +549,36 @@
     let outAt = Infinity;
     if (st <= 0) outAt = nowS; else if (rate > 0) outAt = nowS + (st / rate) * 60;
     if (st > 0 && outAt > arr) {
-      if (st >= cap) return { cls: "good", txt: "✓ In stock", tip: "In stock now and should last until " + landTxt + "." + tempoNote };
-      return { cls: "warn", txt: "◐ Partial", tip: "Only " + st.toLocaleString() + " in stock — under your cap of " + cap + " (partial load) when " + landTxt + "." + tempoNote };
+      const buffer = outAt - arr, p = clampP(Math.max(cycleFrac, 0.6 + 0.38 * Math.min(1, buffer / Math.max(600, flight))));
+      if (st >= cap) return { cls: "good", p: p, txt: pill("good", p), tip: "In stock now and should last until " + landTxt + "." + tempoNote };
+      return { cls: "warn", p: p, txt: "◐ " + st.toLocaleString() + "/" + cap, tip: "In stock (~" + Math.round(p * 100) + "% still up when " + landTxt + ") but only " + st.toLocaleString() + " — under your cap of " + cap + " (partial load)." + tempoNote };
     }
     if (st <= 0) {
       if (overdue) {
         const over = nowS - nextRs, overPct = rp.interval > 0 ? Math.round(over / rp.interval * 100) : 0;
         const sinceLast = rp.lastRs ? " Last restock ~" + dur(nowS - rp.lastRs) + " ago." : "";
-        return { cls: "warn", txt: "↻ due", tip: "Out now, and ~" + dur(over) + " past due — " + overPct + "% over the ~" + dur(rp.interval) + " average (from " + rp.n + " seen)." + sinceLast + rangeTxt + " Could pop any time — hit ↻ Refresh to check." };
+        const p = clampP(0.12 + 0.45 * (over / rp.interval) + 0.25 * Math.min(1, flight / rp.interval)); // more overdue + longer flight window → likelier back in time
+        const cls = clsOf(p);
+        return { cls: cls, p: p, txt: pill(cls, p, "↻"), tip: "Out now, and ~" + dur(over) + " past due — " + overPct + "% over the ~" + dur(rp.interval) + " average (from " + rp.n + " seen)." + sinceLast + rangeTxt + " Could pop any time — hit ↻ Refresh to check." };
       }
-      if (nextRs && nextRs <= arr) return { cls: "good", txt: "✓ In stock", tip: "Out now, but a fresh restock should land before " + landTxt + "." + rsNote };
-      if (nextRs) return { cls: "bad", txt: "✗ Empty", tip: "Out now — restocks after " + landTxt + "." + rsNote };
-      return { cls: "unk", txt: "?", tip: "Out now — not enough restock history yet to estimate the next one." };
+      if (nextRs && nextRs <= arr) {
+        const gap = arr - nextRs, p = clampP(gap < (rp.selloutDur || 1e9) ? 0.8 : 0.55), cls = p >= 0.6 ? "good" : "warn";
+        return { cls: cls, p: p, txt: pill(cls, p), tip: "Out now, but a fresh restock should land before " + landTxt + "." + rsNote };
+      }
+      if (nextRs) {
+        const p = clampP(0.05 + 0.35 * Math.min(1, flight / (rp.interval || 1))), cls = clsOf(p); // out, restock after you land — small chance of an early one
+        return { cls: cls, p: p, txt: pill(cls, p), tip: "Out now — restocks after " + landTxt + "." + rsNote };
+      }
+      return { cls: "unk", p: null, txt: "?", tip: "Out now — not enough restock history yet to estimate the next one." };
     }
     const rsAfterOut = (rp && rp.outDur) ? outAt + rp.outDur : nextRs; // the restock following this stock selling out
-    if (rsAfterOut && rsAfterOut <= arr) return { cls: "good", txt: "✓ In stock", tip: "Sells out mid-flight, but should restock before " + landTxt + "." + rsNote };
+    if (rsAfterOut && rsAfterOut <= arr) {
+      const p = clampP(Math.max(0.5, cycleFrac)), cls = p >= 0.6 ? "good" : "warn";
+      return { cls: cls, p: p, txt: pill(cls, p), tip: "Sells out mid-flight, but should restock before " + landTxt + "." + rsNote };
+    }
     const emptyNote = rsNote || " No restock cadence recorded yet — hit ↻ Refresh to pull the shared history.";
-    return { cls: "bad", txt: "✗ Empty", tip: "Likely sold out before " + landTxt + "." + emptyNote };
+    const pEmpty = clampP(cycleFrac * 0.5), clsE = clsOf(pEmpty); // sold out and won't reliably restock in time
+    return { cls: clsE, p: pEmpty, txt: pill(clsE, pEmpty), tip: "Likely sold out before " + landTxt + "." + emptyNote };
   }
   // Wrap the outlook: flag items whose stock tops out below your Cap, so the "Profit ×N" full-load figure (and its
   // $/min) aren't mistaken for reality — a rare item that restocks +3 will never fill a 28 load, however good /ea.
@@ -1259,8 +1283,8 @@
     if (sm === "buy" || sm === "sell" || sm === "full") sm = "ppm"; // those columns were folded into the item cell
     const disp = rows.slice();
     disp.forEach(function (x) { x._ol = arrivalOutlook(x); }); // Landing outlook — computed once, reused for the sort and every lens
-    const lrk = function (x) { const c = x._ol ? x._ol.cls : "unk"; return c === "good" ? 0 : c === "warn" ? 1 : c === "bad" ? 2 : 3; };
-    if (sm === "landing") disp.sort(function (a, b) { return (lrk(a) - lrk(b)) || (b.ppm - a.ppm); }); // in stock on arrival first, then best $/min
+    const lrk = function (x) { return x._ol && x._ol.p != null ? x._ol.p : -1; }; // in-stock probability (unknown → last)
+    if (sm === "landing") disp.sort(function (a, b) { return (lrk(b) - lrk(a)) || (b.ppm - a.ppm); }); // highest odds of stock on arrival first, then best $/min
     else if (sm === "stock") disp.sort(function (a, b) { return ((a.stock > 0 ? 0 : 1) - (b.stock > 0 ? 0 : 1)) || (b.ppm - a.ppm); });
     else if (sm === "ppm") disp.sort(function (a, b) { return b.ppm - a.ppm; });
     else if (sm === "fullprofit") disp.sort(function (a, b) { return b.ppi - a.ppi; });
@@ -1272,7 +1296,7 @@
     if (availTh) {
       availTh.textContent = abroadMode ? "Stock" : "Landing";
       availTh.setAttribute("data-sort", abroadMode ? "stock" : "landing");
-      availTh.title = abroadMode ? "Live foreign stock right now — what you can buy while you're here." : "Predicted stock when you touch down if you flew there from Torn right now.";
+      availTh.title = abroadMode ? "Live foreign stock right now — what you can buy while you're here." : "Odds the item is in stock when you'd land (flying from Torn now). % = probability, coloured by likelihood; hover a row for the reasoning.";
     }
     host.querySelectorAll("#tdk-board th.so").forEach(function (th) { th.classList.toggle("on", th.getAttribute("data-sort") === sm); });
     const g = ocGuard();
@@ -2110,6 +2134,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.72.0", d: "Aug 20, 2026", c: ["🎲 Landing is now an ODDS SHEET. Instead of ✓/◐/✗ buckets it shows an actual in-stock probability — ‘✓ 92%’, ‘◐ 46%’, ‘✗ 12%’, ‘↻ 46%’ — coloured by likelihood (green ≥60%, amber ≥30%, red below). It’s built from the seasonal cycle-occupancy rate, then nudged by current state (in stock & surviving → high; out & overdue → the odds it pops back before you land; the more overdue, the higher). Since Torn deliberately randomises restocks, this is honestly a bet, not a promise — the % just lets you play the odds. Landing sort now ranks by probability. (Partial loads still show the count, e.g. ‘◐ 5/28’.)"] },
     { v: "1.71.0", d: "Aug 20, 2026", c: ["🧭 The Next-turn planner (teaser + 🧭 panel) now honors your ≤Nh trip-time filter — it was suggesting long-hauls like South Africa (~9h) even with ‘≤2h’ set. Set a limit and next-turn options stay within it."] },
     { v: "1.70.0", d: "Aug 20, 2026", c: ["🎯 Best trip & Next turn no longer tell you to buy items that aren’t in stock. The load-fill was using an item’s PEAK stock ever seen, so it happily loaded up on something showing ✗ Empty / ↻ due (e.g. ‘Buy Xanax ×27’ when Xanax was out). Now it only fills with what the Landing prediction says will actually be there on arrival — an item that’s out now and not confidently restocked by the time you land is left out. If that item is a high-value one that’s merely due (could restock), it’s called out separately: ‘⏳ Xanax is out (↻ due) — the top play here if it restocks; not counted in this load.’"] },
     { v: "1.69.1", d: "Aug 20, 2026", c: ["🧭 Fix: the ‘Best next turn’ teaser didn’t appear when you’d just started flying outbound — opening the panel only refreshed when it had NO data, so it kept the stale pre-takeoff ‘home’ state (no return leg → no teaser). Opening the panel now also refreshes when the data is >60s old, so your travel state (and the next-turn teaser) is current. Tip: hit ↻ Refresh right after takeoff if the panel was already open."] },
