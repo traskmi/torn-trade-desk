@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.77.0
+// @version      1.78.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -1361,7 +1361,10 @@
         const dparts = ['📦 ' + (x.stock > 0 ? x.stock.toLocaleString() + ' now' : 'out')];
         if (tr && tr.dq < 0 && tr.perMin) { const rr = Math.abs(Math.round(tr.perMin)); if (rr > 0) dparts.push('⚡ ~' + rr + '/min' + (x.stock > 0 ? ', out in ~' + fmtDur(Math.round(x.stock / rr * 60)) : '')); }
         else if (tr && tr.dq > 0) dparts.push('▲ restocked +' + tr.dq.toLocaleString());
-        if (rpd) dparts.push('↻ ~every ' + fmtDur(rpd.interval) + (rpd.batch ? ' (+' + rpd.batch.toLocaleString() + ')' : ''));
+        if (rpd) {
+          dparts.push('↻ ~every ' + fmtDur(rpd.interval) + (rpd.batch ? ' (+' + rpd.batch.toLocaleString() + ')' : ''));
+          if (rpd.lastRs) dparts.push('last ' + fmtDur(Math.floor(Date.now() / 1000) - rpd.lastRs) + ' ago');
+        }
         if (ol && ol.p != null && abroadMode) dparts.push('🎲 ~' + Math.round(ol.p * 100) + '% in stock on arrival');
         const detail = '<div class="tk-cd">' + dparts.join(' · ') + '</div>';
         return '<div class="tk-card ' + cls + '"' + dataAttr + '>' +
@@ -2210,6 +2213,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.78.0", d: "Aug 24, 2026", c: ["🃏 Travel cards now show when the LAST restock landed — e.g. ‘↻ ~every 3h45m (+2,000) · last 1h12m ago’ — so you can judge how far into the cycle it is (and whether it’s overdue) without opening the Landing tooltip."] },
     { v: "1.77.0", d: "Aug 24, 2026", c: ["📈 Stocks now show a price sparkline (redesign part 3). Every holding and every buy-low-scanner row gets a little trend line drawn from the price history the tool records (~every 10 min), so you can see a stock’s recent shape at a glance instead of just a number. It’s colour-coded to match the range tag — green when the price is near its recent low (cheap), red near its high, gold in between — with a dot on the latest price; hover it for the range (‘14h range $920–$965 · now $931’). Appears once there are a few hours of history."] },
     { v: "1.76.0", d: "Aug 24, 2026", c: ["📦 Bag snapshot: you can now just hit the <b>All</b> filter on your Items page and scroll to catalog your whole inventory in one pass — no more clicking every category tab. Fixed the bug that made this unsafe before: Torn’s Items page loads rows as you scroll (virtualized), so the old ‘sold’ cleanup would see a category partly on-screen and wrongly drop items you owned but had scrolled past. It now only runs that cleanup from a single-category tab (which shows that category in full); the All view purely adds/updates counts. Note: an item you’ve fully sold out of vanishes from the list entirely, so to remove it, open its category tab or hit ↻ Rescan."] },
     { v: "1.75.0", d: "Aug 24, 2026", c: ["🏪 Shop Flips is now grouped by shop (redesign part 3). Instead of one flat list, each buy-low→sell-market flip sits under the Torn shop that actually sells it — Big Al's, Bits ’n’ Bobs, Recycling Center, Docks, Pharmacy, and so on — with each shop headed by its item count and best spread, and shops ordered by their top opportunity. So you can plan one shopping trip per shop instead of hopping around. (Shop names come from Torn’s v2 item catalog, cached for a week; everything else — prices, ⚡ buyers, 🛒 market link — works exactly as before.)"] },
