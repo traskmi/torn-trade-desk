@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.78.0
+// @version      1.79.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -942,8 +942,8 @@
     .tdk-brow .bp .ea{color:#928b78;font-size:10px;font-weight:600}
     .tdk-brow .bt{color:#8fe6b3;font-size:11px;font-weight:700;font-family:ui-monospace,monospace;margin-top:1px}
     .tdk-brow .bt .netp{color:#d9b441}.tdk-brow .bt .netp.neg{color:#e5615c}
-    .tdk-flip{display:flex;align-items:center;gap:12px;padding:9px 12px;border-bottom:1px solid #2c2a21;cursor:pointer}
-    .tdk-flip:hover{background:#1b1a14}
+    .tdk-flip{display:flex;align-items:center;gap:12px;padding:11px 14px;border:1px solid #332e1e;border-radius:11px;background:#1e1b12;margin:0 12px 8px;cursor:pointer}
+    .tdk-flip:hover{background:#231f14}
     .tdk-flip .fn{flex:1;font-weight:700;color:#f2eddf}
     .tdk-flip .fs{font-weight:400;font-size:11px;color:#a49c88;margin-top:2px}
     .tdk-flip .fs b{color:#ded7c5;font-family:ui-monospace,monospace}.tdk-flip .fs span{color:#7c7566}
@@ -955,7 +955,7 @@
     .tdk-flip .fbuy:hover{background:#2a2413;border-color:#d9b441}
     .sksec{margin:10px 12px 4px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#d9b441;font-weight:700;border-top:1px dashed #3a3729;padding-top:8px}
     .sksec b.up{color:#4cc281}.sksec b.dn{color:#e5615c}
-    .skrow{display:flex;align-items:flex-start;gap:12px;padding:8px 12px;border-bottom:1px solid #211f18}
+    .skrow{display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border:1px solid #332e1e;border-radius:11px;background:#1e1b12;margin:0 12px 8px}
     .skmain{flex:1;min-width:0}
     .skn{font-weight:700;color:#f2eddf}.skn span{color:#a49c88;font-weight:400;font-size:11px}
     .skn .skhold{color:#4cc281;font-size:10px}
@@ -973,7 +973,7 @@
     .skspk{flex:0 0 auto;align-self:center;line-height:0}
     .skspark{display:block}
     .tdk-solo{font-size:11px;color:#c3bda9;white-space:nowrap;cursor:pointer}
-    .bnty{display:flex;align-items:center;gap:12px;padding:8px 12px;border-bottom:1px solid #211f18}
+    .bnty{display:flex;align-items:center;gap:12px;padding:11px 14px;border:1px solid #332e1e;border-radius:11px;background:#1e1b12;margin:0 12px 8px}
     .bnty.na{opacity:.55}
     .bnty .bmain{flex:1;min-width:0}
     .bnty .bn a{color:#e5615c;text-decoration:none;font-weight:700}
@@ -2213,6 +2213,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.79.0", d: "Aug 24, 2026", c: ["✨ Consistency pass (redesign part 3 polish): Quick Flips, Shop Flips, Stocks and Bounty now use the same rounded, bordered card look as the travel board and the Bag, instead of the old flat divider-rows. Same information and controls — the whole desk just reads as one system now."] },
     { v: "1.78.0", d: "Aug 24, 2026", c: ["🃏 Travel cards now show when the LAST restock landed — e.g. ‘↻ ~every 3h45m (+2,000) · last 1h12m ago’ — so you can judge how far into the cycle it is (and whether it’s overdue) without opening the Landing tooltip."] },
     { v: "1.77.0", d: "Aug 24, 2026", c: ["📈 Stocks now show a price sparkline (redesign part 3). Every holding and every buy-low-scanner row gets a little trend line drawn from the price history the tool records (~every 10 min), so you can see a stock’s recent shape at a glance instead of just a number. It’s colour-coded to match the range tag — green when the price is near its recent low (cheap), red near its high, gold in between — with a dot on the latest price; hover it for the range (‘14h range $920–$965 · now $931’). Appears once there are a few hours of history."] },
     { v: "1.76.0", d: "Aug 24, 2026", c: ["📦 Bag snapshot: you can now just hit the <b>All</b> filter on your Items page and scroll to catalog your whole inventory in one pass — no more clicking every category tab. Fixed the bug that made this unsafe before: Torn’s Items page loads rows as you scroll (virtualized), so the old ‘sold’ cleanup would see a category partly on-screen and wrongly drop items you owned but had scrolled past. It now only runs that cleanup from a single-category tab (which shows that category in full); the All view purely adds/updates counts. Note: an item you’ve fully sold out of vanishes from the list entirely, so to remove it, open its category tab or hit ↻ Rescan."] },
