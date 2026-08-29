@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.80.0
+// @version      1.81.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -487,14 +487,19 @@
   //    item holds stock = selloutDur/interval), NOT by draining current stock to zero;
   //  - a SHORT hop (< one restock cycle, or no cycle data) → the near-term question: does CURRENT stock survive the
   //    trip, and if it sells out, does a restock land before you do?
+  // When you'd land at this country: now if you're already there, the known arrival if in flight, else half a
+  // round-trip from home (the implied "if I flew now"). Shared by the predictor and the calibration logger.
+  function predictedArrivalTs(x, arrOverride) {
+    const nowS = Math.floor(Date.now() / 1000);
+    if (arrOverride != null) return arrOverride;
+    if (state.travelWhere === "abroad" && x.cc === state.loc) return nowS;
+    if (state.travelWhere === "flying" && x.cc === state.flyTo && state.arrivalTs) return state.arrivalTs;
+    return nowS + Math.round(rtOf(x.cc) / 2) * 60;
+  }
   function arrivalOutlookCore(x, arrOverride) {
     if (!FLY[x.cc]) return null;
     const nowS = Math.floor(Date.now() / 1000);
-    let arr;
-    if (arrOverride != null) arr = arrOverride;                            // explicit arrival time (Next-Turn planner projects a future landing)
-    else if (state.travelWhere === "abroad" && x.cc === state.loc) arr = nowS;
-    else if (state.travelWhere === "flying" && x.cc === state.flyTo && state.arrivalTs) arr = state.arrivalTs;
-    else arr = nowS + Math.round(rtOf(x.cc) / 2) * 60;
+    const arr = predictedArrivalTs(x, arrOverride);
     const flight = arr - nowS, landTxt = flight <= 30 ? "you arrive" : "you land in ~" + fmtDur(flight);
     const cap = state.cap, st = x.stock, rp = restockPredict(x.cc, x.id);
     const dur = function (s) { return fmtDur(Math.max(0, Math.round(s))); };
@@ -598,6 +603,52 @@
     return o;
   }
 
+  // --- Landing calibration logging -------------------------------------------------------------------
+  // Goal: accumulate predicted-in-stock % alongside what actually happened, so the probability model can be
+  // tuned later (does "60%" really mean in-stock ~60% of the time?). The ground truth is stock_hist[cc:id]
+  // (recorded every refresh from the full YATA export). Record format is a compact array to keep storage small:
+  //   [predAt, "cc:id", arrivalTs, predictedPct, stockAtPredict(0/1), outcome(0/1|null-until-resolved)]
+  const PRED_AGE = 75 * 24 * 3600;   // keep ~75 days of predictions
+  const PRED_MAX = 6000;             // ring-buffer cap
+  const PRED_OBS_TOL = 45 * 60;      // a stock reading within 45m of the predicted arrival counts as the outcome
+  function logLandingPredictions(rows) {
+    if (!rows || !rows.length) return;
+    let log; try { log = GM_getValue("land_pred_log", null) || []; } catch (e) { return; }
+    const now = Math.floor(Date.now() / 1000);
+    rows.forEach(function (x) {
+      const o = arrivalOutlookCore(x);
+      if (!o || o.p == null) return;                 // "?" (not enough history) → nothing to score
+      log.push([now, x.cc + ":" + x.id, predictedArrivalTs(x), Math.round(o.p * 100), x.stock > 0 ? 1 : 0, null]);
+    });
+    const cut = now - PRED_AGE;
+    log = log.filter(function (r) { return r[0] >= cut; });
+    if (log.length > PRED_MAX) log.splice(0, log.length - PRED_MAX);
+    try { GM_setValue("land_pred_log", log); } catch (e) { }
+  }
+  // Fill in each prediction's actual outcome from stock_hist once its arrival has passed and a reading exists near
+  // it — done opportunistically each refresh, while stock_hist still holds that sample (it has its own TTL).
+  function resolveLandingOutcomes() {
+    let log; try { log = GM_getValue("land_pred_log", null) || []; } catch (e) { return; }
+    if (!log.length) return;
+    const hist = state._hist || (function () { try { return GM_getValue("stock_hist", null) || {}; } catch (e) { return {}; } })();
+    const now = Math.floor(Date.now() / 1000);
+    let changed = false;
+    log.forEach(function (r) {
+      if (r[5] != null) return;                  // already resolved
+      const arr = r[2]; if (now < arr) return;   // arrival hasn't happened yet
+      const series = hist[r[1]]; if (!series || !series.length) return;
+      let best = null, bd = Infinity;
+      for (let i = 0; i < series.length; i++) { const d = Math.abs(series[i][0] - arr); if (d < bd) { bd = d; best = series[i]; } }
+      if (best && bd <= PRED_OBS_TOL) { r[5] = best[1] > 0 ? 1 : 0; changed = true; }
+    });
+    if (changed) { try { GM_setValue("land_pred_log", log); } catch (e) { } }
+  }
+  function landCalibStats() {
+    let log; try { log = GM_getValue("land_pred_log", null) || []; } catch (e) { return { n: 0, resolved: 0 }; }
+    let resolved = 0; for (let i = 0; i < log.length; i++) if (log[i][5] != null) resolved++;
+    return { n: log.length, resolved: resolved };
+  }
+
   async function loadOC(key) {
     try {
       const j = await gmGet("https://api.torn.com/v2/user/organizedcrime?key=" + encodeURIComponent(key));
@@ -648,6 +699,7 @@
       await loadCash(key);
       await loadOC(key);
       recordStocks(yata);
+      resolveLandingOutcomes(); // stamp any past-arrival predictions with what stock_hist now shows
       const nowS = Math.floor(Date.now() / 1000);
       const rows = [];
       state.updates = {};
@@ -671,6 +723,7 @@
       state.foreignIds = new Set(); Object.values(yata.stocks).forEach(function (b) { (b.stocks || []).forEach(function (it) { state.foreignIds.add(it.id); }); });
       applyLocationFilter();
       render();
+      if (!silent) logLandingPredictions(rows); // calibration sample: one snapshot per manual refresh (skip the 2.5-min auto path)
       const flyNote = state.flyTo && FLY[state.flyTo]
         ? " · ✈ heading to " + FLY[state.flyTo].name + (state.flyEta ? " · land in " + fmtRt(Math.ceil(state.flyEta / 60)) : "") + " — planning ahead"
         : " · ✈ In flight";
@@ -2213,6 +2266,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.81.0", d: "Aug 24, 2026", c: ["🎯 Started quietly logging Landing-prediction accuracy so the in-stock % can be calibrated later. On each manual ↻ Refresh it records what odds it gave each item and when you'd land; once that arrival time passes it checks the recorded stock history and marks whether the item was actually in stock. Nothing changes on screen — it just builds a track record. The ⬇ Export (in the changelog window) now includes this data and shows the tally (e.g. ‘120 Landing predictions, 84 scored’) so you can hand it over for tuning the probabilities against reality. No new permissions, no extra network calls."] },
     { v: "1.80.0", d: "Aug 24, 2026", c: ["📱 Moved the floating 💰 launcher button up on mobile so it no longer overlaps Torn PDA’s bottom navigation icons (it now clears the nav bar and the phone’s gesture-bar safe area)."] },
     { v: "1.79.0", d: "Aug 24, 2026", c: ["✨ Consistency pass (redesign part 3 polish): Quick Flips, Shop Flips, Stocks and Bounty now use the same rounded, bordered card look as the travel board and the Bag, instead of the old flat divider-rows. Same information and controls — the whole desk just reads as one system now."] },
     { v: "1.78.0", d: "Aug 24, 2026", c: ["🃏 Travel cards now show when the LAST restock landed — e.g. ‘↻ ~every 3h45m (+2,000) · last 1h12m ago’ — so you can judge how far into the cycle it is (and whether it’s overdue) without opening the Landing tooltip."] },
@@ -2711,9 +2765,11 @@
       Object.keys(evd).forEach(function (k) { const id = k.split(":")[1]; if (meta[id] && meta[id].name) names[id] = meta[id].name; });
       Object.keys(sead).forEach(function (k) { const id = k.split(":")[1]; if (meta[id] && meta[id].name) names[id] = meta[id].name; });
       let buckets = 0; Object.keys(sead).forEach(function (k) { buckets += Object.keys(sead[k]).length; });
-      const payload = { kind: "tdk-restock-export", version: curVersion(), at: Math.floor(Date.now() / 1000), fields: "events[cc:id]={rs:[[t,amount]] restocks, so:[t] sellouts, up:[[t,dq,prevQ]] RAW increases, max, q}; seasonal[cc:id]={bucket→[soldQty,seconds,samples]}, bucket = UTC(dayOfWeek 0=Sun..6)*24 + hourOfDay(0..23)", names: names, events: evd, seasonal: sead };
+      let landPred = []; try { landPred = GM_getValue("land_pred_log", null) || []; } catch (e) { }
+      const cal = landCalibStats();
+      const payload = { kind: "tdk-restock-export", version: curVersion(), at: Math.floor(Date.now() / 1000), fields: "events[cc:id]={rs:[[t,amount]] restocks, so:[t] sellouts, up:[[t,dq,prevQ]] RAW increases, max, q}; seasonal[cc:id]={bucket→[soldQty,seconds,samples]}, bucket = UTC(dayOfWeek 0=Sun..6)*24 + hourOfDay(0..23); landPred[]=[predAt, cc:id, arrivalTs, predictedPct, stockAtPredict(0/1), outcome(0/1|null)] — for Landing-probability calibration (bucket predictedPct vs outcome)", names: names, events: evd, seasonal: sead, landPred: landPred };
       copyText(JSON.stringify(payload));
-      const m = bx.querySelector("#tdk-exp-msg"); if (m) m.textContent = "Copied " + Object.keys(evd).length + " items · " + buckets + " seasonal buckets — paste to Claude or save as backup";
+      const m = bx.querySelector("#tdk-exp-msg"); if (m) m.textContent = "Copied " + Object.keys(evd).length + " items · " + buckets + " seasonal buckets · " + cal.n + " Landing predictions (" + cal.resolved + " scored) — paste to Claude or save as backup";
     });
     const ib = bx.querySelector("#tdk-imp-restock");
     if (ib) ib.addEventListener("click", function () { const box = bx.querySelector("#tdk-impbox"); if (box) { box.style.display = box.style.display === "none" ? "block" : "none"; const ta = bx.querySelector("#tdk-imp-ta"); if (ta && box.style.display !== "none") ta.focus(); } });
