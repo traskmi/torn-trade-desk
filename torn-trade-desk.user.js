@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.82.0
+// @version      1.83.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -625,8 +625,24 @@
     if (log.length > PRED_MAX) log.splice(0, log.length - PRED_MAX);
     try { GM_setValue("land_pred_log", log); } catch (e) { }
   }
-  // Fill in each prediction's actual outcome from stock_hist once its arrival has passed and a reading exists near
-  // it — done opportunistically each refresh, while stock_hist still holds that sample (it has its own TTL).
+  // Was the item in stock at time t, per the restock/sellout event timeline? Uses the shared collector's continuous
+  // 5-min data (via evRecord, shared-first). Only answers when t is BRACKETED by two events of different kinds, so
+  // the state across the interval is unambiguous: restock→…→sellout ⇒ in stock; sellout→…→restock ⇒ empty. A same-
+  // kind bracket (a transition the feed missed during a YATA-stale gap) stays null rather than guess.
+  function inStockFromEvents(rec, t) {
+    if (!rec) return null;
+    const evs = [];
+    (rec.rs || []).forEach(function (e) { evs.push([e[0], 1]); }); // restock ⇒ in stock
+    (rec.so || []).forEach(function (tt) { evs.push([tt, 0]); });  // sellout ⇒ empty
+    if (evs.length < 2) return null;
+    evs.sort(function (a, b) { return a[0] - b[0]; });
+    let before = null, after = null;
+    for (let i = 0; i < evs.length; i++) { if (evs[i][0] <= t) before = evs[i]; else { after = evs[i]; break; } }
+    if (!before || !after || before[1] === after[1]) return null;
+    return before[1];
+  }
+  // Fill in each prediction's actual outcome once its arrival has passed. Prefer the shared collector's event
+  // timeline (continuous coverage), then fall back to a local stock_hist reading near the arrival time.
   function resolveLandingOutcomes() {
     let log; try { log = GM_getValue("land_pred_log", null) || []; } catch (e) { return; }
     if (!log.length) return;
@@ -636,10 +652,17 @@
     log.forEach(function (r) {
       if (r[5] != null) return;                  // already resolved
       const arr = r[2]; if (now < arr) return;   // arrival hasn't happened yet
-      const series = hist[r[1]]; if (!series || !series.length) return;
-      let best = null, bd = Infinity;
-      for (let i = 0; i < series.length; i++) { const d = Math.abs(series[i][0] - arr); if (d < bd) { bd = d; best = series[i]; } }
-      if (best && bd <= PRED_OBS_TOL) { r[5] = best[1] > 0 ? 1 : 0; changed = true; }
+      const parts = r[1].split(":");
+      let o = inStockFromEvents(evRecord(parts[0], parts[1]), arr); // 1) shared collector events (best coverage)
+      if (o == null) {                                              // 2) fall back to a local raw-stock reading
+        const series = hist[r[1]];
+        if (series && series.length) {
+          let best = null, bd = Infinity;
+          for (let i = 0; i < series.length; i++) { const d = Math.abs(series[i][0] - arr); if (d < bd) { bd = d; best = series[i]; } }
+          if (best && bd <= PRED_OBS_TOL) o = best[1] > 0 ? 1 : 0;
+        }
+      }
+      if (o != null) { r[5] = o; changed = true; }
     });
     if (changed) { try { GM_setValue("land_pred_log", log); } catch (e) { } }
   }
@@ -2266,6 +2289,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.83.0", d: "Aug 24, 2026", c: ["🎯 Landing accuracy now scores against the shared restock collector (the 5-min server-side feed), not just your own refreshes — so far more predictions get graded, much sooner. It reconstructs whether an item was in stock at your landing time from the collector's restock/sellout event timeline (only when that moment is cleanly bracketed by known events, so it never guesses across a gap the feed missed), and falls back to your local stock history otherwise. Purely improves how outcomes are resolved; still invisible on screen."] },
     { v: "1.82.0", d: "Aug 24, 2026", c: ["💾 The Landing-accuracy track record now survives a wipe: ⬆ Import restores your logged predictions (and their scored outcomes) from an ⬇ Export blob, merged and de-duplicated so re-importing never double-counts or erases an already-scored one. Back up occasionally (or after a Tampermonkey/cache reset, load your last export) and the calibration history keeps building instead of starting over."] },
     { v: "1.81.0", d: "Aug 24, 2026", c: ["🎯 Started quietly logging Landing-prediction accuracy so the in-stock % can be calibrated later. On each manual ↻ Refresh it records what odds it gave each item and when you'd land; once that arrival time passes it checks the recorded stock history and marks whether the item was actually in stock. Nothing changes on screen — it just builds a track record. The ⬇ Export (in the changelog window) now includes this data and shows the tally (e.g. ‘120 Landing predictions, 84 scored’) so you can hand it over for tuning the probabilities against reality. No new permissions, no extra network calls."] },
     { v: "1.80.0", d: "Aug 24, 2026", c: ["📱 Moved the floating 💰 launcher button up on mobile so it no longer overlaps Torn PDA’s bottom navigation icons (it now clears the nav bar and the phone’s gesture-bar safe area)."] },
