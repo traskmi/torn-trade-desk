@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.83.0
+// @version      1.84.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -775,7 +775,7 @@
   let host, panel;
   function css() {
     return `
-    #tdk-btn{position:fixed;right:18px;bottom:18px;z-index:2147483600;width:46px;height:46px;border-radius:50%;
+    #tdk-btn{position:fixed;right:18px;bottom:78px;z-index:2147483600;width:46px;height:46px;border-radius:50%;
       background:#14130f;border:1px solid #d9b441;color:#d9b441;font-size:20px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.5)}
     #tdk-btn:hover{background:#201e17}
     #tdk-panel{position:fixed;right:28px;top:12px;z-index:2147483000;width:min(780px,92vw);max-height:calc(100vh - 24px);overflow:hidden;padding:0;
@@ -2289,6 +2289,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.84.0", d: "Aug 24, 2026", c: ["🖱️ Raised the floating 💰 launcher on desktop too, so it clears TornTools’ bottom-right quick-access bar (it was only moving up on a narrow window before). If it still sits over something on your setup, let me know and I’ll nudge it further."] },
     { v: "1.83.0", d: "Aug 24, 2026", c: ["🎯 Landing accuracy now scores against the shared restock collector (the 5-min server-side feed), not just your own refreshes — so far more predictions get graded, much sooner. It reconstructs whether an item was in stock at your landing time from the collector's restock/sellout event timeline (only when that moment is cleanly bracketed by known events, so it never guesses across a gap the feed missed), and falls back to your local stock history otherwise. Purely improves how outcomes are resolved; still invisible on screen."] },
     { v: "1.82.0", d: "Aug 24, 2026", c: ["💾 The Landing-accuracy track record now survives a wipe: ⬆ Import restores your logged predictions (and their scored outcomes) from an ⬇ Export blob, merged and de-duplicated so re-importing never double-counts or erases an already-scored one. Back up occasionally (or after a Tampermonkey/cache reset, load your last export) and the calibration history keeps building instead of starting over."] },
     { v: "1.81.0", d: "Aug 24, 2026", c: ["🎯 Started quietly logging Landing-prediction accuracy so the in-stock % can be calibrated later. On each manual ↻ Refresh it records what odds it gave each item and when you'd land; once that arrival time passes it checks the recorded stock history and marks whether the item was actually in stock. Nothing changes on screen — it just builds a track record. The ⬇ Export (in the changelog window) now includes this data and shows the tally (e.g. ‘120 Landing predictions, 84 scored’) so you can hand it over for tuning the probabilities against reality. No new permissions, no extra network calls."] },
