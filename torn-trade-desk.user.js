@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.81.0
+// @version      1.82.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2266,6 +2266,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.82.0", d: "Aug 24, 2026", c: ["💾 The Landing-accuracy track record now survives a wipe: ⬆ Import restores your logged predictions (and their scored outcomes) from an ⬇ Export blob, merged and de-duplicated so re-importing never double-counts or erases an already-scored one. Back up occasionally (or after a Tampermonkey/cache reset, load your last export) and the calibration history keeps building instead of starting over."] },
     { v: "1.81.0", d: "Aug 24, 2026", c: ["🎯 Started quietly logging Landing-prediction accuracy so the in-stock % can be calibrated later. On each manual ↻ Refresh it records what odds it gave each item and when you'd land; once that arrival time passes it checks the recorded stock history and marks whether the item was actually in stock. Nothing changes on screen — it just builds a track record. The ⬇ Export (in the changelog window) now includes this data and shows the tally (e.g. ‘120 Landing predictions, 84 scored’) so you can hand it over for tuning the probabilities against reality. No new permissions, no extra network calls."] },
     { v: "1.80.0", d: "Aug 24, 2026", c: ["📱 Moved the floating 💰 launcher button up on mobile so it no longer overlaps Torn PDA’s bottom navigation icons (it now clears the nav bar and the phone’s gesture-bar safe area)."] },
     { v: "1.79.0", d: "Aug 24, 2026", c: ["✨ Consistency pass (redesign part 3 polish): Quick Flips, Shop Flips, Stocks and Bounty now use the same rounded, bordered card look as the travel board and the Bag, instead of the old flat divider-rows. Same information and controls — the whole desk just reads as one system now."] },
@@ -2719,10 +2720,27 @@
     if (seaEmpty) { seaMode = "loaded"; Object.keys(inSea).forEach(function (k) { sea[k] = {}; Object.keys(inSea[k]).forEach(function (b) { sea[k][b] = inSea[k][b].slice(); seaBuckets++; }); }); }
     else if (dup) { seaMode = "skipped (already imported)"; }
     else { seaMode = "merged"; Object.keys(inSea).forEach(function (k) { const dk = sea[k] || (sea[k] = {}); Object.keys(inSea[k]).forEach(function (b) { const s = inSea[k][b], d = dk[b] || (dk[b] = [0, 0, 0]); d[0] += s[0] || 0; d[1] += s[1] || 0; d[2] += s[2] || 0; seaBuckets++; }); }); }
+    // Landing-calibration predictions — merge so the track record survives a Tampermonkey/cache wipe.
+    // Dedup by (predAt|cc:id|arrivalTs); when a record already exists, keep whichever copy has a resolved outcome.
+    let landAdded = 0;
+    if (Array.isArray(p.landPred) && p.landPred.length) {
+      let log; try { log = GM_getValue("land_pred_log", null) || []; } catch (e) { log = []; }
+      const idx = {}; log.forEach(function (r, i) { idx[r[0] + "|" + r[1] + "|" + r[2]] = i; });
+      p.landPred.forEach(function (r) {
+        if (!Array.isArray(r) || r.length < 5) return;
+        const k = r[0] + "|" + r[1] + "|" + r[2], j = idx[k];
+        if (j == null) { log.push(r.slice()); idx[k] = log.length - 1; landAdded++; }
+        else if (log[j][5] == null && r[5] != null) { log[j][5] = r[5]; } // fill in an outcome we hadn't resolved
+      });
+      const cut = Math.floor(Date.now() / 1000) - PRED_AGE;
+      log = log.filter(function (r) { return r[0] >= cut; }).sort(function (a, b) { return a[0] - b[0]; });
+      if (log.length > PRED_MAX) log.splice(0, log.length - PRED_MAX);
+      try { GM_setValue("land_pred_log", log); } catch (e) { }
+    }
     try { GM_setValue("stock_events", ev); GM_setValue("stock_seasonal", sea); } catch (e) { }
     if (!dup) { imports.push(sig); if (imports.length > 50) imports.shift(); try { GM_setValue("tdk_imports", imports); } catch (e) { } }
     state._ev = ev; state._seasonal = sea;
-    return { evItems: evItems, seaBuckets: seaBuckets, seaMode: seaMode };
+    return { evItems: evItems, seaBuckets: seaBuckets, seaMode: seaMode, landAdded: landAdded };
   }
   function openChangelog() {
     const bx = host.querySelector("#tdk-buyers");
@@ -2778,7 +2796,7 @@
       const ta = bx.querySelector("#tdk-imp-ta"), m = bx.querySelector("#tdk-exp-msg");
       const res = importRestockData((ta && ta.value || "").trim());
       if (res.err) { if (m) m.innerHTML = '<span style="color:#e5615c">' + res.err + '</span>'; return; }
-      if (m) m.textContent = "Imported ✓ " + res.evItems + " items · " + res.seaBuckets + " buckets (" + res.seaMode + ")";
+      if (m) m.textContent = "Imported ✓ " + res.evItems + " items · " + res.seaBuckets + " buckets (" + res.seaMode + ")" + (res.landAdded ? " · +" + res.landAdded + " Landing predictions" : "");
       if (ta) ta.value = "";
     });
     try { GM_setValue("build_seen_at", Date.now()); } catch (e) { } updateBuildBadge();
