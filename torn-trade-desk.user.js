@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.79.0
+// @version      1.80.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -1088,7 +1088,7 @@
     .tdk-pdq{width:80px}
     /* ---- Mobile / Torn PDA (narrow webview): fill the screen, fatten touch targets, shrink the board so 5 cols still fit ---- */
     @media (max-width: 560px) {
-      #tdk-btn{bottom:64px;right:14px;width:50px;height:50px;font-size:21px;z-index:2147482900} /* clear PDA's bottom nav; sit BELOW the panel so the full-screen board covers it when open */
+      #tdk-btn{bottom:calc(88px + env(safe-area-inset-bottom, 0px));right:14px;width:50px;height:50px;font-size:21px;z-index:2147482900} /* sit well above PDA's bottom nav (64px overlapped it) + clear the gesture-bar safe area; BELOW the panel so the full-screen board covers it when open */
       #tdk-panel{left:5px;right:5px;top:5px;bottom:5px;width:auto;max-height:none;border-radius:12px}
       .tdk-col{max-height:none}
       .tdk-rail{flex:0 0 46px;width:46px;padding:8px 3px;gap:5px}
@@ -2213,6 +2213,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.80.0", d: "Aug 24, 2026", c: ["📱 Moved the floating 💰 launcher button up on mobile so it no longer overlaps Torn PDA’s bottom navigation icons (it now clears the nav bar and the phone’s gesture-bar safe area)."] },
     { v: "1.79.0", d: "Aug 24, 2026", c: ["✨ Consistency pass (redesign part 3 polish): Quick Flips, Shop Flips, Stocks and Bounty now use the same rounded, bordered card look as the travel board and the Bag, instead of the old flat divider-rows. Same information and controls — the whole desk just reads as one system now."] },
     { v: "1.78.0", d: "Aug 24, 2026", c: ["🃏 Travel cards now show when the LAST restock landed — e.g. ‘↻ ~every 3h45m (+2,000) · last 1h12m ago’ — so you can judge how far into the cycle it is (and whether it’s overdue) without opening the Landing tooltip."] },
     { v: "1.77.0", d: "Aug 24, 2026", c: ["📈 Stocks now show a price sparkline (redesign part 3). Every holding and every buy-low-scanner row gets a little trend line drawn from the price history the tool records (~every 10 min), so you can see a stock’s recent shape at a glance instead of just a number. It’s colour-coded to match the range tag — green when the price is near its recent low (cheap), red near its high, gold in between — with a dot on the latest price; hover it for the range (‘14h range $920–$965 · now $931’). Appears once there are a few hours of history."] },
