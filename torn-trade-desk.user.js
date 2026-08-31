@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.84.0
+// @version      1.85.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -270,7 +270,14 @@
     const key = cc + ":" + id, sd = sharedFresh();
     if (sd && sd.events && sd.events[key]) return sd.events[key];
     const ev = state._ev || (function () { try { return GM_getValue("stock_events", null) || {}; } catch (e) { return {}; } })();
-    return ev[key];
+    const rec = ev[key];
+    if (!rec) return rec;
+    // Local stock_events is only pruned as a side effect of recordStocks() running (i.e. the panel actively
+    // polling). A rec that survived because the panel sat idle can be far older than EV_AGE by the time it's
+    // read here — gate on the newest event's age so a months-stale record is never trusted as current.
+    const newest = Math.max((rec.rs && rec.rs.length ? rec.rs[rec.rs.length - 1][0] : 0), (rec.so && rec.so.length ? rec.so[rec.so.length - 1] : 0));
+    if (newest > 0 && Math.floor(Date.now() / 1000) - newest > EV_AGE) return undefined;
+    return rec;
   }
   // Realistic single-trip buyable quantity for an item = the peak stock we've ever seen (or current, if higher).
   // A trickle-restock item that tops out at 3 can only ever contribute ~3 to a load, however good its /ea profit.
@@ -2289,6 +2296,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.85.0", d: "Aug 31, 2026", c: ["🧹 Restock predictions no longer trust a months-stale local reading. The shared collector feed is already the primary source for restock timing (and syncs automatically), but for the rare item it has no data on, the tool used to fall back to your own device's restock log — even if that log hadn't been updated in months because the panel had sat idle. It now ignores a local fallback record once it's older than 30 days rather than treating it as current."] },
     { v: "1.84.0", d: "Aug 24, 2026", c: ["🖱️ Raised the floating 💰 launcher on desktop too, so it clears TornTools’ bottom-right quick-access bar (it was only moving up on a narrow window before). If it still sits over something on your setup, let me know and I’ll nudge it further."] },
     { v: "1.83.0", d: "Aug 24, 2026", c: ["🎯 Landing accuracy now scores against the shared restock collector (the 5-min server-side feed), not just your own refreshes — so far more predictions get graded, much sooner. It reconstructs whether an item was in stock at your landing time from the collector's restock/sellout event timeline (only when that moment is cleanly bracketed by known events, so it never guesses across a gap the feed missed), and falls back to your local stock history otherwise. Purely improves how outcomes are resolved; still invisible on screen."] },
     { v: "1.82.0", d: "Aug 24, 2026", c: ["💾 The Landing-accuracy track record now survives a wipe: ⬆ Import restores your logged predictions (and their scored outcomes) from an ⬇ Export blob, merged and de-duplicated so re-importing never double-counts or erases an already-scored one. Back up occasionally (or after a Tampermonkey/cache reset, load your last export) and the calibration history keeps building instead of starting over."] },
