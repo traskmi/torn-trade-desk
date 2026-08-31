@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.85.0
+// @version      1.86.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -782,7 +782,7 @@
   let host, panel;
   function css() {
     return `
-    #tdk-btn{position:fixed;right:18px;bottom:78px;z-index:2147483600;width:46px;height:46px;border-radius:50%;
+    #tdk-btn{position:fixed;left:18px;bottom:78px;z-index:2147483600;width:46px;height:46px;border-radius:50%;
       background:#14130f;border:1px solid #d9b441;color:#d9b441;font-size:20px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.5)}
     #tdk-btn:hover{background:#201e17}
     #tdk-panel{position:fixed;right:28px;top:12px;z-index:2147483000;width:min(780px,92vw);max-height:calc(100vh - 24px);overflow:hidden;padding:0;
@@ -1171,7 +1171,7 @@
     .tdk-pdq{width:80px}
     /* ---- Mobile / Torn PDA (narrow webview): fill the screen, fatten touch targets, shrink the board so 5 cols still fit ---- */
     @media (max-width: 560px) {
-      #tdk-btn{bottom:calc(88px + env(safe-area-inset-bottom, 0px));right:14px;width:50px;height:50px;font-size:21px;z-index:2147482900} /* sit well above PDA's bottom nav (64px overlapped it) + clear the gesture-bar safe area; BELOW the panel so the full-screen board covers it when open */
+      #tdk-btn{bottom:calc(88px + env(safe-area-inset-bottom, 0px));left:14px;width:50px;height:50px;font-size:21px;z-index:2147482900} /* sit well above PDA's bottom nav (64px overlapped it) + clear the gesture-bar safe area; BELOW the panel so the full-screen board covers it when open */
       #tdk-panel{left:5px;right:5px;top:5px;bottom:5px;width:auto;max-height:none;border-radius:12px}
       .tdk-col{max-height:none}
       .tdk-rail{flex:0 0 46px;width:46px;padding:8px 3px;gap:5px}
@@ -2296,6 +2296,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.86.0", d: "Aug 31, 2026", c: ["🖱️ Moved the floating 💰 launcher to the bottom-LEFT of the screen instead of bottom-right — it was sitting over the chat window's send icon."] },
     { v: "1.85.0", d: "Aug 31, 2026", c: ["🧹 Restock predictions no longer trust a months-stale local reading. The shared collector feed is already the primary source for restock timing (and syncs automatically), but for the rare item it has no data on, the tool used to fall back to your own device's restock log — even if that log hadn't been updated in months because the panel had sat idle. It now ignores a local fallback record once it's older than 30 days rather than treating it as current."] },
     { v: "1.84.0", d: "Aug 24, 2026", c: ["🖱️ Raised the floating 💰 launcher on desktop too, so it clears TornTools’ bottom-right quick-access bar (it was only moving up on a narrow window before). If it still sits over something on your setup, let me know and I’ll nudge it further."] },
     { v: "1.83.0", d: "Aug 24, 2026", c: ["🎯 Landing accuracy now scores against the shared restock collector (the 5-min server-side feed), not just your own refreshes — so far more predictions get graded, much sooner. It reconstructs whether an item was in stock at your landing time from the collector's restock/sellout event timeline (only when that moment is cleanly bracketed by known events, so it never guesses across a gap the feed missed), and falls back to your local stock history otherwise. Purely improves how outcomes are resolved; still invisible on screen."] },
