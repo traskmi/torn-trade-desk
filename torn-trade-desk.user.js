@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.90.0
+// @version      1.91.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2001,6 +2001,105 @@
     const ageBit = (x.age && x.level && x.age / x.level >= 50) ? ((x.age >= 365 ? (x.age / 365).toFixed(1) + 'y' : x.age + 'd') + ' old at L' + x.level) : null;
     return (ageBit ? ageBit + ' · ' : '') + r.slice(0, 2).join(' · ');
   }
+  // Merits tab — Torn's "merits" API (v2/user/merits) is actually the stat-perk-purchase system, not this. What
+  // the user means is Torn's Medals + Honors (collectively "Awards"): torn/medals + torn/honors are the full
+  // catalogs (id/name/description/type/rarity — no offset/limit on medals, honors paginates 100/page per the
+  // v2 swagger spec, walked below); user/medals + user/honors return only {id,timestamp} for what's EARNED —
+  // there is no API field for partial progress on a grind medal (e.g. "4,231/10,000 hits"), Torn only renders
+  // that server-side on torn.com/awards.php. So this tracks earned/not-earned faithfully and links out to Torn's
+  // own page for real progress bars, rather than fabricating a percentage we can't actually compute.
+  async function loadAwardCatalog(key) {
+    if (state.awardCat) return state.awardCat;
+    try {
+      const c = GM_getValue("award_cat", null);
+      if (c && c.honors && c.medals && c.at && Date.now() - c.at < 30 * 24 * 3600 * 1000) { state.awardCat = c; return c; }
+    } catch (e) { }
+    const medalsJ = await gmGet("https://api.torn.com/v2/torn/medals?key=" + encodeURIComponent(key), 30000);
+    const medals = (medalsJ && medalsJ.medals) || [];
+    medals.forEach(function (m) { m.kind = "medal"; });
+    const honors = [];
+    for (let offset = 0; offset < 1000; offset += 100) {
+      const j = await gmGet("https://api.torn.com/v2/torn/honors?limit=100&offset=" + offset + "&key=" + encodeURIComponent(key), 30000);
+      const page = (j && j.honors) || [];
+      page.forEach(function (h) { h.kind = "honor"; });
+      honors.push.apply(honors, page);
+      if (page.length < 100) break;
+    }
+    const cat = { medals: medals, honors: honors, at: Date.now() };
+    state.awardCat = cat;
+    try { GM_setValue("award_cat", cat); } catch (e) { }
+    return cat;
+  }
+  async function loadAwardEarned(key) {
+    const [mj, hj] = await Promise.all([
+      gmGet("https://api.torn.com/v2/user/medals?key=" + encodeURIComponent(key), 20000),
+      gmGet("https://api.torn.com/v2/user/honors?key=" + encodeURIComponent(key), 20000)
+    ]);
+    const medals = {}; ((mj && mj.medals) || []).forEach(function (m) { medals[m.id] = m.timestamp; });
+    const honors = {}; ((hj && hj.honors) || []).forEach(function (h) { honors[h.id] = h.timestamp; });
+    return { medals: medals, honors: honors };
+  }
+  // Heuristic, not a guarantee: not earned + no "grind" number in the requirement text + not a time-limited
+  // competition or Limited-rarity item → probably a one-shot action you can just go do (the Toilet-Paper-prank
+  // "Wipeout" honor is the canonical example — its description has no number in it at all). Read the shown
+  // description before chasing one — a few still need a specific item, location or situation this can't see.
+  function awardEasyWin(a) {
+    if (a.type && a.type.title === "competitions") return false;
+    if (a.rarity === "Limited") return false;
+    const nums = (a.description || "").match(/[\d,]+/g) || [];
+    let maxN = 0; nums.forEach(function (s) { const n = parseInt(s.replace(/,/g, ""), 10); if (n > maxN) maxN = n; });
+    return maxN <= 5;
+  }
+  async function openAwards() {
+    const bx = host.querySelector("#tdk-buyers");
+    bx.classList.add("open");
+    bx.innerHTML = '<div class="tdk-bh"><div class="tt">🏅 Merits<small> — loading…</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div><div class="br" style="padding:10px 12px">Fetching the award catalog (first run only — cached 30 days after)…</div>';
+    bindClose(bx);
+    const setTitle = function (s) { const t = bx.querySelector(".tt"); if (t) t.innerHTML = '🏅 Merits<small> — ' + s + '</small>'; };
+    const key = tornKey();
+    if (!key) { setTitle("need a Torn API key (⚙ Settings)"); return; }
+    try {
+      const cat = await loadAwardCatalog(key);
+      const earned = await loadAwardEarned(key);
+      const all = cat.medals.concat(cat.honors);
+      const isEarned = function (a) { return (a.kind === "medal" ? earned.medals : earned.honors)[a.id] != null; };
+      const got = all.filter(isEarned);
+      const todo = all.filter(function (a) { return !isEarned(a); });
+      const easy = todo.filter(awardEasyWin);
+      const grind = todo.filter(function (a) { return !awardEasyWin(a); });
+      const kindTag = function (a) { return a.kind === "medal" ? "🎖️ medal" : "🎗️ honor"; };
+      const row = function (a, sub) {
+        return '<div class="skrow"><div class="skmain"><div class="skn">' + a.name + ' <span>' + kindTag(a) + (a.type && a.type.title ? " · " + a.type.title : "") + '</span></div>' +
+          '<div class="skhint">' + (a.description || "") + '</div>' + (sub || '') + '</div></div>';
+      };
+      const easyHtml = easy.length
+        ? '<div class="sksec">🎯 Easy wins · ' + easy.length + ' not yet earned, worth trying now</div>' +
+          '<div class="tdk-sub" style="padding:0 12px 4px">Not earned, and the requirement doesn\'t read like a grind — usually a single action. Heuristic based on the text below; a few may still need a specific item, place or moment.</div>' +
+          easy.map(function (a) { return row(a); }).join('')
+        : '<div class="sksec">🎯 Easy wins</div><div class="tdk-sub" style="padding:0 12px 8px">None spotted right now — everything left needs real grinding, or you\'ve already got the low-hanging ones.</div>';
+      const grouped = {};
+      grind.forEach(function (a) { const k = a.kind + ":" + ((a.type && a.type.title) || "other"); (grouped[k] || (grouped[k] = { kind: a.kind, cat: (a.type && a.type.title) || "other", items: [] })).items.push(a); });
+      const grindHtml = '<div class="sksec">⏳ Still to earn · ' + grind.length + '</div>' +
+        '<div class="tdk-sub" style="padding:0 12px 8px">Real progress bars for these live on Torn\'s own <a class="prof" href="https://www.torn.com/awards.php" target="_blank" rel="noopener">Awards page</a> — the API only tells us earned vs not, not how close you are.</div>' +
+        Object.keys(grouped).sort(function (a, b) { return grouped[b].items.length - grouped[a].items.length; }).map(function (k) {
+          const g = grouped[k];
+          return '<details class="tdk-clog"><summary class="cv">' + (g.kind === "medal" ? "🎖️" : "🎗️") + ' ' + g.cat + ' <span>· ' + g.items.length + '</span></summary>' +
+            g.items.map(function (a) { return row(a); }).join('') + '</details>';
+        }).join('');
+      const gotSorted = got.slice().sort(function (a, b) { const ta = (a.kind === "medal" ? earned.medals : earned.honors)[a.id] || 0, tb = (b.kind === "medal" ? earned.medals : earned.honors)[b.id] || 0; return tb - ta; });
+      const earnedHtml = '<details class="tdk-clog"><summary class="cv">✅ Earned <span>· ' + got.length + ' / ' + all.length + '</span></summary>' +
+        gotSorted.map(function (a) {
+          const ts = (a.kind === "medal" ? earned.medals : earned.honors)[a.id];
+          return row(a, ts ? '<div class="sksub">Earned ' + new Date(ts * 1000).toLocaleDateString() + '</div>' : '');
+        }).join('') + '</details>';
+      setTitle(got.length + '/' + all.length + ' earned · ' + easy.length + ' easy win' + (easy.length === 1 ? '' : 's'));
+      bx.innerHTML = '<div class="tdk-bh"><div class="tt">🏅 Merits<small> — ' + got.length + '/' + all.length + ' earned · ' + easy.length + ' easy win' + (easy.length === 1 ? '' : 's') + '</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
+        easyHtml + grindHtml + earnedHtml;
+      bindClose(bx);
+    } catch (e) {
+      setTitle("failed: " + (e.message || e));
+    }
+  }
   async function openBounty() {
     const bx = host.querySelector("#tdk-buyers");
     bx.classList.add("open");
@@ -2368,6 +2467,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.91.0", d: "Sep 2, 2026", c: ["🏅 New Merits tab. Pulls Torn's full medal + honor catalog and cross-checks it against what you've actually earned — split into <b>🎯 Easy wins</b> (not earned yet, and the requirement doesn't read like a grind — usually a one-shot action, like the Toilet-Paper-prank honor), <b>⏳ Still to earn</b> (grouped by category, with a link to Torn's own Awards page for real progress bars — the API only tells us earned/not-earned, not how close you are on a grind medal), and <b>✅ Earned</b> (with the date). The easy-win call is a heuristic based on the requirement text, not a guarantee — a few may still need a specific item, place or moment."] },
     { v: "1.90.0", d: "Sep 2, 2026", c: ["🚫 You can now hide specific items from the board — e.g. a weapon like the ArmaLite M-15A4 that shows up profitable but isn't something you'd actually carry. Click the small 🚫 next to any item's name (table or card view) to pull it from every part of the board — best pick, best trip, everything. Manage the list in ⚙ Settings → Hidden items, where each one can be restored individually or all at once. Purely a display filter — restock/Landing tracking for a hidden item keeps running in the background, so turning it back on picks up right where it left off."] },
     { v: "1.89.0", d: "Sep 2, 2026", c: ["🕶️ Follow-up on contraband tracking: turns out the 24 contraband items split into two very different groups — some (Shark Fin, Turtle Shell, Pangolin Scales, Counterfeit Manga) restock/sell out on a tight ~1-2h cycle and were already maxing out the stored-events cap within ~10 days, while others (Meteorite Fragment, Bearer Bond) only restock a handful of times a month. The fast group now gets more room to keep events (not just more days to keep them) so the sellout-duration math behind the Landing % has a fuller sample to work with. Slower group unaffected — its fix landed last version."] },
     { v: "1.88.0", d: "Sep 2, 2026", c: ["🕶️ Contraband items (Shark Fin, Ivory, Uncut Diamonds and the rest of the 24 sold abroad) are now recognized — a 🕶️ tag on the board marks them, since torntravel.com and a live YATA check both confirm they restock in rare, long-gap batches rather than a steady cycle, so their restock interval and Landing % rest on fewer samples than a regular item. They already flowed through the same tracking as everything else, but the restock-history window was being pruned at 30 days (45 on the shared collector) — too short for a genuinely-long restock cycle to ever bank 2 samples. These items now get 120 days before their history ages out, giving the predictor a real shot at learning their cadence. <b>The shared-collector.gs side of this needs a redeploy (Manage deployments → Edit → New version) to take effect.</b>"] },
@@ -3034,6 +3134,7 @@
         '<button class="tdk-btn2" id="tdk-shop" title="Shop flips — Torn city-shop items worth more on the market"><i>🏪</i><span>Shop</span></button>' +
         '<button class="tdk-btn2" id="tdk-stk" title="Stocks — your P&amp;L, benefit-block progress, buy-low scanner"><i>📊</i><span>Stocks</span></button>' +
         '<button class="tdk-btn2" id="tdk-bounty" title="Bounty planner — collectible bounties, lowest-level first"><i>🎯</i><span>Bounty</span></button>' +
+        '<button class="tdk-btn2" id="tdk-awards" title="Merits — medals &amp; honors you\'ve earned, and easy wins you haven\'t"><i>🏅</i><span>Merits</span></button>' +
         '<span class="tdk-railsp"></span>' +
         '<button class="tdk-btn2" id="tdk-refresh" title="Refresh live data"><i>↻</i><span>Refresh</span></button>' +
         '<button class="tdk-btn2" id="tdk-settings" title="Settings — API keys &amp; options"><i>⚙</i><span>Settings</span></button>' +
@@ -3079,6 +3180,7 @@
     host.querySelector("#tdk-shop").addEventListener("click", openShopFlips);
     host.querySelector("#tdk-stk").addEventListener("click", openStocks);
     host.querySelector("#tdk-bounty").addEventListener("click", openBounty);
+    host.querySelector("#tdk-awards").addEventListener("click", openAwards);
     host.querySelector("#tdk-refresh").addEventListener("click", function () { if (state.view === "inv") { state.inv = null; renderInv(); } else refresh(); });
     host.querySelector("#tdk-cap").addEventListener("change", function (e) {
       state.cap = Math.max(1, parseInt(e.target.value, 10) || 23); GM_setValue("cap", state.cap);
