@@ -32,12 +32,16 @@ var SAMPLE_MAX = 1800;            // only log restock/sellout events from sample
 var EV_MAX = 200;                 // cap restock/sellout events kept per item
 var EV_AGE = 45 * 86400;          // prune events older than 45 days
 // Contraband — sold abroad, sellable to specific NPC shops or the Museum (see wiki.torn.com/wiki/Contraband,
-// all 24 listed items verified Sep 2 2026). Third-party planners flag these as rarely stocked: long dry spells
-// between restocks (not small batches — a live check showed several-hundred-to-several-thousand-unit restocks,
-// just infrequent ones), so the default 45-day EV_AGE can prune a restock record before a second one ever
-// lands, starving restockPredict() of the ≥2 samples it needs. Give these more runway before pruning.
+// all 24 listed items verified Sep 2 2026). Third-party planners flag these as rarely stocked, but a live check
+// of this collector's own event log (Sep 2 2026) showed that's uneven: some (Shark Fin, Turtle Shell, Pangolin
+// Scales, Counterfeit Manga) restock/sell out on a tight ~1-2h cycle and were already hitting EV_MAX within ~10
+// days, while others (Meteorite Fragment, Bearer Bond) logged only ~5 restocks in 3 weeks — genuinely rare.
+// Both ends benefit from more headroom: EV_AGE_RARE stops the slow ones from being pruned before a 2nd restock
+// ever lands (client-side restockPredict()'s hard minimum); EV_MAX_RARE stops the fast ones from capping out
+// before the client's selloutDur/other stats — which use the FULL rs/so arrays, not just a recent-gaps window —
+// have much to work with.
 var CONTRABAND_IDS = { 1495: 1, 1502: 1, 1484: 1, 1482: 1, 1503: 1, 1501: 1, 1492: 1, 1489: 1, 1491: 1, 1483: 1, 1488: 1, 1496: 1, 1499: 1, 1494: 1, 1487: 1, 1504: 1, 1500: 1, 358: 1, 1490: 1, 1485: 1, 1498: 1, 1486: 1, 1497: 1, 1493: 1 };
-var EV_AGE_RARE = 120 * 86400;
+var EV_AGE_RARE = 120 * 86400, EV_MAX_RARE = 600;
 
 /** Run once (and any time you want to (re)install the trigger). */
 function setup() {
@@ -87,7 +91,7 @@ function poll() {
     var arr = block.stocks || block;
     if (!arr || !arr.forEach) return;
     arr.forEach(function (it) {
-      var evCut = now - (CONTRABAND_IDS[it.id] ? EV_AGE_RARE : EV_AGE);
+      var rare = !!CONTRABAND_IDS[it.id], evCut = now - (rare ? EV_AGE_RARE : EV_AGE), evMax = rare ? EV_MAX_RARE : EV_MAX;
       var key = cc + ':' + it.id, q = it.quantity;
       var prev = d.last[key];                       // [updTs, qty]
       d.last[key] = [upd, q];
@@ -105,8 +109,8 @@ function poll() {
         else if (prevQ > 0 && q === 0) rec.so.push(upd);
       }
       rec.q = q;
-      rec.rs = rec.rs.filter(function (e) { return e[0] >= evCut; }); if (rec.rs.length > EV_MAX) rec.rs.splice(0, rec.rs.length - EV_MAX);
-      rec.so = rec.so.filter(function (t) { return t >= evCut; });    if (rec.so.length > EV_MAX) rec.so.splice(0, rec.so.length - EV_MAX);
+      rec.rs = rec.rs.filter(function (e) { return e[0] >= evCut; }); if (rec.rs.length > evMax) rec.rs.splice(0, rec.rs.length - evMax);
+      rec.so = rec.so.filter(function (t) { return t >= evCut; });    if (rec.so.length > evMax) rec.so.splice(0, rec.so.length - evMax);
 
       // Seasonal: attribute each SELLING interval's sold-qty + seconds to its day-of-week×hour bucket (UTC = TCT).
       if (dq < 0) {

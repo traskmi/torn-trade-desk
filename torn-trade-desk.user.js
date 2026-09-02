@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.88.0
+// @version      1.89.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -208,12 +208,15 @@
   const EV_MAX = 80, EV_AGE = 30 * 86400;
   // Contraband — sold abroad, sellable to specific NPC shops (see GATED_SHOPS) or the Museum. Verified against
   // wiki.torn.com/wiki/Contraband (all 24 listed items, Sep 2 2026). Third-party planners (e.g. torntravel.com)
-  // flag these as "rarely stocked" — live-checked against YATA the same day: 10 of 24 sat at 0 simultaneously,
-  // with the rest at healthy few-hundred-to-several-thousand batches — so it's long dry spells between restocks,
-  // not small batches. That means EV_AGE's 30-day event window can prune a restock record before a second one
-  // ever lands, so restockPredict() never gets the ≥2 samples it needs. EV_AGE_RARE gives these more runway.
+  // flag these as "rarely stocked" — but a live check of the shared collector's own event log (Sep 2 2026) showed
+  // that's uneven: some (Shark Fin, Turtle Shell, Pangolin Scales, Counterfeit Manga) restock/sell out on a tight
+  // ~1-2h cycle and were already hitting the event-count cap within ~10 days, while others (Meteorite Fragment,
+  // Bearer Bond) logged only ~5 restocks in 3 weeks — genuinely rare. Both ends benefit from more headroom:
+  // EV_AGE_RARE stops the SLOW ones from being pruned before a 2nd restock ever lands (restockPredict()'s hard
+  // minimum); EV_MAX_RARE stops the FAST ones from capping out before selloutDur/restockPredict's other stats —
+  // which use the FULL rs/so arrays, not just the interval estimate's last-12-gaps window — have much to work with.
   const CONTRABAND_IDS = new Set([1495, 1502, 1484, 1482, 1503, 1501, 1492, 1489, 1491, 1483, 1488, 1496, 1499, 1494, 1487, 1504, 1500, 358, 1490, 1485, 1498, 1486, 1497, 1493]);
-  const EV_AGE_RARE = 120 * 86400;
+  const EV_AGE_RARE = 120 * 86400, EV_MAX_RARE = 300;
   function isContraband(id) { return CONTRABAND_IDS.has(+id); }
 
   function isRealRestock(dq, prevQ, maxQ) {
@@ -232,7 +235,7 @@
       if (!FLY[cc]) return;
       const block = yata.stocks[cc], upd = block.update || now;
       (block.stocks || block).forEach(function (it) {
-        const evCut = now - (isContraband(it.id) ? EV_AGE_RARE : EV_AGE);
+        const rare = isContraband(it.id), evCut = now - (rare ? EV_AGE_RARE : EV_AGE), evMax = rare ? EV_MAX_RARE : EV_MAX;
         const key = cc + ":" + it.id, arr = hist[key] || (hist[key] = []);
         const last = arr[arr.length - 1];
         if (last && last[0] === upd) return;
@@ -256,8 +259,8 @@
           if (isRealRestock(dq, prevQ, rec.max)) { rec.rs.push([upd, dq]); evChanged = true; }
           else if (prevQ > 0 && q === 0) { rec.so.push(upd); evChanged = true; }
           rec.q = q;
-          rec.rs = rec.rs.filter(function (e) { return e[0] >= evCut; }); if (rec.rs.length > EV_MAX) rec.rs.splice(0, rec.rs.length - EV_MAX);
-          rec.so = rec.so.filter(function (t) { return t >= evCut; }); if (rec.so.length > EV_MAX) rec.so.splice(0, rec.so.length - EV_MAX);
+          rec.rs = rec.rs.filter(function (e) { return e[0] >= evCut; }); if (rec.rs.length > evMax) rec.rs.splice(0, rec.rs.length - evMax);
+          rec.so = rec.so.filter(function (t) { return t >= evCut; }); if (rec.so.length > evMax) rec.so.splice(0, rec.so.length - evMax);
           if (rec.up) { rec.up = rec.up.filter(function (e) { return e[0] >= evCut; }); if (rec.up.length > 200) rec.up.splice(0, rec.up.length - 200); }
         }
       });
@@ -1442,7 +1445,7 @@
       }
       const cls = (aff ? "" : (fund ? (isTop ? "fund" : "") : "dim")) + (ocMiss ? " ocmiss" : "");
       const mark = (aff && fill) ? '<span class="star" title="Affordable now & fully in stock — a clean pick">★</span>' : (isTop ? '<span class="star" title="Best funded play — over budget, but reachable by selling stocks (see the banner up top)">💰</span>' : '');
-      const cbMark = isContraband(x.id) ? ' <span style="font-size:9px;color:#928b78;" title="Contraband — restocks in rare, long-gap batches rather than a steady cycle, so the restock interval and Landing % here rest on fewer samples than a regular item. Trust them less until more history builds up.">🕶️</span>' : '';
+      const cbMark = isContraband(x.id) ? ' <span style="font-size:9px;color:#928b78;" title="Contraband — cadence varies a lot per item, from a tight ~1-2h restock/sellout cycle to just a handful of restocks a month. Restock interval and Landing % are tracked the same way as any item, but check the sample count before trusting a thin one.">🕶️</span>' : '';
       const ocBadge = ocMiss ? '<span class="oc-x" title="Round trip ' + (FLY[x.cc] ? fmtRt(rtOf(x.cc)) : '?') + (g.secs <= 0 ? ' — your OC is ready NOW, don’t fly' : ' exceeds your OC (ready in ' + fmtDur(g.secs) + ') — you’d miss it') + '">⛔ OC</span>' : '';
       const rtTxt = FLY[x.cc] ? '<span title="' + (travelMult() < 1 ? travelLabel() + ' · base ' + fmtRt(FLY[x.cc].rt) : 'Standard round trip') + '">' + fmtRt(rtOf(x.cc)) + ' rt</span> · ' : '';
       const ol = x._ol;
@@ -2353,6 +2356,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.89.0", d: "Sep 2, 2026", c: ["🕶️ Follow-up on contraband tracking: turns out the 24 contraband items split into two very different groups — some (Shark Fin, Turtle Shell, Pangolin Scales, Counterfeit Manga) restock/sell out on a tight ~1-2h cycle and were already maxing out the stored-events cap within ~10 days, while others (Meteorite Fragment, Bearer Bond) only restock a handful of times a month. The fast group now gets more room to keep events (not just more days to keep them) so the sellout-duration math behind the Landing % has a fuller sample to work with. Slower group unaffected — its fix landed last version."] },
     { v: "1.88.0", d: "Sep 2, 2026", c: ["🕶️ Contraband items (Shark Fin, Ivory, Uncut Diamonds and the rest of the 24 sold abroad) are now recognized — a 🕶️ tag on the board marks them, since torntravel.com and a live YATA check both confirm they restock in rare, long-gap batches rather than a steady cycle, so their restock interval and Landing % rest on fewer samples than a regular item. They already flowed through the same tracking as everything else, but the restock-history window was being pruned at 30 days (45 on the shared collector) — too short for a genuinely-long restock cycle to ever bank 2 samples. These items now get 120 days before their history ages out, giving the predictor a real shot at learning their cadence. <b>The shared-collector.gs side of this needs a redeploy (Manage deployments → Edit → New version) to take effect.</b>"] },
     { v: "1.87.0", d: "Sep 2, 2026", c: ["🏪 The board now checks whether a foreign item can be sold to a fixed-price NPC shop (e.g. Shark Fin → Nikeh Sports for $66,000) and uses that instead when it beats the Item Market average — a 🏪 tag marks a row priced this way. Some of these shops need an education course first (Nikeh Sports needs Sports Administration); the tool checks your completed courses automatically, so this only kicks in once you've actually unlocked it. No settings to touch."] },
     { v: "1.86.0", d: "Aug 31, 2026", c: ["🖱️ Moved the floating 💰 launcher to the bottom-LEFT of the screen instead of bottom-right — it was sitting over the chat window's send icon."] },
