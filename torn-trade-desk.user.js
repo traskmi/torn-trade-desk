@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.86.0
+// @version      1.87.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -726,6 +726,7 @@
         loadResale(key),
         state.priceBasis === "trader" ? loadTraderPrices(w3b) : Promise.resolve({})
       ]);
+      try { await Promise.all([loadVendors(key), loadShopUnlocks(key)]); } catch (e) { } // non-fatal: NPC sell-price just won't beat the market/trader basis
       await loadCash(key);
       await loadOC(key);
       recordStocks(yata);
@@ -740,12 +741,15 @@
         (block.stocks || block).forEach(function (it) {
           const mktSell = resale[it.id]; if (!mktSell) return;
           const traderSell = traderPrices[it.id] || 0;
-          const sell = (state.priceBasis === "trader" && traderSell > 0) ? traderSell : mktSell;
+          let sell = (state.priceBasis === "trader" && traderSell > 0) ? traderSell : mktSell;
+          let isTraderPrice = state.priceBasis === "trader" && traderSell > 0, isNpcPrice = false;
+          const npcSell = npcSellFor(it.id);
+          if (npcSell > sell) { sell = npcSell; isTraderPrice = false; isNpcPrice = true; } // a fixed, unlimited NPC sell (e.g. Nikeh Sports) beats the market/trader basis
           const ppi = sell - it.cost;
           if (ppi <= 0) return;
           const cap = state.cap;
           const ppm = loadPpm(cc, it.id, ppi, it.quantity);
-          rows.push({ id: it.id, name: it.name, cc: cc, country: f.name, buy: it.cost, sell: sell, stock: it.quantity, ppi: ppi, ppm: ppm, full: it.cost * cap, freshS: state.updates[cc], isTraderPrice: state.priceBasis === "trader" && traderSell > 0 });
+          rows.push({ id: it.id, name: it.name, cc: cc, country: f.name, buy: it.cost, sell: sell, stock: it.quantity, ppi: ppi, ppm: ppm, full: it.cost * cap, freshS: state.updates[cc], isTraderPrice: isTraderPrice, isNpcPrice: isNpcPrice });
         });
       });
       rows.sort(function (a, b) { return b.ppm - a.ppm; });
@@ -1431,7 +1435,8 @@
       const ocBadge = ocMiss ? '<span class="oc-x" title="Round trip ' + (FLY[x.cc] ? fmtRt(rtOf(x.cc)) : '?') + (g.secs <= 0 ? ' — your OC is ready NOW, don’t fly' : ' exceeds your OC (ready in ' + fmtDur(g.secs) + ') — you’d miss it') + '">⛔ OC</span>' : '';
       const rtTxt = FLY[x.cc] ? '<span title="' + (travelMult() < 1 ? travelLabel() + ' · base ' + fmtRt(FLY[x.cc].rt) : 'Standard round trip') + '">' + fmtRt(rtOf(x.cc)) + ' rt</span> · ' : '';
       const ol = x._ol;
-      const sellTag = x.isTraderPrice ? ' <span style="font-size:9px;color:#d9b441;" title="Priced off top trader buy-offer">⚡</span>' : '';
+      const sellTag = x.isTraderPrice ? ' <span style="font-size:9px;color:#d9b441;" title="Priced off top trader buy-offer">⚡</span>'
+        : x.isNpcPrice ? ' <span style="font-size:9px;color:#7ac67f;" title="Priced off a fixed NPC shop sell — instant, unlimited, no listing fee">🏪</span>' : '';
       const profit = money(x.ppi * cap), ppmTxt = '$' + x.ppm.toLocaleString();
       const loadWarn = (ol && ol.underLoad) ? ' <span class="loadwarn" title="' + escAttr("Tops out ~" + ol.maxQ + " in stock — cannot fill a full " + cap + " load; a realistic trip nets ~" + money(x.ppi * ol.maxQ)) + '">⚠</span>' : '';
       const ldPill = ol ? '<span class="ld ld-' + ol.cls + '" title="' + escAttr(ol.tip) + '">' + ol.txt + '</span>' : '<span class="ld ld-unk">·</span>';
@@ -1847,17 +1852,58 @@
     } catch (e) { state.foreignIds = new Set(); }
     return state.foreignIds;
   }
-  // item → selling shop (v2 catalog; the vendor mapping is static, so cache hard). Kept separate from loadResale (v1) so nothing else is disturbed.
+  // item → selling shop(s) (v2 catalog `value.shops[]`, replacing the deprecated single `vendor` field — static,
+  // so cache hard). Kept separate from loadResale (v1) so nothing else is disturbed. Also captures each shop's
+  // buy/sell price so a fixed NPC sell (e.g. Shark Fin → Nikeh Sports $66,000) can outbid the Item Market average.
   async function loadVendors(key) {
     if (state.itemShop) return state.itemShop;
-    try { const c = GM_getValue("shop_map", null); if (c && c.map && c.at && Date.now() - c.at < 7 * 24 * 3600 * 1000) { state.itemShop = c.map; return c.map; } } catch (e) { }
+    try {
+      const c = GM_getValue("shop_map", null);
+      if (c && c.map && c.shops && c.at && Date.now() - c.at < 7 * 24 * 3600 * 1000) { state.itemShop = c.map; state.itemShops = c.shops; return c.map; }
+    } catch (e) { }
     const j = await gmGet("https://api.torn.com/v2/torn/items?key=" + encodeURIComponent(key), 30000);
     const its = (j && j.items) || [];
-    const map = {};
-    its.forEach(function (it) { const v = it && it.value && it.value.vendor; if (v && v.name) map[it.id] = { n: v.name, c: v.country || "Torn" }; });
-    state.itemShop = map;
-    try { GM_setValue("shop_map", { map: map, at: Date.now() }); } catch (e) { }
+    const map = {}, shops = {};
+    its.forEach(function (it) {
+      const v = it && it.value, list = (v && v.shops) || [];
+      if (list.length) { shops[it.id] = list; map[it.id] = { n: list[0].shop, c: list[0].country || "Torn" }; }
+      else if (v && v.vendor && v.vendor.name) { map[it.id] = { n: v.vendor.name, c: v.vendor.country || "Torn" }; } // pre-migration fallback
+    });
+    state.itemShop = map; state.itemShops = shops;
+    try { GM_setValue("shop_map", { map: map, shops: shops, at: Date.now() }); } catch (e) { }
     return map;
+  }
+  // Some NPC shops require an education course before they're accessible (e.g. Nikeh Sports needs Sports
+  // Administration). Everything else in ShopNameEnum is open to everyone. Extend this table if more turn up.
+  const GATED_SHOPS = { "Nikeh Sports": "Sports Administration" };
+  async function loadShopUnlocks(key) {
+    if (state.shopUnlocked) return state.shopUnlocked;
+    try {
+      const c = GM_getValue("shop_unlocked", null);
+      if (c && c.set && c.at && Date.now() - c.at < 24 * 3600 * 1000) { state.shopUnlocked = c.set; return c.set; }
+    } catch (e) { }
+    const set = {};
+    try {
+      const [cat, mine] = await Promise.all([
+        gmGet("https://api.torn.com/v2/torn/education?key=" + encodeURIComponent(key), 20000),
+        gmGet("https://api.torn.com/v2/user/education?key=" + encodeURIComponent(key), 20000)
+      ]);
+      const idByName = {};
+      ((cat && cat.education) || []).forEach(function (grp) { (grp.courses || []).forEach(function (c2) { idByName[c2.name] = c2.id; }); });
+      const done = {}; (((mine && mine.education) || {}).complete || []).forEach(function (id) { done[id] = true; });
+      Object.keys(GATED_SHOPS).forEach(function (shop) { const eid = idByName[GATED_SHOPS[shop]]; set[shop] = eid != null && !!done[eid]; });
+    } catch (e) { /* leave unresolved shops out — treated as locked until a successful check says otherwise */ }
+    state.shopUnlocked = set;
+    try { GM_setValue("shop_unlocked", { set: set, at: Date.now() }); } catch (e) { }
+    return set;
+  }
+  function shopAccessible(shop) { return !(shop in GATED_SHOPS) || !!(state.shopUnlocked && state.shopUnlocked[shop]); }
+  // Best fixed NPC sell price for an item, among shops this player can actually reach — 0 if none apply.
+  function npcSellFor(id) {
+    const list = state.itemShops && state.itemShops[id]; if (!list || !list.length) return 0;
+    let best = 0;
+    list.forEach(function (s) { if (s.sell_price > best && shopAccessible(s.shop)) best = s.sell_price; });
+    return best;
   }
   async function openShopFlips() {
     const bx = host.querySelector("#tdk-buyers");
@@ -2296,6 +2342,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.87.0", d: "Sep 2, 2026", c: ["🏪 The board now checks whether a foreign item can be sold to a fixed-price NPC shop (e.g. Shark Fin → Nikeh Sports for $66,000) and uses that instead when it beats the Item Market average — a 🏪 tag marks a row priced this way. Some of these shops need an education course first (Nikeh Sports needs Sports Administration); the tool checks your completed courses automatically, so this only kicks in once you've actually unlocked it. No settings to touch."] },
     { v: "1.86.0", d: "Aug 31, 2026", c: ["🖱️ Moved the floating 💰 launcher to the bottom-LEFT of the screen instead of bottom-right — it was sitting over the chat window's send icon."] },
     { v: "1.85.0", d: "Aug 31, 2026", c: ["🧹 Restock predictions no longer trust a months-stale local reading. The shared collector feed is already the primary source for restock timing (and syncs automatically), but for the rare item it has no data on, the tool used to fall back to your own device's restock log — even if that log hadn't been updated in months because the panel had sat idle. It now ignores a local fallback record once it's older than 30 days rather than treating it as current."] },
     { v: "1.84.0", d: "Aug 24, 2026", c: ["🖱️ Raised the floating 💰 launcher on desktop too, so it clears TornTools’ bottom-right quick-access bar (it was only moving up on a narrow window before). If it still sits over something on your setup, let me know and I’ll nudge it further."] },
