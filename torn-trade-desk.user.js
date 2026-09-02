@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.89.0
+// @version      1.90.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -58,7 +58,7 @@
   }
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "landing"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt"), boardView: GM_getValue("boardView", null) };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "landing"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt"), boardView: GM_getValue("boardView", null), itemBlock: GM_getValue("item_block", {}) };
   function isMobile() { return (window.innerWidth || document.documentElement.clientWidth || 0) <= 560; } // matches the CSS breakpoint
   // One-time: make Landing (what'll be in stock when you arrive) the default board sort for existing installs still on the old $/min default.
   try { if (!GM_getValue("landing_default_v1", false)) { if (state.sort === "ppm") { state.sort = "landing"; GM_setValue("sort", "landing"); } GM_setValue("landing_default_v1", true); } } catch (e) { }
@@ -903,6 +903,8 @@
     .tk-tr{font-size:9px;margin-right:4px;vertical-align:middle}.tk-tr.up{color:#4cc281}.tk-tr.dn{color:#e5615c}
     .rs-eta{font-size:9px;color:#9fc7f0;margin-left:4px;white-space:nowrap;cursor:help;font-family:ui-monospace,monospace}
     .star{color:#d9b441;margin-left:6px}
+    .tdk-ihide{background:transparent;border:none;color:#5c5646;font-size:9px;padding:0 0 0 6px;cursor:pointer;vertical-align:middle;opacity:.55}
+    .tdk-ihide:hover{opacity:1;color:#e5615c}
     /* view switcher */
     .tdk-vsw{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:0 16px 8px}
     .tdk-vswbtns{display:flex;gap:3px}
@@ -1102,6 +1104,8 @@
     .tdk-set .ssub b{color:#d9b441}
     .tdk-set .serr{color:#e5615c}
     .tdk-set select{flex:1;min-width:0;background:#201e17;border:1px solid #3a3729;color:#ece7d8;border-radius:8px;padding:7px 9px;font-size:12px}
+    .tdk-hidelist{display:flex;flex-direction:column;gap:4px;max-height:160px;overflow-y:auto}
+    .tdk-hidrow{display:flex;justify-content:space-between;align-items:center;gap:8px;background:#201e17;border:1px solid #3a3729;border-radius:8px;padding:5px 10px;font-size:12px;color:#c3bda9}
     .tdk-set .scheck{display:flex;align-items:center;gap:7px;font-size:12px;color:#c3bda9;cursor:pointer}
     .tdk-set .scheck input{flex:0 0 auto;min-width:0;width:15px;height:15px;accent-color:#d9b441}
     .tdk-set .scheck small{color:#928b78}
@@ -1318,6 +1322,7 @@
     const capTh = host.querySelector("#tdk-th-full"); if (capTh) capTh.textContent = "Profit ×" + cap;
     const fbtn = host.querySelector("#tdk-fund"); if (fbtn) fbtn.className = "tdk-btn2" + (fund ? " on" : "");
     let rows = state.filter === "all" ? state.rows : state.rows.filter(function (x) { return x.cc === state.filter; });
+    rows = rows.filter(function (x) { return !isItemHidden(x.id); });
     if (state.maxTrip) { const hereCC = focusCC(); rows = rows.filter(function (x) { return FLY[x.cc] && (rtOf(x.cc) <= state.maxTrip || x.cc === hereCC); }); } // exempt where you're standing / heading — no round trip needed there
     const best = rows.find(function (x) { return (cash == null || x.full <= cash) && x.stock >= cap; });
     const alt = best ? null : rows.find(function (x) { return x.stock > 0; });
@@ -1455,7 +1460,8 @@
       const loadWarn = (ol && ol.underLoad) ? ' <span class="loadwarn" title="' + escAttr("Tops out ~" + ol.maxQ + " in stock — cannot fill a full " + cap + " load; a realistic trip nets ~" + money(x.ppi * ol.maxQ)) + '">⚠</span>' : '';
       const ldPill = ol ? '<span class="ld ld-' + ol.cls + '" title="' + escAttr(ol.tip) + '">' + ol.txt + '</span>' : '<span class="ld ld-unk">·</span>';
       const availCell = abroadMode ? sc : ldPill; // abroad → live Stock; home/flying → Landing prediction
-      const nm = '<span class="nm">' + x.name + mark + cbMark + '</span>';
+      const hideBtn = '<button class="tdk-ihide" data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '" title="Hide ' + escAttr(x.name) + ' from the board — restore it anytime in ⚙ Settings">🚫</button>';
+      const nm = '<span class="nm">' + x.name + mark + cbMark + '</span>' + hideBtn;
       const dataAttr = ' data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '"';
 
       if (view === "cards") {
@@ -2098,6 +2104,12 @@
     state.ov[id] = curEff ? "keep" : "sell";
     GM_setValue("ov", state.ov);
   }
+  // Per-item board hide — e.g. an item you'll never actually carry (weapons like the ArmaLite M-15A4 show up
+  // profitable but aren't a real trade good for most players). Purely a display filter: doesn't touch the
+  // underlying restock/seasonal tracking for that item, so re-enabling it picks right back up with full history.
+  function isItemHidden(id) { return !!state.itemBlock[id]; }
+  function hideItem(id, name) { state.itemBlock[id] = { name: name || "", at: Date.now() }; GM_setValue("item_block", state.itemBlock); }
+  function unhideItem(id) { delete state.itemBlock[id]; GM_setValue("item_block", state.itemBlock); }
   function marketUrl(id, name, cat) {
     return "https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=" + id +
       "&itemName=" + String(name || "").trim().replace(/\s+/g, "_") + "&itemType=" + (cat || "");
@@ -2356,6 +2368,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.90.0", d: "Sep 2, 2026", c: ["🚫 You can now hide specific items from the board — e.g. a weapon like the ArmaLite M-15A4 that shows up profitable but isn't something you'd actually carry. Click the small 🚫 next to any item's name (table or card view) to pull it from every part of the board — best pick, best trip, everything. Manage the list in ⚙ Settings → Hidden items, where each one can be restored individually or all at once. Purely a display filter — restock/Landing tracking for a hidden item keeps running in the background, so turning it back on picks up right where it left off."] },
     { v: "1.89.0", d: "Sep 2, 2026", c: ["🕶️ Follow-up on contraband tracking: turns out the 24 contraband items split into two very different groups — some (Shark Fin, Turtle Shell, Pangolin Scales, Counterfeit Manga) restock/sell out on a tight ~1-2h cycle and were already maxing out the stored-events cap within ~10 days, while others (Meteorite Fragment, Bearer Bond) only restock a handful of times a month. The fast group now gets more room to keep events (not just more days to keep them) so the sellout-duration math behind the Landing % has a fuller sample to work with. Slower group unaffected — its fix landed last version."] },
     { v: "1.88.0", d: "Sep 2, 2026", c: ["🕶️ Contraband items (Shark Fin, Ivory, Uncut Diamonds and the rest of the 24 sold abroad) are now recognized — a 🕶️ tag on the board marks them, since torntravel.com and a live YATA check both confirm they restock in rare, long-gap batches rather than a steady cycle, so their restock interval and Landing % rest on fewer samples than a regular item. They already flowed through the same tracking as everything else, but the restock-history window was being pruned at 30 days (45 on the shared collector) — too short for a genuinely-long restock cycle to ever bank 2 samples. These items now get 120 days before their history ages out, giving the predictor a real shot at learning their cadence. <b>The shared-collector.gs side of this needs a redeploy (Manage deployments → Edit → New version) to take effect.</b>"] },
     { v: "1.87.0", d: "Sep 2, 2026", c: ["🏪 The board now checks whether a foreign item can be sold to a fixed-price NPC shop (e.g. Shark Fin → Nikeh Sports for $66,000) and uses that instead when it beats the Item Market average — a 🏪 tag marks a row priced this way. Some of these shops need an education course first (Nikeh Sports needs Sports Administration); the tool checks your completed courses automatically, so this only kicks in once you've actually unlocked it. No settings to touch."] },
@@ -2725,6 +2738,20 @@
       if (r.perk && state.travelMethod !== "air") { state.travelMethod = "air"; GM_setValue("travelMethod", "air"); if (state.rows && state.rows.length) recomputePpm(); render(); }
     });
   }
+  function renderHiddenItems() {
+    const box = host.querySelector("#tdk-set-hidden"); if (!box) return;
+    const ids = Object.keys(state.itemBlock);
+    if (!ids.length) { box.innerHTML = '<div class="ssub">None hidden — every profitable item shows on the board.</div>'; return; }
+    box.innerHTML = '<div class="tdk-hidelist">' + ids.map(function (id) {
+      const it = state.itemBlock[id];
+      return '<div class="tdk-hidrow"><span>' + (it.name || ("#" + id)) + '</span><button class="tdk-btn2 tdk-sm" data-id="' + id + '">↺ restore</button></div>';
+    }).join("") + '</div>' + (ids.length > 1 ? '<div class="srow"><button class="tdk-btn2 tdk-sm" id="tdk-hidclear">↺ Restore all ' + ids.length + '</button></div>' : '');
+    box.querySelectorAll(".tdk-hidrow button").forEach(function (b) {
+      b.addEventListener("click", function () { unhideItem(+this.getAttribute("data-id")); renderHiddenItems(); if (state.rows && state.rows.length) render(); });
+    });
+    const cl = box.querySelector("#tdk-hidclear");
+    if (cl) cl.addEventListener("click", function () { state.itemBlock = {}; GM_setValue("item_block", {}); renderHiddenItems(); if (state.rows && state.rows.length) render(); });
+  }
   function openSettings() {
     const bx = host.querySelector("#tdk-buyers");
     bx.classList.add("open");
@@ -2750,9 +2777,12 @@
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-tbook"' + (state.travelBook ? ' checked' : '') + '> Book “Mailing Yourself Abroad” active <small>(−25% for 31 days, stacks)</small></label></div>' +
         '<div id="tdk-set-teff" class="ssub"></div>' +
         '<div id="tdk-set-tdetect" class="ssub"></div>' +
+        '<div class="sl" style="margin-top:16px">🚫 Hidden items <small>— excluded from the board (best pick, best trip &amp; every view) until you turn them back on</small></div>' +
+        '<div id="tdk-set-hidden"></div>' +
         '<div class="sl" style="margin-top:14px">Need a key? <a class="prof" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Torn → Settings → API Keys</a>. Note: the 📦 Bag needs Torn’s inventory API, which is temporarily disabled during Torn’s inventory migration — no key fixes that until Torn restores it.</div>' +
       '</div>';
     bindClose(bx);
+    renderHiddenItems();
     host.querySelector("#tdk-set-save").addEventListener("click", function () {
       GM_setValue("torn_key", host.querySelector("#tdk-set-torn").value.trim());
       GM_setValue("w3b_key", host.querySelector("#tdk-set-w3b").value.trim());
@@ -3075,6 +3105,11 @@
     host.querySelector("#tdk-board").addEventListener("click", function (e) {
       const th = e.target.closest("th.so"); if (!th) return;
       state.sort = th.getAttribute("data-sort"); GM_setValue("sort", state.sort); render();
+    });
+    host.querySelector("#tdk-board").addEventListener("click", function (e) {
+      const b = e.target.closest(".tdk-ihide"); if (!b) return;
+      e.stopPropagation(); e.preventDefault();
+      hideItem(+b.getAttribute("data-id"), b.getAttribute("data-name")); render();
     });
     host.querySelector("#tdk-vsw").addEventListener("click", function (e) {
       const vb = e.target.closest("button[data-view]"); if (!vb) return;
