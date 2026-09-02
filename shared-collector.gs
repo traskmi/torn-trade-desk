@@ -31,6 +31,13 @@ var GAP_MAX = 3600;               // skip selling intervals longer than 1h (brow
 var SAMPLE_MAX = 1800;            // only log restock/sellout events from samples ≤30min apart (a longer YATA-stale gap can hide multiple cycles)
 var EV_MAX = 200;                 // cap restock/sellout events kept per item
 var EV_AGE = 45 * 86400;          // prune events older than 45 days
+// Contraband — sold abroad, sellable to specific NPC shops or the Museum (see wiki.torn.com/wiki/Contraband,
+// all 24 listed items verified Sep 2 2026). Third-party planners flag these as rarely stocked: long dry spells
+// between restocks (not small batches — a live check showed several-hundred-to-several-thousand-unit restocks,
+// just infrequent ones), so the default 45-day EV_AGE can prune a restock record before a second one ever
+// lands, starving restockPredict() of the ≥2 samples it needs. Give these more runway before pruning.
+var CONTRABAND_IDS = { 1495: 1, 1502: 1, 1484: 1, 1482: 1, 1503: 1, 1501: 1, 1492: 1, 1489: 1, 1491: 1, 1483: 1, 1488: 1, 1496: 1, 1499: 1, 1494: 1, 1487: 1, 1504: 1, 1500: 1, 358: 1, 1490: 1, 1485: 1, 1498: 1, 1486: 1, 1497: 1, 1493: 1 };
+var EV_AGE_RARE = 120 * 86400;
 
 /** Run once (and any time you want to (re)install the trigger). */
 function setup() {
@@ -72,7 +79,7 @@ function poll() {
   if (!yata || !yata.stocks) return;
 
   var d = load_();
-  var now = Math.floor(Date.now() / 1000), evCut = now - EV_AGE;
+  var now = Math.floor(Date.now() / 1000);
 
   Object.keys(yata.stocks).forEach(function (cc) {
     var block = yata.stocks[cc];
@@ -80,6 +87,7 @@ function poll() {
     var arr = block.stocks || block;
     if (!arr || !arr.forEach) return;
     arr.forEach(function (it) {
+      var evCut = now - (CONTRABAND_IDS[it.id] ? EV_AGE_RARE : EV_AGE);
       var key = cc + ':' + it.id, q = it.quantity;
       var prev = d.last[key];                       // [updTs, qty]
       d.last[key] = [upd, q];

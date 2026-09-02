@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.87.0
+// @version      1.88.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -206,6 +206,15 @@
 
   const HIST_MAX = 576, HIST_AGE = 48 * 3600;
   const EV_MAX = 80, EV_AGE = 30 * 86400;
+  // Contraband — sold abroad, sellable to specific NPC shops (see GATED_SHOPS) or the Museum. Verified against
+  // wiki.torn.com/wiki/Contraband (all 24 listed items, Sep 2 2026). Third-party planners (e.g. torntravel.com)
+  // flag these as "rarely stocked" — live-checked against YATA the same day: 10 of 24 sat at 0 simultaneously,
+  // with the rest at healthy few-hundred-to-several-thousand batches — so it's long dry spells between restocks,
+  // not small batches. That means EV_AGE's 30-day event window can prune a restock record before a second one
+  // ever lands, so restockPredict() never gets the ≥2 samples it needs. EV_AGE_RARE gives these more runway.
+  const CONTRABAND_IDS = new Set([1495, 1502, 1484, 1482, 1503, 1501, 1492, 1489, 1491, 1483, 1488, 1496, 1499, 1494, 1487, 1504, 1500, 358, 1490, 1485, 1498, 1486, 1497, 1493]);
+  const EV_AGE_RARE = 120 * 86400;
+  function isContraband(id) { return CONTRABAND_IDS.has(+id); }
 
   function isRealRestock(dq, prevQ, maxQ) {
     if (dq <= 0) return false;
@@ -217,12 +226,13 @@
     let hist; try { hist = GM_getValue("stock_hist", null) || {}; } catch (e) { hist = {}; }
     let ev; try { ev = GM_getValue("stock_events", null) || {}; } catch (e) { ev = {}; }
     let sea; try { sea = GM_getValue("stock_seasonal", null) || {}; } catch (e) { sea = {}; }
-    const now = Math.floor(Date.now() / 1000), cutoff = now - HIST_AGE, evCut = now - EV_AGE;
+    const now = Math.floor(Date.now() / 1000), cutoff = now - HIST_AGE;
     let changed = false, evChanged = false, seaChanged = false;
     Object.keys(yata.stocks).forEach(function (cc) {
       if (!FLY[cc]) return;
       const block = yata.stocks[cc], upd = block.update || now;
       (block.stocks || block).forEach(function (it) {
+        const evCut = now - (isContraband(it.id) ? EV_AGE_RARE : EV_AGE);
         const key = cc + ":" + it.id, arr = hist[key] || (hist[key] = []);
         const last = arr[arr.length - 1];
         if (last && last[0] === upd) return;
@@ -1432,6 +1442,7 @@
       }
       const cls = (aff ? "" : (fund ? (isTop ? "fund" : "") : "dim")) + (ocMiss ? " ocmiss" : "");
       const mark = (aff && fill) ? '<span class="star" title="Affordable now & fully in stock — a clean pick">★</span>' : (isTop ? '<span class="star" title="Best funded play — over budget, but reachable by selling stocks (see the banner up top)">💰</span>' : '');
+      const cbMark = isContraband(x.id) ? ' <span style="font-size:9px;color:#928b78;" title="Contraband — restocks in rare, long-gap batches rather than a steady cycle, so the restock interval and Landing % here rest on fewer samples than a regular item. Trust them less until more history builds up.">🕶️</span>' : '';
       const ocBadge = ocMiss ? '<span class="oc-x" title="Round trip ' + (FLY[x.cc] ? fmtRt(rtOf(x.cc)) : '?') + (g.secs <= 0 ? ' — your OC is ready NOW, don’t fly' : ' exceeds your OC (ready in ' + fmtDur(g.secs) + ') — you’d miss it') + '">⛔ OC</span>' : '';
       const rtTxt = FLY[x.cc] ? '<span title="' + (travelMult() < 1 ? travelLabel() + ' · base ' + fmtRt(FLY[x.cc].rt) : 'Standard round trip') + '">' + fmtRt(rtOf(x.cc)) + ' rt</span> · ' : '';
       const ol = x._ol;
@@ -1441,7 +1452,7 @@
       const loadWarn = (ol && ol.underLoad) ? ' <span class="loadwarn" title="' + escAttr("Tops out ~" + ol.maxQ + " in stock — cannot fill a full " + cap + " load; a realistic trip nets ~" + money(x.ppi * ol.maxQ)) + '">⚠</span>' : '';
       const ldPill = ol ? '<span class="ld ld-' + ol.cls + '" title="' + escAttr(ol.tip) + '">' + ol.txt + '</span>' : '<span class="ld ld-unk">·</span>';
       const availCell = abroadMode ? sc : ldPill; // abroad → live Stock; home/flying → Landing prediction
-      const nm = '<span class="nm">' + x.name + mark + '</span>';
+      const nm = '<span class="nm">' + x.name + mark + cbMark + '</span>';
       const dataAttr = ' data-id="' + x.id + '" data-name="' + x.name.replace(/"/g, "") + '"';
 
       if (view === "cards") {
@@ -2342,6 +2353,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.88.0", d: "Sep 2, 2026", c: ["🕶️ Contraband items (Shark Fin, Ivory, Uncut Diamonds and the rest of the 24 sold abroad) are now recognized — a 🕶️ tag on the board marks them, since torntravel.com and a live YATA check both confirm they restock in rare, long-gap batches rather than a steady cycle, so their restock interval and Landing % rest on fewer samples than a regular item. They already flowed through the same tracking as everything else, but the restock-history window was being pruned at 30 days (45 on the shared collector) — too short for a genuinely-long restock cycle to ever bank 2 samples. These items now get 120 days before their history ages out, giving the predictor a real shot at learning their cadence. <b>The shared-collector.gs side of this needs a redeploy (Manage deployments → Edit → New version) to take effect.</b>"] },
     { v: "1.87.0", d: "Sep 2, 2026", c: ["🏪 The board now checks whether a foreign item can be sold to a fixed-price NPC shop (e.g. Shark Fin → Nikeh Sports for $66,000) and uses that instead when it beats the Item Market average — a 🏪 tag marks a row priced this way. Some of these shops need an education course first (Nikeh Sports needs Sports Administration); the tool checks your completed courses automatically, so this only kicks in once you've actually unlocked it. No settings to touch."] },
     { v: "1.86.0", d: "Aug 31, 2026", c: ["🖱️ Moved the floating 💰 launcher to the bottom-LEFT of the screen instead of bottom-right — it was sitting over the chat window's send icon."] },
     { v: "1.85.0", d: "Aug 31, 2026", c: ["🧹 Restock predictions no longer trust a months-stale local reading. The shared collector feed is already the primary source for restock timing (and syncs automatically), but for the rare item it has no data on, the tool used to fall back to your own device's restock log — even if that log hadn't been updated in months because the panel had sat idle. It now ignores a local fallback record once it's older than 30 days rather than treating it as current."] },
