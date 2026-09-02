@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.91.0
+// @version      1.92.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2039,6 +2039,21 @@
     const honors = {}; ((hj && hj.honors) || []).forEach(function (h) { honors[h.id] = h.timestamp; });
     return { medals: medals, honors: honors };
   }
+  // No individual medal/honor has its own wiki page or per-item anchor (checked wiki.torn.com Sep 2 2026 —
+  // e.g. /wiki/Wipeout 404s; award names in /wiki/Award_List and /wiki/Award are plain text, not links). The
+  // one combined /wiki/Award page DOES have per-CATEGORY anchors though, and those categories line up closely
+  // with the API's own type.title — so link out to the right section rather than the top of a huge page.
+  // Unmapped/ambiguous categories (e.g. honors' "weapons", medals' "crime" spans two eras on the wiki) fall
+  // back to the Honors/Medals section header, still far better than the article root.
+  const AWARD_WIKI_ANCHOR = {
+    honor: { attacking: "Attacking", camo: "Camo", casino: "Casino", crimes: "Crimes", drugs: "Drugs", education: "Education", gym: "Gyms_&_Stats", jail: "Jail_&_Hospital", hospital: "Jail_&_Hospital", level: "Level", commitment: "Commitment", items: "Items", misc: "Miscellaneous", missions: "Missions", competitions: "Competitions,_Token_Shop_&_Points_Building", travel: "Travel" },
+    medal: { combat: "Combat", commitment: "Commitment_2", level: "Level_2", miscellaneous: "Miscellaneous_2", networth: "Networth", rank: "Rank" }
+  };
+  function awardWikiUrl(a) {
+    const t = a.type && a.type.title;
+    const anchor = (t && AWARD_WIKI_ANCHOR[a.kind] && AWARD_WIKI_ANCHOR[a.kind][t]) || (a.kind === "medal" ? "Medals" : "Honors");
+    return "https://wiki.torn.com/wiki/Award#" + anchor;
+  }
   // Heuristic, not a guarantee: not earned + no "grind" number in the requirement text + not a time-limited
   // competition or Limited-rarity item → probably a one-shot action you can just go do (the Toilet-Paper-prank
   // "Wipeout" honor is the canonical example — its description has no number in it at all). Read the shown
@@ -2069,7 +2084,8 @@
       const grind = todo.filter(function (a) { return !awardEasyWin(a); });
       const kindTag = function (a) { return a.kind === "medal" ? "🎖️ medal" : "🎗️ honor"; };
       const row = function (a, sub) {
-        return '<div class="skrow"><div class="skmain"><div class="skn">' + a.name + ' <span>' + kindTag(a) + (a.type && a.type.title ? " · " + a.type.title : "") + '</span></div>' +
+        return '<div class="skrow"><div class="skmain"><div class="skn">' + a.name + ' <span>' + kindTag(a) + (a.type && a.type.title ? " · " + a.type.title : "") + '</span> ' +
+          '<a class="prof" href="' + awardWikiUrl(a) + '" target="_blank" rel="noopener" title="Open the matching category on Torn\'s wiki — individual awards aren\'t separately linkable, this lands on the right section">📖 wiki</a></div>' +
           '<div class="skhint">' + (a.description || "") + '</div>' + (sub || '') + '</div></div>';
       };
       const easyHtml = easy.length
@@ -2467,6 +2483,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.92.0", d: "Sep 2, 2026", c: ["📖 Every row in the Merits tab now has a wiki link. Checked wiki.torn.com first — individual medals/honors don't get their own page (no dedicated \"Wipeout\" page, for instance), but the combined Award page does have per-category sections, so the link lands on the right one (e.g. a Drugs honor opens the wiki's Drugs section) instead of dumping you at the top of one giant page."] },
     { v: "1.91.0", d: "Sep 2, 2026", c: ["🏅 New Merits tab. Pulls Torn's full medal + honor catalog and cross-checks it against what you've actually earned — split into <b>🎯 Easy wins</b> (not earned yet, and the requirement doesn't read like a grind — usually a one-shot action, like the Toilet-Paper-prank honor), <b>⏳ Still to earn</b> (grouped by category, with a link to Torn's own Awards page for real progress bars — the API only tells us earned/not-earned, not how close you are on a grind medal), and <b>✅ Earned</b> (with the date). The easy-win call is a heuristic based on the requirement text, not a guarantee — a few may still need a specific item, place or moment."] },
     { v: "1.90.0", d: "Sep 2, 2026", c: ["🚫 You can now hide specific items from the board — e.g. a weapon like the ArmaLite M-15A4 that shows up profitable but isn't something you'd actually carry. Click the small 🚫 next to any item's name (table or card view) to pull it from every part of the board — best pick, best trip, everything. Manage the list in ⚙ Settings → Hidden items, where each one can be restored individually or all at once. Purely a display filter — restock/Landing tracking for a hidden item keeps running in the background, so turning it back on picks up right where it left off."] },
     { v: "1.89.0", d: "Sep 2, 2026", c: ["🕶️ Follow-up on contraband tracking: turns out the 24 contraband items split into two very different groups — some (Shark Fin, Turtle Shell, Pangolin Scales, Counterfeit Manga) restock/sell out on a tight ~1-2h cycle and were already maxing out the stored-events cap within ~10 days, while others (Meteorite Fragment, Bearer Bond) only restock a handful of times a month. The fast group now gets more room to keep events (not just more days to keep them) so the sellout-duration math behind the Landing % has a fuller sample to work with. Slower group unaffected — its fix landed last version."] },
