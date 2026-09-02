@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.92.0
+// @version      1.93.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -58,7 +58,7 @@
   }
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "landing"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt"), boardView: GM_getValue("boardView", null), itemBlock: GM_getValue("item_block", {}) };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "landing"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt"), boardView: GM_getValue("boardView", null), itemBlock: GM_getValue("item_block", {}), awardBlock: GM_getValue("award_block", {}), awardTypeFilter: "all" };
   function isMobile() { return (window.innerWidth || document.documentElement.clientWidth || 0) <= 560; } // matches the CSS breakpoint
   // One-time: make Landing (what'll be in stock when you arrive) the default board sort for existing installs still on the old $/min default.
   try { if (!GM_getValue("landing_default_v1", false)) { if (state.sort === "ppm") { state.sort = "landing"; GM_setValue("sort", "landing"); } GM_setValue("landing_default_v1", true); } } catch (e) { }
@@ -2054,6 +2054,12 @@
     const anchor = (t && AWARD_WIKI_ANCHOR[a.kind] && AWARD_WIKI_ANCHOR[a.kind][t]) || (a.kind === "medal" ? "Medals" : "Honors");
     return "https://wiki.torn.com/wiki/Award#" + anchor;
   }
+  // Dismiss a specific award from the 🎯 Easy wins list — e.g. the heuristic caught something not actually
+  // worth chasing for you. Only hides it from Easy wins (doesn't touch Still-to-earn/Earned); restorable anytime.
+  const awardKey = function (a) { return a.kind + ":" + a.id; };
+  function isAwardHidden(a) { return !!state.awardBlock[awardKey(a)]; }
+  function hideAward(a) { state.awardBlock[awardKey(a)] = { name: a.name || "", kind: a.kind, id: a.id, at: Date.now() }; GM_setValue("award_block", state.awardBlock); }
+  function unhideAward(key) { delete state.awardBlock[key]; GM_setValue("award_block", state.awardBlock); }
   // Heuristic, not a guarantee: not earned + no "grind" number in the requirement text + not a time-limited
   // competition or Limited-rarity item → probably a one-shot action you can just go do (the Toilet-Paper-prank
   // "Wipeout" honor is the canonical example — its description has no number in it at all). Read the shown
@@ -2064,6 +2070,74 @@
     const nums = (a.description || "").match(/[\d,]+/g) || [];
     let maxN = 0; nums.forEach(function (s) { const n = parseInt(s.replace(/,/g, ""), 10); if (n > maxN) maxN = n; });
     return maxN <= 5;
+  }
+  function renderAwardsPanel() {
+    const bx = host.querySelector("#tdk-buyers");
+    const d = state._awardData; if (!d) return;
+    const cat = d.cat, earned = d.earned;
+    const all = cat.medals.concat(cat.honors);
+    const typeOf = function (a) { return (a.type && a.type.title) || "other"; };
+    const types = {}; all.forEach(function (a) { types[typeOf(a)] = (types[typeOf(a)] || 0) + 1; });
+    const typeList = Object.keys(types).sort();
+    const tf = state.awardTypeFilter;
+    const passType = function (a) { return tf === "all" || typeOf(a) === tf; };
+    const isEarned = function (a) { return (a.kind === "medal" ? earned.medals : earned.honors)[a.id] != null; };
+    const allF = all.filter(passType);
+    const got = allF.filter(isEarned);
+    const todo = allF.filter(function (a) { return !isEarned(a); });
+    const easyAll = todo.filter(awardEasyWin);
+    const easy = easyAll.filter(function (a) { return !isAwardHidden(a); });
+    const hiddenN = easyAll.length - easy.length;
+    const grind = todo.filter(function (a) { return !awardEasyWin(a); });
+    const kindTag = function (a) { return a.kind === "medal" ? "🎖️ medal" : "🎗️ honor"; };
+    const row = function (a, sub, hideBtn) {
+      return '<div class="skrow"><div class="skmain"><div class="skn">' + a.name + ' <span>' + kindTag(a) + (a.type && a.type.title ? " · " + a.type.title : "") + '</span> ' +
+        '<a class="prof" href="' + awardWikiUrl(a) + '" target="_blank" rel="noopener" title="Open the matching category on Torn\'s wiki — individual awards aren\'t separately linkable, this lands on the right section">📖 wiki</a>' +
+        (hideBtn ? ' <button class="tdk-ihide" data-key="' + awardKey(a) + '" title="Hide ' + escAttr(a.name) + ' from Easy wins — restore it with the link below">🚫</button>' : '') + '</div>' +
+        '<div class="skhint">' + (a.description || "") + '</div>' + (sub || '') + '</div></div>';
+    };
+    const filterHtml = '<div class="tdk-calc"><label class="tdk-solo">Type <select id="tdk-award-type"><option value="all"' + (tf === "all" ? " selected" : "") + '>All types</option>' +
+      typeList.map(function (t) { return '<option value="' + t + '"' + (tf === t ? " selected" : "") + '>' + t + ' (' + types[t] + ')</option>'; }).join("") +
+      '</select></label></div>';
+    const easyHidNote = hiddenN ? '<div class="tdk-sub" style="padding:0 12px 8px">🚫 ' + hiddenN + ' hidden. <a class="tdk-sett-link" id="tdk-award-unhide-all">restore all</a></div>' : '';
+    const easyHtml = easy.length
+      ? '<div class="sksec">🎯 Easy wins · ' + easy.length + ' not yet earned, worth trying now</div>' +
+        '<div class="tdk-sub" style="padding:0 12px 4px">Not earned, and the requirement doesn\'t read like a grind — usually a single action. Heuristic based on the text below; a few may still need a specific item, place or moment.</div>' +
+        easy.map(function (a) { return row(a, "", true); }).join('') + easyHidNote
+      : '<div class="sksec">🎯 Easy wins</div><div class="tdk-sub" style="padding:0 12px 8px">' + (easyAll.length ? "All caught up — every easy win in this filter is hidden." : "None spotted right now — everything left needs real grinding, or you've already got the low-hanging ones.") + '</div>' + easyHidNote;
+    const grouped = {};
+    grind.forEach(function (a) { const k = a.kind + ":" + typeOf(a); (grouped[k] || (grouped[k] = { kind: a.kind, cat: typeOf(a), items: [] })).items.push(a); });
+    const grindHtml = '<div class="sksec">⏳ Still to earn · ' + grind.length + '</div>' +
+      '<div class="tdk-sub" style="padding:0 12px 8px">Real progress bars for these live on Torn\'s own <a class="prof" href="https://www.torn.com/awards.php" target="_blank" rel="noopener">Awards page</a> — the API only tells us earned vs not, not how close you are.</div>' +
+      Object.keys(grouped).sort(function (a, b) { return grouped[b].items.length - grouped[a].items.length; }).map(function (k) {
+        const g = grouped[k];
+        return '<details class="tdk-clog"><summary class="cv">' + (g.kind === "medal" ? "🎖️" : "🎗️") + ' ' + g.cat + ' <span>· ' + g.items.length + '</span></summary>' +
+          g.items.map(function (a) { return row(a); }).join('') + '</details>';
+      }).join('');
+    const gotSorted = got.slice().sort(function (a, b) { const ta = (a.kind === "medal" ? earned.medals : earned.honors)[a.id] || 0, tb = (b.kind === "medal" ? earned.medals : earned.honors)[b.id] || 0; return tb - ta; });
+    const earnedHtml = '<details class="tdk-clog"><summary class="cv">✅ Earned <span>· ' + got.length + ' / ' + allF.length + '</span></summary>' +
+      gotSorted.map(function (a) {
+        const ts = (a.kind === "medal" ? earned.medals : earned.honors)[a.id];
+        return row(a, ts ? '<div class="sksub">Earned ' + new Date(ts * 1000).toLocaleDateString() + '</div>' : '');
+      }).join('') + '</details>';
+    bx.innerHTML = '<div class="tdk-bh"><div class="tt">🏅 Merits<small> — ' + got.length + '/' + allF.length + ' earned · ' + easy.length + ' easy win' + (easy.length === 1 ? '' : 's') + (tf !== "all" ? ' · ' + tf + ' only' : '') + '</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
+      filterHtml + easyHtml + grindHtml + earnedHtml;
+    bindClose(bx);
+    const sel = bx.querySelector("#tdk-award-type");
+    if (sel) sel.addEventListener("change", function () { state.awardTypeFilter = this.value; renderAwardsPanel(); });
+    bx.querySelectorAll(".tdk-ihide").forEach(function (b) {
+      b.addEventListener("click", function (e) {
+        e.stopPropagation(); e.preventDefault();
+        const k = this.getAttribute("data-key");
+        const found = allF.find(function (a) { return awardKey(a) === k; });
+        if (found) hideAward(found); renderAwardsPanel();
+      });
+    });
+    const unhideAll = bx.querySelector("#tdk-award-unhide-all");
+    if (unhideAll) unhideAll.addEventListener("click", function () {
+      easyAll.forEach(function (a) { delete state.awardBlock[awardKey(a)]; });
+      GM_setValue("award_block", state.awardBlock); renderAwardsPanel();
+    });
   }
   async function openAwards() {
     const bx = host.querySelector("#tdk-buyers");
@@ -2076,42 +2150,8 @@
     try {
       const cat = await loadAwardCatalog(key);
       const earned = await loadAwardEarned(key);
-      const all = cat.medals.concat(cat.honors);
-      const isEarned = function (a) { return (a.kind === "medal" ? earned.medals : earned.honors)[a.id] != null; };
-      const got = all.filter(isEarned);
-      const todo = all.filter(function (a) { return !isEarned(a); });
-      const easy = todo.filter(awardEasyWin);
-      const grind = todo.filter(function (a) { return !awardEasyWin(a); });
-      const kindTag = function (a) { return a.kind === "medal" ? "🎖️ medal" : "🎗️ honor"; };
-      const row = function (a, sub) {
-        return '<div class="skrow"><div class="skmain"><div class="skn">' + a.name + ' <span>' + kindTag(a) + (a.type && a.type.title ? " · " + a.type.title : "") + '</span> ' +
-          '<a class="prof" href="' + awardWikiUrl(a) + '" target="_blank" rel="noopener" title="Open the matching category on Torn\'s wiki — individual awards aren\'t separately linkable, this lands on the right section">📖 wiki</a></div>' +
-          '<div class="skhint">' + (a.description || "") + '</div>' + (sub || '') + '</div></div>';
-      };
-      const easyHtml = easy.length
-        ? '<div class="sksec">🎯 Easy wins · ' + easy.length + ' not yet earned, worth trying now</div>' +
-          '<div class="tdk-sub" style="padding:0 12px 4px">Not earned, and the requirement doesn\'t read like a grind — usually a single action. Heuristic based on the text below; a few may still need a specific item, place or moment.</div>' +
-          easy.map(function (a) { return row(a); }).join('')
-        : '<div class="sksec">🎯 Easy wins</div><div class="tdk-sub" style="padding:0 12px 8px">None spotted right now — everything left needs real grinding, or you\'ve already got the low-hanging ones.</div>';
-      const grouped = {};
-      grind.forEach(function (a) { const k = a.kind + ":" + ((a.type && a.type.title) || "other"); (grouped[k] || (grouped[k] = { kind: a.kind, cat: (a.type && a.type.title) || "other", items: [] })).items.push(a); });
-      const grindHtml = '<div class="sksec">⏳ Still to earn · ' + grind.length + '</div>' +
-        '<div class="tdk-sub" style="padding:0 12px 8px">Real progress bars for these live on Torn\'s own <a class="prof" href="https://www.torn.com/awards.php" target="_blank" rel="noopener">Awards page</a> — the API only tells us earned vs not, not how close you are.</div>' +
-        Object.keys(grouped).sort(function (a, b) { return grouped[b].items.length - grouped[a].items.length; }).map(function (k) {
-          const g = grouped[k];
-          return '<details class="tdk-clog"><summary class="cv">' + (g.kind === "medal" ? "🎖️" : "🎗️") + ' ' + g.cat + ' <span>· ' + g.items.length + '</span></summary>' +
-            g.items.map(function (a) { return row(a); }).join('') + '</details>';
-        }).join('');
-      const gotSorted = got.slice().sort(function (a, b) { const ta = (a.kind === "medal" ? earned.medals : earned.honors)[a.id] || 0, tb = (b.kind === "medal" ? earned.medals : earned.honors)[b.id] || 0; return tb - ta; });
-      const earnedHtml = '<details class="tdk-clog"><summary class="cv">✅ Earned <span>· ' + got.length + ' / ' + all.length + '</span></summary>' +
-        gotSorted.map(function (a) {
-          const ts = (a.kind === "medal" ? earned.medals : earned.honors)[a.id];
-          return row(a, ts ? '<div class="sksub">Earned ' + new Date(ts * 1000).toLocaleDateString() + '</div>' : '');
-        }).join('') + '</details>';
-      setTitle(got.length + '/' + all.length + ' earned · ' + easy.length + ' easy win' + (easy.length === 1 ? '' : 's'));
-      bx.innerHTML = '<div class="tdk-bh"><div class="tt">🏅 Merits<small> — ' + got.length + '/' + all.length + ' earned · ' + easy.length + ' easy win' + (easy.length === 1 ? '' : 's') + '</small></div><button class="tdk-bx" id="tdk-bclose">×</button></div>' +
-        easyHtml + grindHtml + earnedHtml;
-      bindClose(bx);
+      state._awardData = { cat: cat, earned: earned };
+      renderAwardsPanel();
     } catch (e) {
       setTitle("failed: " + (e.message || e));
     }
@@ -2483,6 +2523,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.93.0", d: "Sep 2, 2026", c: ["🎯 Merits: hide/restore for Easy wins — a small 🚫 next to any easy-win row dismisses it (heuristic isn't perfect; use this for false positives or ones you're just not chasing), with a \"restore all\" link once anything's hidden. 🗂️ Also added a Type filter (Casino, Drugs, Combat, etc., pulled live from the catalog with counts) that narrows all three sections — Easy wins, Still to earn, Earned — at once, purely client-side so switching types is instant."] },
     { v: "1.92.0", d: "Sep 2, 2026", c: ["📖 Every row in the Merits tab now has a wiki link. Checked wiki.torn.com first — individual medals/honors don't get their own page (no dedicated \"Wipeout\" page, for instance), but the combined Award page does have per-category sections, so the link lands on the right one (e.g. a Drugs honor opens the wiki's Drugs section) instead of dumping you at the top of one giant page."] },
     { v: "1.91.0", d: "Sep 2, 2026", c: ["🏅 New Merits tab. Pulls Torn's full medal + honor catalog and cross-checks it against what you've actually earned — split into <b>🎯 Easy wins</b> (not earned yet, and the requirement doesn't read like a grind — usually a one-shot action, like the Toilet-Paper-prank honor), <b>⏳ Still to earn</b> (grouped by category, with a link to Torn's own Awards page for real progress bars — the API only tells us earned/not-earned, not how close you are on a grind medal), and <b>✅ Earned</b> (with the date). The easy-win call is a heuristic based on the requirement text, not a guarantee — a few may still need a specific item, place or moment."] },
     { v: "1.90.0", d: "Sep 2, 2026", c: ["🚫 You can now hide specific items from the board — e.g. a weapon like the ArmaLite M-15A4 that shows up profitable but isn't something you'd actually carry. Click the small 🚫 next to any item's name (table or card view) to pull it from every part of the board — best pick, best trip, everything. Manage the list in ⚙ Settings → Hidden items, where each one can be restored individually or all at once. Purely a display filter — restock/Landing tracking for a hidden item keeps running in the background, so turning it back on picks up right where it left off."] },
