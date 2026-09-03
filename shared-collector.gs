@@ -74,6 +74,36 @@ function isRealRestock_(dq, prevQ, maxQ) {
   if ((maxQ || 0) <= 10) return prevQ === 0;
   return prevQ === 0 ? dq >= 5 : (dq >= prevQ && dq >= 5);
 }
+function med_(arr) {
+  if (!arr.length) return null;
+  var a = arr.slice().sort(function (x, y) { return x - y; });
+  return a[Math.floor(a.length / 2)];
+}
+// "Burn time" = median duration from a restock to the NEXT sellout — same method the userscript's client-side
+// restockPredict() uses for selloutDur, ported here so it's exposed directly in the export instead of every
+// client having to re-derive it from raw rs/so tuples (asked by EaglesXeye, Sep 3 2026: they're timing short
+// (~25min) flights where high-demand items like Insulin can burn out in ~20min — a healthy-looking stock count
+// at departure can still be guaranteed empty on arrival). depletion_est = the predicted moment the CURRENT
+// stock cycle runs dry — only set when there's a restock more recent than the last sellout and current q>0
+// (i.e. we're actually mid-cycle right now); null otherwise. This is a simple unweighted median over the full
+// kept history — NOT the same as the client's restockPredict(), which additionally windows to the last ~12
+// gaps and drops >2.2× outliers for recency-weighting; treat this as a solid baseline, not a drop-in replacement
+// for a client that wants that extra robustness.
+function burnStats_(rec, now) {
+  var rs = (rec.rs || []).slice().sort(function (a, b) { return a[0] - b[0]; });
+  var so = (rec.so || []).slice().sort(function (a, b) { return a - b; });
+  var durs = [];
+  so.forEach(function (st) {
+    var pr = 0;
+    for (var i = 0; i < rs.length; i++) { if (rs[i][0] < st) pr = rs[i][0]; else break; }
+    if (pr) durs.push(st - pr);
+  });
+  var burn = med_(durs);
+  var lastRs = rs.length ? rs[rs.length - 1][0] : 0;
+  var lastSo = so.length ? so[so.length - 1] : 0;
+  var depletion = (burn != null && lastRs > lastSo && (rec.q || 0) > 0) ? (lastRs + burn) : null;
+  return { burn: burn, depletion_est: depletion };
+}
 
 /** Time-triggered: fetch YATA, diff each item against the last sample, accumulate events + seasonal. */
 function poll() {
@@ -111,6 +141,7 @@ function poll() {
       rec.q = q;
       rec.rs = rec.rs.filter(function (e) { return e[0] >= evCut; }); if (rec.rs.length > evMax) rec.rs.splice(0, rec.rs.length - evMax);
       rec.so = rec.so.filter(function (t) { return t >= evCut; });    if (rec.so.length > evMax) rec.so.splice(0, rec.so.length - evMax);
+      var bs = burnStats_(rec, now); rec.burn = bs.burn; rec.depletion_est = bs.depletion_est;
 
       // Seasonal: attribute each SELLING interval's sold-qty + seconds to its day-of-week×hour bucket (UTC = TCT).
       if (dq < 0) {
@@ -165,13 +196,20 @@ function seedFromBlob() {
 function doGet(e) {
   var d = load_();
   // Strip any residual up[] (unused by clients; poll() drops it going forward, this covers records not yet re-polled).
-  var events = {}, src = d.events || {};
-  Object.keys(src).forEach(function (k) { var r = src[k]; events[k] = { rs: r.rs || [], so: r.so || [], q: r.q, max: r.max }; });
+  // burn/depletion_est are computed fresh in poll() each cycle (see burnStats_) — records written before this
+  // field existed get backfilled here too, so a stale stored record never serves a missing/null pair it could have had.
+  var events = {}, src = d.events || {}, now = Math.floor(Date.now() / 1000);
+  Object.keys(src).forEach(function (k) {
+    var r = src[k];
+    var bs = (r.burn !== undefined && r.depletion_est !== undefined) ? { burn: r.burn, depletion_est: r.depletion_est } : burnStats_(r, now);
+    events[k] = { rs: r.rs || [], so: r.so || [], q: r.q, max: r.max, burn: bs.burn, depletion_est: bs.depletion_est };
+  });
   var out = {
     kind: 'tdk-restock-export',
     source: 'shared-collector',
-    at: d.updated || Math.floor(Date.now() / 1000),
-    fields: 'events[cc:id]={rs:[[t,amt]],so:[t],q,max}; seasonal[cc:id]={bucket->[soldQty,seconds,samples]}, bucket=UTCday(0=Sun..6)*24+UTChour(0..23)',
+    at: d.updated || now,
+    poll_interval_sec: 300,
+    fields: 'events[cc:id]={rs:[[t,amt]],so:[t],q,max,burn,depletion_est}; q is a POLLED sample (every poll_interval_sec, not a real-time push) — its age is "at" minus this record\'s q-sample time, which isn\'t tracked per-item, so treat q as accurate to within one poll interval. burn = median seconds from a restock to the next sellout (unweighted median over full kept history — see burnStats_ in source for the exact method, and note the client-side restockPredict() in torn-trade-desk.user.js additionally windows to recent gaps + drops outliers, so it can differ slightly). depletion_est = predicted unix ts the CURRENT stock cycle hits 0 (lastRs+burn), only set when q>0 and mid-cycle; null otherwise. seasonal[cc:id]={bucket->[soldQty,seconds,samples]}, bucket=UTCday(0=Sun..6)*24+UTChour(0..23)',
     events: events,
     seasonal: d.seasonal || {}
   };
