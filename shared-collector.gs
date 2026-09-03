@@ -84,11 +84,17 @@ function med_(arr) {
 // client having to re-derive it from raw rs/so tuples (asked by EaglesXeye, Sep 3 2026: they're timing short
 // (~25min) flights where high-demand items like Insulin can burn out in ~20min — a healthy-looking stock count
 // at departure can still be guaranteed empty on arrival). depletion_est = the predicted moment the CURRENT
-// stock cycle runs dry — only set when there's a restock more recent than the last sellout and current q>0
-// (i.e. we're actually mid-cycle right now); null otherwise. This is a simple unweighted median over the full
-// kept history — NOT the same as the client's restockPredict(), which additionally windows to the last ~12
-// gaps and drops >2.2× outliers for recency-weighting; treat this as a solid baseline, not a drop-in replacement
-// for a client that wants that extra robustness.
+// stock cycle runs dry = lastRs + burn, whenever we're demonstrably mid-cycle (q>0) and have a burn estimate.
+// FIXED (EaglesXeye bug report, Sep 3 2026): originally also required lastRs > lastSo (last-known-restock newer
+// than last-known-sellout) before setting depletion_est — but rs[]/so[] are independently pruned/heuristic-
+// filtered, so a live restock we didn't capture as a clean isRealRestock_ event (small partial refill, or we
+// simply missed the poll tick right after it — see the early-return in poll() when a country's YATA `update`
+// timestamp hasn't moved) leaves lastSo >= lastRs even though q is now clearly positive — e.g. their Jaguar
+// Plushie case: q:1203, burn:1625, but depletion_est came out null because of exactly this. q>0 is the more
+// trustworthy live signal than our own so[] bookkeeping, so just use it directly, per their suggested fix.
+// Caveat (same one their own client-side fallback has): if we've missed several cycles, lastRs can be stale,
+// and the estimate will be too — this is a best-effort anchor to the newest restock we actually captured, not
+// a guarantee we captured the most recent one.
 function burnStats_(rec, now) {
   var rs = (rec.rs || []).slice().sort(function (a, b) { return a[0] - b[0]; });
   var so = (rec.so || []).slice().sort(function (a, b) { return a - b; });
@@ -100,8 +106,7 @@ function burnStats_(rec, now) {
   });
   var burn = med_(durs);
   var lastRs = rs.length ? rs[rs.length - 1][0] : 0;
-  var lastSo = so.length ? so[so.length - 1] : 0;
-  var depletion = (burn != null && lastRs > lastSo && (rec.q || 0) > 0) ? (lastRs + burn) : null;
+  var depletion = (burn != null && lastRs > 0 && (rec.q || 0) > 0) ? (lastRs + burn) : null;
   return { burn: burn, depletion_est: depletion };
 }
 
