@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.93.0
+// @version      1.94.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -799,9 +799,10 @@
   let host, panel;
   function css() {
     return `
-    #tdk-btn{position:fixed;left:18px;bottom:78px;z-index:2147483600;width:46px;height:46px;border-radius:50%;
-      background:#14130f;border:1px solid #d9b441;color:#d9b441;font-size:20px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.5)}
+    #tdk-btn{position:fixed;left:18px;top:calc(100vh - 156px);z-index:2147483600;width:46px;height:46px;border-radius:50%;touch-action:none;user-select:none;
+      background:#14130f;border:1px solid #d9b441;color:#d9b441;font-size:20px;cursor:grab;box-shadow:0 6px 20px rgba(0,0,0,.5)}
     #tdk-btn:hover{background:#201e17}
+    #tdk-btn.tdk-dragging{cursor:grabbing;opacity:.85;transition:none}
     #tdk-panel{position:fixed;right:28px;top:12px;z-index:2147483000;width:min(780px,92vw);max-height:calc(100vh - 24px);overflow:hidden;padding:0;
       background:#14130f;color:#ece7d8;border:1px solid #2c2a21;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.6);
       font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:13px;display:none}
@@ -1192,7 +1193,7 @@
     .tdk-pdq{width:80px}
     /* ---- Mobile / Torn PDA (narrow webview): fill the screen, fatten touch targets, shrink the board so 5 cols still fit ---- */
     @media (max-width: 560px) {
-      #tdk-btn{bottom:calc(88px + env(safe-area-inset-bottom, 0px));left:14px;width:50px;height:50px;font-size:21px;z-index:2147482900} /* sit well above PDA's bottom nav (64px overlapped it) + clear the gesture-bar safe area; BELOW the panel so the full-screen board covers it when open */
+      #tdk-btn{width:50px;height:50px;font-size:21px;z-index:2147482900} /* size/z-index only now — position is drag-and-drop + remembered (see initBtnPos/wireBtnDrag), so it no longer fights PDA's bottom nav by default; BELOW the panel so the full-screen board covers it when open */
       #tdk-panel{left:5px;right:5px;top:5px;bottom:5px;width:auto;max-height:none;border-radius:12px}
       .tdk-col{max-height:none}
       .tdk-rail{flex:0 0 46px;width:46px;padding:8px 3px;gap:5px}
@@ -1532,6 +1533,52 @@
   }
 
   function applyScale() { if (panel) { panel.style.zoom = state.scale; panel.style.maxHeight = "calc((100vh - 24px) / " + state.scale + ")"; } }
+  // The floating 💰 launcher used to be hand-pinned to a corner (bottom-right, then bottom-left) and kept
+  // landing on top of something new on a different Torn page — the chat window's send icon, then Torn's own
+  // left nav column (which runs the full page height, so ANY fixed left-edge spot risks overlapping it). Rather
+  // than keep guessing a magic position, it's now drag-to-reposition and remembers where you put it (GM "btn_pos").
+  function clampBtnPos(left, top) {
+    const w = btn0 ? btn0.offsetWidth || 50 : 50, h = btn0 ? btn0.offsetHeight || 50 : 50;
+    const maxL = Math.max(4, window.innerWidth - w - 4), maxT = Math.max(4, window.innerHeight - h - 4);
+    return { left: Math.min(Math.max(4, left), maxL), top: Math.min(Math.max(4, top), maxT) };
+  }
+  function applyBtnPos(btn, pos) { btn.style.left = pos.left + "px"; btn.style.top = pos.top + "px"; btn.style.right = ""; btn.style.bottom = ""; }
+  var btn0 = null; // set by initBtnPos so clampBtnPos can read the real current button size
+  function initBtnPos(btn) {
+    btn0 = btn;
+    let saved = null; try { saved = GM_getValue("btn_pos", null); } catch (e) { }
+    const pos = (saved && typeof saved.left === "number" && typeof saved.top === "number")
+      ? clampBtnPos(saved.left, saved.top)
+      : clampBtnPos(18, window.innerHeight - 156); // first-run default: left edge, clear of the very bottom — drag it wherever it's actually out of the way
+    applyBtnPos(btn, pos);
+  }
+  function wireBtnDrag(btn) {
+    let dragging = false, moved = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
+    btn.addEventListener("pointerdown", function (e) {
+      dragging = true; moved = false; startX = e.clientX; startY = e.clientY;
+      const r = btn.getBoundingClientRect(); startLeft = r.left; startTop = r.top;
+      try { btn.setPointerCapture(e.pointerId); } catch (er) { }
+    });
+    btn.addEventListener("pointermove", function (e) {
+      if (!dragging) return;
+      const dx = e.clientX - startX, dy = e.clientY - startY;
+      if (!moved && Math.hypot(dx, dy) < 6) return; // small-movement tolerance so a plain click doesn't jitter the saved position
+      moved = true; btn.classList.add("tdk-dragging");
+      applyBtnPos(btn, clampBtnPos(startLeft + dx, startTop + dy));
+    });
+    const end = function () {
+      if (!dragging) return;
+      dragging = false; btn.classList.remove("tdk-dragging");
+      if (moved) {
+        state._btnJustDragged = true; // consumed by the click handler so releasing a drag doesn't also toggle the panel
+        const r = btn.getBoundingClientRect();
+        try { GM_setValue("btn_pos", { left: r.left, top: r.top }); } catch (er) { }
+      }
+    };
+    btn.addEventListener("pointerup", end);
+    btn.addEventListener("pointercancel", end);
+    window.addEventListener("resize", function () { const r = btn.getBoundingClientRect(); applyBtnPos(btn, clampBtnPos(r.left, r.top)); });
+  }
   function w3bKey() {
     let k = GM_getValue("w3b_key", "");
     if (!k) { k = (window.prompt("weav3r (W3B) API key — for live trader buy prices:") || "").trim(); if (k) GM_setValue("w3b_key", k); }
@@ -2523,6 +2570,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.94.0", d: "Sep 6, 2026", c: ["🖱️ The floating 💰 launcher is now drag-to-reposition instead of pinned to a corner. Bottom-right used to sit over the chat window's send icon; moving it to bottom-left (v1.86.0) then put it on top of Torn's own left-hand navigation menu on pages like the Item Market. Rather than keep guessing at a magic spot that works on every Torn page, just grab the button and drop it wherever's actually clear on your setup — it remembers where you put it. First run defaults to the old bottom-left spot; if you haven't moved it yet, drag it now."] },
     { v: "1.93.0", d: "Sep 2, 2026", c: ["🎯 Merits: hide/restore for Easy wins — a small 🚫 next to any easy-win row dismisses it (heuristic isn't perfect; use this for false positives or ones you're just not chasing), with a \"restore all\" link once anything's hidden. 🗂️ Also added a Type filter (Casino, Drugs, Combat, etc., pulled live from the catalog with counts) that narrows all three sections — Easy wins, Still to earn, Earned — at once, purely client-side so switching types is instant."] },
     { v: "1.92.0", d: "Sep 2, 2026", c: ["📖 Every row in the Merits tab now has a wiki link. Checked wiki.torn.com first — individual medals/honors don't get their own page (no dedicated \"Wipeout\" page, for instance), but the combined Award page does have per-category sections, so the link lands on the right one (e.g. a Drugs honor opens the wiki's Drugs section) instead of dumping you at the top of one giant page."] },
     { v: "1.91.0", d: "Sep 2, 2026", c: ["🏅 New Merits tab. Pulls Torn's full medal + honor catalog and cross-checks it against what you've actually earned — split into <b>🎯 Easy wins</b> (not earned yet, and the requirement doesn't read like a grind — usually a one-shot action, like the Toilet-Paper-prank honor), <b>⏳ Still to earn</b> (grouped by category, with a link to Torn's own Awards page for real progress bars — the API only tells us earned/not-earned, not how close you are on a grind medal), and <b>✅ Earned</b> (with the date). The easy-win call is a heuristic based on the requirement text, not a guarantee — a few may still need a specific item, place or moment."] },
@@ -3229,7 +3277,12 @@
     host.appendChild(panel);
     const buyers = document.createElement("div"); buyers.id = "tdk-buyers"; host.appendChild(buyers);
 
-    btn.addEventListener("click", function () { panel.classList.toggle("open"); if (panel.classList.contains("open")) { if (!state.rows.length || Date.now() - (state._lastRefreshAt || 0) > 60000) refresh(); checkInvStatus(); } });
+    btn.addEventListener("click", function () {
+      if (state._btnJustDragged) { state._btnJustDragged = false; return; } // a drag-release fires a click right after — don't also toggle the panel
+      panel.classList.toggle("open"); if (panel.classList.contains("open")) { if (!state.rows.length || Date.now() - (state._lastRefreshAt || 0) > 60000) refresh(); checkInvStatus(); }
+    });
+    initBtnPos(btn);
+    wireBtnDrag(btn);
     host.querySelector("#tdk-close").addEventListener("click", function () { panel.classList.remove("open"); });
     host.querySelector("#tdk-settings").addEventListener("click", openSettings);
     host.querySelector("#tdk-happy").addEventListener("click", openHappy);
