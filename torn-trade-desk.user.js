@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.94.0
+// @version      1.95.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -58,7 +58,7 @@
   }
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "landing"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt"), boardView: GM_getValue("boardView", null), itemBlock: GM_getValue("item_block", {}), awardBlock: GM_getValue("award_block", {}), awardTypeFilter: "all" };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "landing"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt"), boardView: GM_getValue("boardView", null), itemBlock: GM_getValue("item_block", {}), awardBlock: GM_getValue("award_block", {}), awardTypeFilter: "all", imAnnotate: GM_getValue("im_annotate", false) };
   function isMobile() { return (window.innerWidth || document.documentElement.clientWidth || 0) <= 560; } // matches the CSS breakpoint
   // One-time: make Landing (what'll be in stock when you arrive) the default board sort for existing installs still on the old $/min default.
   try { if (!GM_getValue("landing_default_v1", false)) { if (state.sort === "ppm") { state.sort = "landing"; GM_setValue("sort", "landing"); } GM_setValue("landing_default_v1", true); } } catch (e) { }
@@ -2570,6 +2570,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.95.0", d: "Sep 7, 2026", c: ["🛒 The Item Market price banner (market value · cheapest bazaar · top bid · crossed-market ⚡ tags) is now <b>off by default</b> — it wasn't clear what it was doing there and it was more clutter than help for most. Turn it back on in ⚙ Settings → Item Market page if you want it; takes effect immediately, no refresh needed."] },
     { v: "1.94.0", d: "Sep 6, 2026", c: ["🖱️ The floating 💰 launcher is now drag-to-reposition instead of pinned to a corner. Bottom-right used to sit over the chat window's send icon; moving it to bottom-left (v1.86.0) then put it on top of Torn's own left-hand navigation menu on pages like the Item Market. Rather than keep guessing at a magic spot that works on every Torn page, just grab the button and drop it wherever's actually clear on your setup — it remembers where you put it. First run defaults to the old bottom-left spot; if you haven't moved it yet, drag it now."] },
     { v: "1.93.0", d: "Sep 2, 2026", c: ["🎯 Merits: hide/restore for Easy wins — a small 🚫 next to any easy-win row dismisses it (heuristic isn't perfect; use this for false positives or ones you're just not chasing), with a \"restore all\" link once anything's hidden. 🗂️ Also added a Type filter (Casino, Drugs, Combat, etc., pulled live from the catalog with counts) that narrows all three sections — Easy wins, Still to earn, Earned — at once, purely client-side so switching types is instant."] },
     { v: "1.92.0", d: "Sep 2, 2026", c: ["📖 Every row in the Merits tab now has a wiki link. Checked wiki.torn.com first — individual medals/honors don't get their own page (no dedicated \"Wipeout\" page, for instance), but the combined Award page does have per-category sections, so the link lands on the right one (e.g. a Drugs honor opens the wiki's Drugs section) instead of dumping you at the top of one giant page."] },
@@ -2983,6 +2984,8 @@
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-tbook"' + (state.travelBook ? ' checked' : '') + '> Book “Mailing Yourself Abroad” active <small>(−25% for 31 days, stacks)</small></label></div>' +
         '<div id="tdk-set-teff" class="ssub"></div>' +
         '<div id="tdk-set-tdetect" class="ssub"></div>' +
+        '<div class="sl" style="margin-top:16px">🛒 Item Market page <small>— extras injected directly onto torn.com\'s own Item Market</small></div>' +
+        '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-imannot"' + (state.imAnnotate ? ' checked' : '') + '> Show the price banner &amp; crossed-market ⚡ tags on the Item Market page <small>(off by default — market value / cheapest bazaar / top bid info + a per-listing flip tag)</small></label></div>' +
         '<div class="sl" style="margin-top:16px">🚫 Hidden items <small>— excluded from the board (best pick, best trip &amp; every view) until you turn them back on</small></div>' +
         '<div id="tdk-set-hidden"></div>' +
         '<div class="sl" style="margin-top:14px">Need a key? <a class="prof" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Torn → Settings → API Keys</a>. Note: the 📦 Bag needs Torn’s inventory API, which is temporarily disabled during Torn’s inventory migration — no key fixes that until Torn restores it.</div>' +
@@ -3002,6 +3005,8 @@
     if (mSel) mSel.addEventListener("change", function () { state.travelMethod = this.value; applyTravelChange(true); });
     const bChk = host.querySelector("#tdk-set-tbook");
     if (bChk) bChk.addEventListener("change", function () { state.travelBook = this.checked; applyTravelChange(true); });
+    const imChk = host.querySelector("#tdk-set-imannot");
+    if (imChk) imChk.addEventListener("change", function () { state.imAnnotate = this.checked; GM_setValue("im_annotate", state.imAnnotate); if (state._imRun) state._imRun(); });
     updateTravelEff();
     detectTravelProp();
     host.querySelector("#tdk-set-test").addEventListener("click", function () {
@@ -3534,6 +3539,15 @@
     (key ? loadResale(key).catch(function () { }) : Promise.resolve()).then(function () {
       let curId = null, pending = false;
       const run = function () {
+        if (!state.imAnnotate) {
+          const b = document.getElementById("tdk-im-banner"); if (b) b.remove();
+          document.querySelectorAll('[class*="sellerRow"][data-tdk]').forEach(function (r) {
+            r.removeAttribute("data-tdk"); r.classList.remove("tdk-im-flip");
+            const t = r.querySelector(".tdk-im-ftag"); if (t) t.remove();
+          });
+          curId = null; // force a fresh pass if turned back on later
+          return;
+        }
         const id = marketItemId();
         if (id !== curId) {
           const b = document.getElementById("tdk-im-banner"); if (b) b.remove();
@@ -3547,6 +3561,7 @@
           annotateMarketRows(id, imCtx[id]);
         }
       };
+      state._imRun = run; // exposed so the ⚙ Settings checkbox can re-run instantly on toggle instead of waiting for the next mutation
       run();
       new MutationObserver(function () { if (pending) return; pending = true; requestAnimationFrame(function () { pending = false; run(); }); }).observe(document.body, { childList: true, subtree: true });
       window.addEventListener("hashchange", run);
