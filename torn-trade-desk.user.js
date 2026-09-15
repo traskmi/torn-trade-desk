@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.10
+// @version      1.99.11
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2621,6 +2621,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.11", d: "Sep 15, 2026", c: ["🐛 Fixed a real live near-miss: the failsafe correctly picked Xanax ×28 (~$23M, cash confirmed on hand) but the buy failed with \"form not found\" even though the item was clearly listed on the page (user caught it and bought manually just in time). Most likely cause: the buy attempt ran on the very first check right after auto-navigating to the shop page, before Torn's own page had fully finished rendering every row. Both the buy-form lookup and the \"Travel home\" link lookup now retry for up to ~2s before giving up, instead of failing on the very first check."] },
     { v: "1.99.10", d: "Sep 15, 2026", c: ["📒 Failsafe log now records the FULL priced item list for the country (not just the top 8) in each landing's stockSnapshot, so you can actually audit a decision - e.g. confirm whether Insulin was genuinely out of stock or just didn't make an old truncated cut. Only visible in the 📋 Copy full log (JSON) export, not the compact inline view. Note: this still only covers items the board has real resale-price data for - anything with no priced/profitable read won't appear at all, that's a gap in the underlying data, not the log."] },
     { v: "1.99.9", d: "Sep 15, 2026", c: ["🎉 First confirmed live end-to-end success: landed, waited, auto-bought a full 28/28 load, flew home. 🐛 Small logging fix from that run: the failsafe log showed \"cash ?\" even though the buy itself worked fine - cashAtLanding is snapshotted at arm time by the lightweight poller, which doesn't fetch money, so it's usually still null. Now falls back to the known-good cash figure from fire time instead of showing a bare \"?\"."] },
     { v: "1.99.8", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: the fire-time board/cash data check now retries once (with a short pause between) if the first attempt comes back empty, instead of giving up after a single try. A transient blip - a slow YATA response, a momentary network hiccup - shouldn't cost the whole trip if a second attempt seconds later would have worked. Only kicks in when data actually looks stale/missing; skips straight through when the arm-time background refresh already did its job."] },
@@ -3936,8 +3937,13 @@
   // clicks Buy (opens Torn's own "Buy Nx {item} for $Y?" confirm panel), then clicks Yes. Two-step, matching how
   // Torn's own UI requires a real click to actually spend money - not a raw form-submit shortcut.
   async function domBuyItem(id, qty) {
-    const form = document.getElementById("item-" + id + "-form");
-    if (!form) return { ok: false, reason: "form not found (not on the abroad shop page, or item not listed)" };
+    // Retry the form lookup for a couple seconds before giving up - a real live failure showed "form not found"
+    // for an item that WAS clearly on the page (user screenshot confirmed it), most likely because the buy
+    // attempt ran on the very first checkFailsafeTimer tick after a fresh page load (auto-navigate case), before
+    // Torn's own React app had fully finished mounting every row.
+    let form = document.getElementById("item-" + id + "-form");
+    for (let i = 0; i < 5 && !form; i++) { await sleep(400); form = document.getElementById("item-" + id + "-form"); }
+    if (!form) return { ok: false, reason: "form not found after retrying ~2s (not on the abroad shop page, or item not listed)" };
     const input = form.querySelector('input.input-money:not([type="hidden"])');
     if (!input) return { ok: false, reason: "qty input not found" };
     reactSetValue(input, qty);
@@ -3955,8 +3961,10 @@
   // Boards the flight home - clicks the "Travel home" header link (expands a confirm panel, same pattern as Buy),
   // then clicks the "Travel Back" confirm inside it.
   async function domFlyHome() {
-    const link = Array.from(document.querySelectorAll('a[role="button"],button')).find(function (el) { return /travel home/i.test((el.textContent || "").trim()); });
-    if (!link) return { ok: false, reason: "'Travel home' link not found (not on the abroad travel page?)" };
+    const findLink = function () { return Array.from(document.querySelectorAll('a[role="button"],button')).find(function (el) { return /travel home/i.test((el.textContent || "").trim()); }); };
+    let link = findLink();
+    for (let i = 0; i < 5 && !link; i++) { await sleep(400); link = findLink(); } // same mount-timing safety net as domBuyItem
+    if (!link) return { ok: false, reason: "'Travel home' link not found after retrying ~2s (not on the abroad travel page?)" };
     link.click();
     await sleep(jitter(400, 500));
     const panel = document.getElementById("travel-home-panel");
