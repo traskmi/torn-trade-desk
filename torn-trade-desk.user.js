@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.5
+// @version      1.99.6
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2616,6 +2616,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.6", d: "Sep 15, 2026", c: ["🛟 Landing failsafe now buys a full profitable LOAD instead of just one item. Previously if the single best-profit item couldn't use your whole capacity or cash (e.g. cash only covers 1 Xanax), the rest of your slots and money just sat unused. Now it fills the remainder with the next-best affordable item(s), same greedy fill the board's own \"Best trip\" feature already uses. The action log now records the full list of items bought, total cost, and total profit instead of just one."] },
     { v: "1.99.5", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: now uses the exact flight time it already knows (the same figure behind the ✈ countdown and the 15s immunity banner) to schedule a precise, one-shot full data refresh timed to your arrival, instead of just waiting on the background poll. `armLandingRefresh()` already existed for this but was only ever wired into the panel-open refresh path - now the panel-closed background poller arms it too, the moment it learns you're flying. Board prices/stock + cash should now be genuinely fresh right as you touch down, not just eventually."] },
     { v: "1.99.4", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: added instant landing detection via the page's own DOM, on top of the existing 10s background poll. Turns out Torn doesn't actually reload the travel page when you land (checked - it re-renders itself in place), so there's no navigation event to hook, but watching for the \"Travel home\" link to appear (it only exists once you're actually standing in the shop) reacts the moment it shows up instead of waiting for the next poll tick. Shaves up to 10s off both landing detection and how soon the background data refresh (v1.99.3) starts."] },
     { v: "1.99.3", d: "Sep 15, 2026", c: ["🐛 Landing failsafe: fixed it flying you home with an EMPTY hand because it never actually had real board/price data to judge with. v1.99.2 fixed landing-detection with the panel closed, but the board (stock/price) data and your cash still only ever loaded when the panel was open - so a panel-closed test correctly detected landing, correctly waited, correctly checked the shop page, and correctly found nothing to buy... because it had zero stock data and null cash to work with, not because Canada was actually empty. Confirmed live: a real run logged an empty stockSnapshot + null cash + 'no_profitable_pick' + a successful auto-fly-home, all technically correct given what it knew, which was nothing. Now kicks off a full data refresh the moment it detects landing (well ahead of the 15-60s delay), plus a fallback wait-for-it check right at fire time in case that hasn't finished yet."] },
@@ -3045,7 +3046,7 @@
         '<div id="tdk-set-tdetect" class="ssub"></div>' +
         '<div class="sl" style="margin-top:16px">🛒 Item Market page <small>— extras injected directly onto torn.com\'s own Item Market</small></div>' +
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-imannot"' + (state.imAnnotate ? ' checked' : '') + '> Show the price banner &amp; crossed-market ⚡ tags on the Item Market page <small>(off by default — market value / cheapest bazaar / top bid info + a per-listing flip tag)</small></label></div>' +
-        '<div class="sl" style="margin-top:16px">🛟 Landing failsafe <small>— for when you land and get sidetracked. If you take no action for a bit after touchdown, this fires an alert (flashing banner · sound · notification · vibration) and <b>auto-buys the best pick and flies you home</b> — same as clicking it yourself, just automated. If this browser tab isn\'t on the abroad shop page when it fires, it navigates the tab there itself first, then acts. <b>This is real automated gameplay — a genuine Torn ban risk if flagged.</b> A captcha appearing anywhere force-disables it immediately. Safe with multiple Torn tabs open — only one will ever act on a given landing.</small></div>' +
+        '<div class="sl" style="margin-top:16px">🛟 Landing failsafe <small>— for when you land and get sidetracked. If you take no action for a bit after touchdown, this fires an alert (flashing banner · sound · notification · vibration) and <b>auto-buys a full profitable load (not just one item) and flies you home</b> — fills remaining slots/cash with the next-best item(s) when the top pick can\'t use it all, same as clicking it yourself, just automated. If this browser tab isn\'t on the abroad shop page when it fires, it navigates the tab there itself first, then acts. <b>This is real automated gameplay — a genuine Torn ban risk if flagged.</b> A captcha appearing anywhere force-disables it immediately. Safe with multiple Torn tabs open — only one will ever act on a given landing.</small></div>' +
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-fsafe"' + (state.autoFailsafe ? ' checked' : '') + (state._captchaHalted ? ' disabled' : '') + '> Enable landing failsafe' + (state._captchaHalted ? ' <small style="color:#e2707a">— OFF: a captcha was detected last session, re-check the box to re-arm</small>' : '') + '</label></div>' +
         '<div class="srow ssub">Alerts after a random 15–60s of no activity on the page after landing <small>(varies each time on purpose, not a fixed timer)</small></div>' +
         '<div id="tdk-fs-log" class="ssub"></div>' +
@@ -3756,7 +3757,7 @@
     v.title = n > 0 ? n + " new/changed Torn module" + (n === 1 ? "" : "s") + " since you last looked — click for the build watcher" : "View changelog";
   }
 
-  /* ---------- Landing failsafe (v1.96.0-1.99.1) ----------
+  /* ---------- Landing failsafe (v1.96.0-1.99.6) ----------
    * Problem: land abroad with a big cash load, get sidetracked, sit there un-bought, and get mugged.
    * Arms off arrivalTs (a stable id for "this stay abroad", survives page reloads via GM storage - see
    * applyTravelState), and if there's been no page activity since landing for a random 15-60s (varies each
@@ -3795,7 +3796,7 @@
     renderFailsafeEvents();
   }
   const FS_DECISION_LABEL = {
-    bought: "🛒 bought", no_profitable_pick: "🚫 nothing profitable", not_on_shop_page: "📵 not on shop page",
+    bought: "🛒 bought", bought_partial: "🛒 partially bought", no_profitable_pick: "🚫 nothing profitable", not_on_shop_page: "📵 not on shop page",
     buy_failed: "❌ buy failed", aborted_before_buy: "🛑 aborted (toggle/captcha)"
   };
   function renderFailsafeEvents() {
@@ -3808,8 +3809,11 @@
       const dur = (e.landedAt && e.leftAt) ? dur2(Math.round((e.leftAt - e.landedAt) / 1000)) : (e.landedAt ? "(still abroad / not flown by script)" : "?");
       const inTxt = e.landedAt ? new Date(e.landedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "?";
       const outTxt = e.leftAt ? new Date(e.leftAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
-      const cashTxt = "cash " + (e.cashAtLanding != null ? "$" + e.cashAtLanding.toLocaleString() : "?") + (e.pick ? " → ~$" + Math.max(0, (e.cashAtLanding || 0) - e.pick.cost).toLocaleString() + " est." : "");
-      const pickTxt = e.pick ? (e.pick.name + " ×" + e.pick.qty + " (~$" + e.pick.cost.toLocaleString() + ", stock was " + e.pick.stock.toLocaleString() + ")") : "—";
+      // picks[] (v1.99.6+) is a full multi-item load; pick (singular, older entries) was one item only - support both.
+      const picks = e.picks || (e.pick ? [e.pick] : []);
+      const totalCost = e.totalCost != null ? e.totalCost : picks.reduce(function (s, p) { return s + (p.cost || 0); }, 0);
+      const cashTxt = "cash " + (e.cashAtLanding != null ? "$" + e.cashAtLanding.toLocaleString() : "?") + (picks.length ? " → ~$" + Math.max(0, (e.cashAtLanding || 0) - totalCost).toLocaleString() + " est." : "");
+      const pickTxt = picks.length ? (picks.map(function (p) { return p.name + " ×" + p.qty; }).join(", ") + " (~$" + totalCost.toLocaleString() + (e.filled != null ? ", " + e.filled + "/" + state.cap + " slots" : "") + ")") : "—";
       const flyTxt = e.flyResult ? (e.flyResult.ok ? "✅ flew home" : "⚠️ fly failed: " + e.flyResult.reason) : "";
       return "<div style='margin-bottom:5px'>" + when + " · " + (e.country || e.cc || "?") + " · in " + inTxt + " → out " + outTxt + " (" + dur + ")" +
         (e.captchaHit ? " · 🛑 captcha" : "") + "<br>" + (FS_DECISION_LABEL[e.decision] || e.decision) + ": " + pickTxt + " · " + cashTxt + (flyTxt ? " · " + flyTxt : "") + "</div>";
@@ -3879,19 +3883,29 @@
   });
   // Best affordable, currently-loadable, PROFITABLE pick for the country you're standing in right now (not a
   // future arrival). Never auto-buys a loser just because it's the least-bad option in stock.
-  function failsafeBestPick() {
+  // Builds a full multi-item load for the country you're standing in, same greedy-by-profit-per-item fill as the
+  // board's own "Best trip" feature (bestTrip()): take as much of the single most profitable item as capacity/
+  // stock/cash allow, then spend whatever's left (slots AND cash) on the next-best, and so on - rather than only
+  // ever buying one item and leaving both money and load slots unused when that item alone can't fill either.
+  // e.g. 1 Xanax (can't afford a 2nd) still leaves 27 slots and most of your cash - those go to the next-best
+  // affordable item instead of sitting idle.
+  function failsafeBestLoad() {
     const cc = state.loc; if (!cc) return null;
-    const cap = state.cap, cash = state.cash || 0;
+    const cap = state.cap; let cash = state.cash || 0, remaining = cap;
     const items = (state.rows || []).filter(function (r) { return r.cc === cc && r.ppi > 0; }).sort(function (a, b) { return b.ppi - a.ppi; });
-    for (let i = 0; i < items.length; i++) {
+    const picks = []; let totalCost = 0, totalProfit = 0;
+    for (let i = 0; i < items.length && remaining > 0 && cash > 0; i++) {
       const it = items[i], avail = loadAvail(it);
       if (avail <= 0) continue;
-      let take = Math.min(cap, avail);
+      let take = Math.min(remaining, avail);
       if (it.buy > 0) take = Math.min(take, Math.floor(cash / it.buy));
       if (take <= 0) continue;
-      return { item: it, qty: take, cost: it.buy * take };
+      const cost = it.buy * take;
+      picks.push({ item: it, qty: take, cost: cost });
+      totalCost += cost; totalProfit += it.ppi * take; remaining -= take; cash -= cost;
     }
-    return null;
+    if (!picks.length) return null;
+    return { picks: picks, totalCost: totalCost, totalProfit: totalProfit, filled: cap - remaining };
   }
   const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
   const jitter = function (baseMs, spreadMs) { return baseMs + Math.random() * spreadMs; }; // human-ish gaps between steps, not instant/robotic
@@ -3970,16 +3984,17 @@
       decision: null, pick: null, buyResult: null, flyResult: null, leftAt: null
     };
     const finish = function () { logFailsafeEvent(rec); state._failsafeTrack = null; };
-    const pick = failsafeBestPick();
+    const fmtPicks = function (picks) { return picks.map(function (p) { return p.item.name + " ×" + p.qty; }).join(", "); };
+    const load = failsafeBestLoad();
     // Not on the shop page - navigate THIS tab there and let the next timer tick (after reload) pick the sequence
     // back up naturally, instead of just alerting into the void. Doesn't claim/finish (not a terminal outcome) -
     // only navigates once per landing (persisted "navigated" flag) so a repeated failure can't loop forever.
     if (!rec.onShopPage) {
       const already = track.navigated;
       if (!already) {
-        rec.pick = pick ? { name: pick.item.name, id: pick.item.id, qty: pick.qty, cost: pick.cost, stock: pick.item.stock, ppi: pick.item.ppi } : null;
-        const msg = pick
-          ? ("⏱ Landing failsafe — best pick is " + pick.item.name + " ×" + pick.qty + " (~$" + pick.cost.toLocaleString() + "). Navigating to the shop page to act...")
+        rec.picks = load ? load.picks.map(function (p) { return { name: p.item.name, id: p.item.id, qty: p.qty, cost: p.cost, stock: p.item.stock, ppi: p.item.ppi }; }) : [];
+        const msg = load
+          ? ("⏱ Landing failsafe — best load is " + fmtPicks(load.picks) + " (~$" + load.totalCost.toLocaleString() + "). Navigating to the shop page to act...")
           : "⏱ Landing failsafe — nothing profitable to buy, navigating to the shop page to fly you home...";
         logFailsafe(msg); showFailsafeAlert(msg, true);
         try { const t = GM_getValue("failsafe_track", null); if (t && t.arrTs === track.arrTs) { t.navigated = true; GM_setValue("failsafe_track", t); } } catch (e) { }
@@ -3996,7 +4011,7 @@
       finish(); return;
     }
     if (!claimFire()) { logFailsafe("↩️ Stood down — another tab already handled this landing."); return; }
-    if (!pick) {
+    if (!load) {
       rec.decision = "no_profitable_pick";
       const msg = "⏱ Landing failsafe — you've gone quiet since touchdown and nothing here is both in-stock/affordable AND actually profitable right now. Nothing to auto-buy (won't buy a loser just to buy something); flying you home.";
       logFailsafe(msg); showFailsafeAlert(msg, true);
@@ -4004,30 +4019,43 @@
       logFailsafe(r.ok ? "✅ Auto-flew home (no pick)." : "⚠️ Auto-fly-home failed: " + r.reason);
       finish(); return;
     }
-    rec.pick = { name: pick.item.name, id: pick.item.id, qty: pick.qty, cost: pick.cost, stock: pick.item.stock, ppi: pick.item.ppi };
-    showFailsafeAlert("⏱ Landing failsafe firing — auto-buying " + pick.item.name + " ×" + pick.qty + " and flying home...", true);
+    rec.picks = load.picks.map(function (p) { return { name: p.item.name, id: p.item.id, qty: p.qty, cost: p.cost, stock: p.item.stock, ppi: p.item.ppi }; });
+    rec.totalCost = load.totalCost; rec.totalProfit = load.totalProfit; rec.filled = load.filled;
+    showFailsafeAlert("⏱ Landing failsafe firing — auto-buying " + fmtPicks(load.picks) + " (" + load.filled + "/" + state.cap + " slots) and flying home...", true);
     await sleep(jitter(300, 500)); // one more beat before the money-spending step, and a final chance to catch a toggle-off
     if (!state.autoFailsafe || state._captchaHalted) {
       rec.decision = "aborted_before_buy"; rec.captchaHit = rec.captchaHit || !!state._captchaHalted;
       logFailsafe("🛑 Aborted before buying (toggled off / captcha).");
       finish(); return;
     }
-    const buyRes = await domBuyItem(pick.item.id, pick.qty);
-    rec.buyResult = buyRes;
-    if (!buyRes.ok) {
+    // Buy each item in the load one at a time (jittered pauses between, not instant/robotic) - stop attempting
+    // further items the moment one fails, since a failure likely means something about the page/flow broke and
+    // the rest would probably fail identically.
+    const buyResults = [];
+    for (let i = 0; i < load.picks.length; i++) {
+      const p = load.picks[i];
+      const r = await domBuyItem(p.item.id, p.qty);
+      buyResults.push({ id: p.item.id, name: p.item.name, qty: p.qty, ok: r.ok, reason: r.reason });
+      if (!r.ok) break;
+      if (i < load.picks.length - 1) await sleep(jitter(500, 500));
+    }
+    rec.buyResults = buyResults;
+    const bought = buyResults.filter(function (b) { return b.ok; });
+    if (!bought.length) {
       rec.decision = "buy_failed";
-      const msg = "⚠️ Landing failsafe: auto-buy of " + pick.item.name + " ×" + pick.qty + " failed (" + buyRes.reason + "). Check the page — go buy/fly home manually.";
+      const msg = "⚠️ Landing failsafe: auto-buy of " + fmtPicks(load.picks) + " failed (" + buyResults[0].reason + "). Check the page — go buy/fly home manually.";
       logFailsafe(msg); showFailsafeAlert(msg, true);
       finish(); return;
     }
-    rec.decision = "bought";
-    logFailsafe("✅ Auto-bought " + pick.item.name + " ×" + pick.qty + " (~$" + pick.cost.toLocaleString() + ").");
+    rec.decision = bought.length === load.picks.length ? "bought" : "bought_partial";
+    const boughtTxt = bought.map(function (b) { return b.name + " ×" + b.qty; }).join(", ");
+    logFailsafe("✅ Auto-bought " + boughtTxt + " (~$" + load.totalCost.toLocaleString() + " planned).");
     await sleep(jitter(600, 600));
     const flyRes = await domFlyHome();
     rec.flyResult = flyRes; rec.leftAt = flyRes.ok ? Date.now() : null;
     const msg = flyRes.ok
-      ? ("✅ Landing failsafe: bought " + pick.item.name + " ×" + pick.qty + " and flew home.")
-      : ("⚠️ Bought " + pick.item.name + " ×" + pick.qty + ", but auto-fly-home failed (" + flyRes.reason + ") — fly home manually.");
+      ? ("✅ Landing failsafe: bought " + boughtTxt + " and flew home.")
+      : ("⚠️ Bought " + boughtTxt + ", but auto-fly-home failed (" + flyRes.reason + ") — fly home manually.");
     logFailsafe(msg); showFailsafeAlert(msg, true);
     finish();
   }
