@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.97.1
+// @version      1.98.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -59,7 +59,7 @@
 
   /* ---------- state ---------- */
   const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "landing"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt"), boardView: GM_getValue("boardView", null), itemBlock: GM_getValue("item_block", {}), awardBlock: GM_getValue("award_block", {}), awardTypeFilter: "all", imAnnotate: GM_getValue("im_annotate", false),
-    autoFailsafe: GM_getValue("auto_failsafe", false), _prevTravelWhere: null, _landedAt: 0, _landedDelayMs: 0, _lastActivityAt: Date.now(), _failsafeFiredFor: 0, _captchaHalted: false };
+    autoFailsafe: GM_getValue("auto_failsafe", false), _prevTravelWhere: null, _landedAt: 0, _landedDelayMs: 0, _lastActivityAt: Date.now(), _failsafeFiredFor: 0, _captchaHalted: false, _failsafeTrack: null };
   function isMobile() { return (window.innerWidth || document.documentElement.clientWidth || 0) <= 560; } // matches the CSS breakpoint
   // One-time: make Landing (what'll be in stock when you arrive) the default board sort for existing installs still on the old $/min default.
   try { if (!GM_getValue("landing_default_v1", false)) { if (state.sort === "ppm") { state.sort = "landing"; GM_setValue("sort", "landing"); } GM_setValue("landing_default_v1", true); } } catch (e) { }
@@ -193,7 +193,12 @@
     // so it can't fire immediately on open/refresh — only after you actually touch down.
     // Random 15-60s reaction delay each landing (not a fixed constant) - a bot-detector's easiest tell is a
     // perfectly consistent timer, so this mimics natural human variance in how fast someone notices they've landed.
-    if (state._prevTravelWhere === "flying" && tw.where === "abroad") { state._landedAt = Date.now(); state._landedDelayMs = (15 + Math.random() * 45) * 1000; }
+    if (state._prevTravelWhere === "flying" && tw.where === "abroad") {
+      state._landedAt = Date.now(); state._landedDelayMs = (15 + Math.random() * 45) * 1000;
+      // Snapshot cash right at touchdown for the failsafe log ("how much $ I had") - best-effort: the fast
+      // travel-only poller doesn't fetch money, so this is whatever state.cash held from the last full refresh.
+      state._failsafeTrack = { landedAt: state._landedAt, cc: tw.cc, cashAtLanding: state.cash };
+    }
     if (tw.where !== "abroad") { state._landedAt = 0; }
     state._prevTravelWhere = tw.where;
     state.travelWhere = tw.where;
@@ -2588,6 +2593,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.98.0", d: "Sep 15, 2026", c: ["📒 New detailed failsafe action log (⚙ Settings, under the landing failsafe section): a separate, structured record of every time it fires — cash you had at landing, a snapshot of stock levels at your location, exactly what (if anything) it chose to buy and why, any captcha hits, and time landed → time it flew you home. Shows the last 15 inline, plus a 📋 Copy full log (JSON) button for the full 200-entry history and a Clear button. This is in addition to the short plain-text status log from before, not a replacement."] },
     { v: "1.97.1", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: fixed a gap where it would auto-buy the least-bad item even if EVERYTHING at your location was currently a loss (cost more than resale). Now only ever picks a genuinely profitable item; if nothing qualifies, it just flies you home without buying anything."] },
     { v: "1.97.0", d: "Sep 15, 2026", c: ["🛟 Landing failsafe Part 2: it now actually auto-buys the best pick and flies you home (not just an alert) when it fires AND you're on the abroad shop page (Travel Agency). Same clicks a human makes — fill quantity, Buy, confirm Yes, Travel home, confirm Travel Back — verified against the live page. <b>This is real automated gameplay and a genuine Torn ban risk if flagged</b> — off the shop page, or with the toggle off, it only alerts. The captcha kill-switch from v1.96.0 still force-disables everything the instant anything captcha-shaped appears."] },
     { v: "1.96.1", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: the alert delay is now a random 15-60s each landing instead of a fixed 30/45/60s pick — a perfectly consistent timer is an easy pattern to flag, so this varies it like natural human reaction time would."] },
@@ -3012,6 +3018,9 @@
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-fsafe"' + (state.autoFailsafe ? ' checked' : '') + (state._captchaHalted ? ' disabled' : '') + '> Enable landing failsafe' + (state._captchaHalted ? ' <small style="color:#e2707a">— OFF: a captcha was detected last session, re-check the box to re-arm</small>' : '') + '</label></div>' +
         '<div class="srow ssub">Alerts after a random 15–60s of no activity on the page after landing <small>(varies each time on purpose, not a fixed timer)</small></div>' +
         '<div id="tdk-fs-log" class="ssub"></div>' +
+        '<div class="sl" style="margin-top:10px">📒 Failsafe action log <small>— cash held, stock seen, what (if anything) it bought, captcha hits, time landed → time it flew you home</small></div>' +
+        '<div id="tdk-fs-events" class="ssub" style="max-height:220px;overflow-y:auto;font-family:ui-monospace,monospace;font-size:10.5px;line-height:1.6"></div>' +
+        '<div class="srow"><button class="tdk-btn2 tdk-sm" id="tdk-fs-copy">📋 Copy full log (JSON)</button><button class="tdk-btn2 tdk-sm" id="tdk-fs-clear">Clear log</button></div>' +
         '<div class="sl" style="margin-top:16px">🚫 Hidden items <small>— excluded from the board (best pick, best trip &amp; every view) until you turn them back on</small></div>' +
         '<div id="tdk-set-hidden"></div>' +
         '<div class="sl" style="margin-top:14px">Need a key? <a class="prof" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Torn → Settings → API Keys</a>. Note: the 📦 Bag needs Torn’s inventory API, which is temporarily disabled during Torn’s inventory migration — no key fixes that until Torn restores it.</div>' +
@@ -3039,6 +3048,13 @@
       if (state.autoFailsafe) state._captchaHalted = false; // re-enabling clears a prior captcha halt
     });
     renderFailsafeLog();
+    const fsCopy = host.querySelector("#tdk-fs-copy");
+    if (fsCopy) fsCopy.addEventListener("click", function () {
+      copyText(JSON.stringify(GM_getValue("failsafe_events", []), null, 2));
+      const msg = host.querySelector("#tdk-set-msg"); if (msg) msg.textContent = " Failsafe log copied ✓";
+    });
+    const fsClear = host.querySelector("#tdk-fs-clear");
+    if (fsClear) fsClear.addEventListener("click", function () { GM_setValue("failsafe_events", []); renderFailsafeEvents(); });
     updateTravelEff();
     detectTravelProp();
     host.querySelector("#tdk-set-test").addEventListener("click", function () {
@@ -3724,13 +3740,47 @@
   function logFailsafe(msg) {
     try { const log = GM_getValue("failsafe_log", []); log.unshift({ t: Date.now(), msg: msg }); GM_setValue("failsafe_log", log.slice(0, 50)); } catch (e) { }
   }
+  // Structured, separate log for auditing what the failsafe actually did each landing: cash held, what stock
+  // looked like, what (if anything) it chose to buy, captcha hits, and time landed → time it flew you home.
+  function logFailsafeEvent(rec) {
+    try { const log = GM_getValue("failsafe_events", []); log.unshift(rec); GM_setValue("failsafe_events", log.slice(0, 200)); } catch (e) { }
+  }
+  function failsafeStockSnapshot(cc) {
+    return (state.rows || []).filter(function (r) { return r.cc === cc; })
+      .sort(function (a, b) { return b.ppi - a.ppi; })
+      .slice(0, 8)
+      .map(function (r) { return { name: r.name, stock: r.stock, buy: r.buy, sell: r.sell, ppi: r.ppi }; });
+  }
   function renderFailsafeLog() {
     const el = host && host.querySelector("#tdk-fs-log"); if (!el) return;
     const log = GM_getValue("failsafe_log", []);
     el.innerHTML = log.length
       ? "Recent: " + log.slice(0, 5).map(function (x) { return ago(Math.floor((Date.now() - x.t) / 1000)) + " ago — " + x.msg; }).join("<br>")
       : "No failsafe events yet.";
+    renderFailsafeEvents();
   }
+  const FS_DECISION_LABEL = {
+    bought: "🛒 bought", no_profitable_pick: "🚫 nothing profitable", not_on_shop_page: "📵 not on shop page",
+    buy_failed: "❌ buy failed", aborted_before_buy: "🛑 aborted (toggle/captcha)"
+  };
+  function renderFailsafeEvents() {
+    const el = host && host.querySelector("#tdk-fs-events"); if (!el) return;
+    const log = GM_getValue("failsafe_events", []);
+    if (!log.length) { el.textContent = "No logged actions yet."; return; }
+    el.innerHTML = log.slice(0, 15).map(function (e) {
+      const when = new Date(e.t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      if (e.type === "captcha") return "<div>" + when + " · 🛑 <b>captcha</b> — " + (e.note || "") + (e.cc ? " (" + e.cc + ")" : "") + "</div>";
+      const dur = (e.landedAt && e.leftAt) ? dur2(Math.round((e.leftAt - e.landedAt) / 1000)) : (e.landedAt ? "(still abroad / not flown by script)" : "?");
+      const inTxt = e.landedAt ? new Date(e.landedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "?";
+      const outTxt = e.leftAt ? new Date(e.leftAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
+      const cashTxt = "cash " + (e.cashAtLanding != null ? "$" + e.cashAtLanding.toLocaleString() : "?") + (e.pick ? " → ~$" + Math.max(0, (e.cashAtLanding || 0) - e.pick.cost).toLocaleString() + " est." : "");
+      const pickTxt = e.pick ? (e.pick.name + " ×" + e.pick.qty + " (~$" + e.pick.cost.toLocaleString() + ", stock was " + e.pick.stock.toLocaleString() + ")") : "—";
+      const flyTxt = e.flyResult ? (e.flyResult.ok ? "✅ flew home" : "⚠️ fly failed: " + e.flyResult.reason) : "";
+      return "<div style='margin-bottom:5px'>" + when + " · " + (e.country || e.cc || "?") + " · in " + inTxt + " → out " + outTxt + " (" + dur + ")" +
+        (e.captchaHit ? " · 🛑 captcha" : "") + "<br>" + (FS_DECISION_LABEL[e.decision] || e.decision) + ": " + pickTxt + " · " + cashTxt + (flyTxt ? " · " + flyTxt : "") + "</div>";
+    }).join("");
+  }
+  const dur2 = function (secs) { const m = Math.floor(secs / 60), s = secs % 60; return m ? (m + "m" + s + "s") : (s + "s"); };
   function showFailsafeAlert(msg, sticky) {
     try {
       let b = document.getElementById("tdk-fs-alert");
@@ -3772,6 +3822,8 @@
     state._captchaHalted = true; state.autoFailsafe = false; GM_setValue("auto_failsafe", false);
     const msg = "🛑 Captcha detected — landing failsafe switched OFF. Solve it, then re-enable in ⚙ Settings.";
     logFailsafe(msg); showFailsafeAlert(msg, true);
+    logFailsafeEvent({ type: "captcha", t: Date.now(), cc: state.loc || null, cash: state.cash, note: "captcha detected on page — failsafe force-disabled" });
+    if (state._failsafeTrack) state._failsafeTrack.captchaHit = true; // tag the in-progress landing, if any, when its record is written
   }
   const _captchaObs = new MutationObserver(function (muts) {
     for (const m of muts) {
@@ -3849,34 +3901,64 @@
     return { ok: true };
   }
   async function failsafeExecute() {
+    const track = state._failsafeTrack || {};
+    const cc = state.loc;
+    const rec = {
+      type: "landing", t: Date.now(),
+      landedAt: track.landedAt || state._landedAt || null,
+      firedAt: Date.now(), delayMs: state._landedDelayMs || null,
+      cc: cc, country: (FLY[cc] && FLY[cc].name) || cc || null,
+      cashAtLanding: (track.cashAtLanding != null) ? track.cashAtLanding : null,
+      cashAtFire: state.cash != null ? state.cash : null,
+      stockSnapshot: failsafeStockSnapshot(cc),
+      onShopPage: TRAVEL_PAGE.test(location.href),
+      captchaHit: !!track.captchaHit,
+      decision: null, pick: null, buyResult: null, flyResult: null, leftAt: null
+    };
+    const finish = function () { logFailsafeEvent(rec); state._failsafeTrack = null; };
     const pick = failsafeBestPick();
     if (!pick) {
+      rec.decision = "no_profitable_pick";
       const msg = "⏱ Landing failsafe — you've gone quiet since touchdown and nothing here is both in-stock/affordable AND actually profitable right now. Nothing to auto-buy (won't buy a loser just to buy something); fly home if you're AFK.";
       logFailsafe(msg); showFailsafeAlert(msg, true);
-      if (TRAVEL_PAGE.test(location.href)) { const r = await domFlyHome(); logFailsafe(r.ok ? "✅ Auto-flew home (no pick)." : "⚠️ Auto-fly-home failed: " + r.reason); }
-      return;
+      if (rec.onShopPage) {
+        const r = await domFlyHome(); rec.flyResult = r; rec.leftAt = r.ok ? Date.now() : null;
+        logFailsafe(r.ok ? "✅ Auto-flew home (no pick)." : "⚠️ Auto-fly-home failed: " + r.reason);
+      }
+      finish(); return;
     }
-    if (!TRAVEL_PAGE.test(location.href)) {
+    rec.pick = { name: pick.item.name, id: pick.item.id, qty: pick.qty, cost: pick.cost, stock: pick.item.stock, ppi: pick.item.ppi };
+    if (!rec.onShopPage) {
+      rec.decision = "not_on_shop_page";
       const msg = "⏱ Landing failsafe — best pick was " + pick.item.name + " ×" + pick.qty + " (~$" + pick.cost.toLocaleString() + "), but you're not on the travel/shop page so I can't auto-buy from here. Go do it now!";
       logFailsafe(msg); showFailsafeAlert(msg, true);
-      return;
+      finish(); return;
     }
     showFailsafeAlert("⏱ Landing failsafe firing — auto-buying " + pick.item.name + " ×" + pick.qty + " and flying home...", true);
     await sleep(jitter(300, 500)); // one more beat before the money-spending step, and a final chance to catch a toggle-off
-    if (!state.autoFailsafe || state._captchaHalted) { logFailsafe("🛑 Aborted before buying (toggled off / captcha)."); return; }
+    if (!state.autoFailsafe || state._captchaHalted) {
+      rec.decision = "aborted_before_buy"; rec.captchaHit = rec.captchaHit || !!state._captchaHalted;
+      logFailsafe("🛑 Aborted before buying (toggled off / captcha).");
+      finish(); return;
+    }
     const buyRes = await domBuyItem(pick.item.id, pick.qty);
+    rec.buyResult = buyRes;
     if (!buyRes.ok) {
+      rec.decision = "buy_failed";
       const msg = "⚠️ Landing failsafe: auto-buy of " + pick.item.name + " ×" + pick.qty + " failed (" + buyRes.reason + "). Check the page — go buy/fly home manually.";
       logFailsafe(msg); showFailsafeAlert(msg, true);
-      return;
+      finish(); return;
     }
+    rec.decision = "bought";
     logFailsafe("✅ Auto-bought " + pick.item.name + " ×" + pick.qty + " (~$" + pick.cost.toLocaleString() + ").");
     await sleep(jitter(600, 600));
     const flyRes = await domFlyHome();
+    rec.flyResult = flyRes; rec.leftAt = flyRes.ok ? Date.now() : null;
     const msg = flyRes.ok
       ? ("✅ Landing failsafe: bought " + pick.item.name + " ×" + pick.qty + " and flew home.")
       : ("⚠️ Bought " + pick.item.name + " ×" + pick.qty + ", but auto-fly-home failed (" + flyRes.reason + ") — fly home manually.");
     logFailsafe(msg); showFailsafeAlert(msg, true);
+    finish();
   }
   function checkFailsafeTimer() {
     try {
