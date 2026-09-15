@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.6
+// @version      1.99.7
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -822,10 +822,15 @@
       const basisNote = state.priceBasis === "trader" ? " · ⚡ Trader Instant Prices" : " · 🛒 Item Market Avg";
       setStatus("Updated " + new Date().toLocaleTimeString() + locNote + basisNote);
       armLandingRefresh();
+      state._lastRefreshErr = null; // success - clear any earlier failure so callers checking it know this one worked
     } catch (e) {
       const msg = e.message || "";
       const isYata = e.url && e.url.indexOf("yata.yt") !== -1;
       const down = e.kind === "timeout" || e.kind === "network" || e.status >= 500;
+      // This is swallowed here (never re-thrown) so callers awaiting refresh() never see an exception even when it
+      // fails - stash the reason so anything that needs to know WHY data stayed stale (e.g. the failsafe's
+      // fire-time safety net) can actually find out, instead of silently proceeding on empty/unchanged state.
+      state._lastRefreshErr = msg || (e && e.kind) || "unknown error";
       if (KEYERR.test(msg)) {
         statusKeyError(msg.replace(/^Torn API:\s*/, ""));
       } else if (isYata && down) {
@@ -2616,6 +2621,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.7", d: "Sep 15, 2026", c: ["🐛 Landing failsafe: still seeing empty stock data + null cash + 'nothing profitable' on some live landings even after v1.99.3-1.99.5's fixes. Root cause: refresh() swallows its own errors internally (bad key, YATA outage, network blip) and never throws — so the failsafe's safety-net await refresh() was resolving as if it succeeded even when it silently failed, leaving no trace of why. Now refresh() stashes its last error, and the failsafe log records it directly (⚠️ board/cash data failed to load: ...) when data still comes back empty after trying — so if this happens again, the log itself will finally say why instead of just showing blank data with no explanation."] },
     { v: "1.99.6", d: "Sep 15, 2026", c: ["🛟 Landing failsafe now buys a full profitable LOAD instead of just one item. Previously if the single best-profit item couldn't use your whole capacity or cash (e.g. cash only covers 1 Xanax), the rest of your slots and money just sat unused. Now it fills the remainder with the next-best affordable item(s), same greedy fill the board's own \"Best trip\" feature already uses. The action log now records the full list of items bought, total cost, and total profit instead of just one."] },
     { v: "1.99.5", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: now uses the exact flight time it already knows (the same figure behind the ✈ countdown and the 15s immunity banner) to schedule a precise, one-shot full data refresh timed to your arrival, instead of just waiting on the background poll. `armLandingRefresh()` already existed for this but was only ever wired into the panel-open refresh path - now the panel-closed background poller arms it too, the moment it learns you're flying. Board prices/stock + cash should now be genuinely fresh right as you touch down, not just eventually."] },
     { v: "1.99.4", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: added instant landing detection via the page's own DOM, on top of the existing 10s background poll. Turns out Torn doesn't actually reload the travel page when you land (checked - it re-renders itself in place), so there's no navigation event to hook, but watching for the \"Travel home\" link to appear (it only exists once you're actually standing in the shop) reacts the moment it shows up instead of waiting for the next poll tick. Shaves up to 10s off both landing detection and how soon the background data refresh (v1.99.3) starts."] },
@@ -3799,6 +3805,7 @@
     bought: "🛒 bought", bought_partial: "🛒 partially bought", no_profitable_pick: "🚫 nothing profitable", not_on_shop_page: "📵 not on shop page",
     buy_failed: "❌ buy failed", aborted_before_buy: "🛑 aborted (toggle/captcha)"
   };
+  const esc2 = function (s) { return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); };
   function renderFailsafeEvents() {
     const el = host && host.querySelector("#tdk-fs-events"); if (!el) return;
     const log = GM_getValue("failsafe_events", []);
@@ -3815,8 +3822,9 @@
       const cashTxt = "cash " + (e.cashAtLanding != null ? "$" + e.cashAtLanding.toLocaleString() : "?") + (picks.length ? " → ~$" + Math.max(0, (e.cashAtLanding || 0) - totalCost).toLocaleString() + " est." : "");
       const pickTxt = picks.length ? (picks.map(function (p) { return p.name + " ×" + p.qty; }).join(", ") + " (~$" + totalCost.toLocaleString() + (e.filled != null ? ", " + e.filled + "/" + state.cap + " slots" : "") + ")") : "—";
       const flyTxt = e.flyResult ? (e.flyResult.ok ? "✅ flew home" : "⚠️ fly failed: " + e.flyResult.reason) : "";
+      const errTxt = e.dataRefreshErr ? ("<br><span style='color:#e2707a'>⚠️ board/cash data failed to load: " + esc2(e.dataRefreshErr) + "</span>") : "";
       return "<div style='margin-bottom:5px'>" + when + " · " + (e.country || e.cc || "?") + " · in " + inTxt + " → out " + outTxt + " (" + dur + ")" +
-        (e.captchaHit ? " · 🛑 captcha" : "") + "<br>" + (FS_DECISION_LABEL[e.decision] || e.decision) + ": " + pickTxt + " · " + cashTxt + (flyTxt ? " · " + flyTxt : "") + "</div>";
+        (e.captchaHit ? " · 🛑 captcha" : "") + "<br>" + (FS_DECISION_LABEL[e.decision] || e.decision) + ": " + pickTxt + " · " + cashTxt + (flyTxt ? " · " + flyTxt : "") + errTxt + "</div>";
     }).join("");
   }
   const dur2 = function (secs) { const m = Math.floor(secs / 60), s = secs % 60; return m ? (m + "m" + s + "s") : (s + "s"); };
@@ -3970,7 +3978,15 @@
     const cc = state.loc;
     // Safety net for the background refresh kicked off at arm-time (applyTravelState) - if it's still in flight,
     // hasn't started, or failed, don't judge "nothing profitable" off empty/stale data. One bounded attempt.
-    if (!state.rows || !state.rows.length || state.cash == null) { try { await refresh(true); } catch (e) { } }
+    // refresh() swallows its own errors (never throws), so a bad key/YATA outage/network blip would otherwise
+    // resolve silently here and leave state.rows/cash exactly as empty as before - check _lastRefreshErr after so
+    // the log actually shows WHY, instead of just recording an empty stockSnapshot with no explanation.
+    let dataRefreshErr = null;
+    if (!state.rows || !state.rows.length || state.cash == null) {
+      state._lastRefreshErr = null;
+      try { await refresh(true); } catch (e) { }
+      if (!state.rows || !state.rows.length || state.cash == null) dataRefreshErr = state._lastRefreshErr || "refresh completed but rows/cash still empty (no error thrown)";
+    }
     const rec = {
       type: "landing", t: Date.now(),
       landedAt: track.landedAt || state._landedAt || null,
@@ -3981,6 +3997,7 @@
       stockSnapshot: failsafeStockSnapshot(cc),
       onShopPage: TRAVEL_PAGE.test(location.href),
       captchaHit: !!track.captchaHit,
+      dataRefreshErr: dataRefreshErr,
       decision: null, pick: null, buyResult: null, flyResult: null, leftAt: null
     };
     const finish = function () { logFailsafeEvent(rec); state._failsafeTrack = null; };
