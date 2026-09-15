@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.7
+// @version      1.99.8
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2621,6 +2621,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.8", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: the fire-time board/cash data check now retries once (with a short pause between) if the first attempt comes back empty, instead of giving up after a single try. A transient blip - a slow YATA response, a momentary network hiccup - shouldn't cost the whole trip if a second attempt seconds later would have worked. Only kicks in when data actually looks stale/missing; skips straight through when the arm-time background refresh already did its job."] },
     { v: "1.99.7", d: "Sep 15, 2026", c: ["🐛 Landing failsafe: still seeing empty stock data + null cash + 'nothing profitable' on some live landings even after v1.99.3-1.99.5's fixes. Root cause: refresh() swallows its own errors internally (bad key, YATA outage, network blip) and never throws — so the failsafe's safety-net await refresh() was resolving as if it succeeded even when it silently failed, leaving no trace of why. Now refresh() stashes its last error, and the failsafe log records it directly (⚠️ board/cash data failed to load: ...) when data still comes back empty after trying — so if this happens again, the log itself will finally say why instead of just showing blank data with no explanation."] },
     { v: "1.99.6", d: "Sep 15, 2026", c: ["🛟 Landing failsafe now buys a full profitable LOAD instead of just one item. Previously if the single best-profit item couldn't use your whole capacity or cash (e.g. cash only covers 1 Xanax), the rest of your slots and money just sat unused. Now it fills the remainder with the next-best affordable item(s), same greedy fill the board's own \"Best trip\" feature already uses. The action log now records the full list of items bought, total cost, and total profit instead of just one."] },
     { v: "1.99.5", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: now uses the exact flight time it already knows (the same figure behind the ✈ countdown and the 15s immunity banner) to schedule a precise, one-shot full data refresh timed to your arrival, instead of just waiting on the background poll. `armLandingRefresh()` already existed for this but was only ever wired into the panel-open refresh path - now the panel-closed background poller arms it too, the moment it learns you're flying. Board prices/stock + cash should now be genuinely fresh right as you touch down, not just eventually."] },
@@ -3977,15 +3978,19 @@
     const track = state._failsafeTrack || {};
     const cc = state.loc;
     // Safety net for the background refresh kicked off at arm-time (applyTravelState) - if it's still in flight,
-    // hasn't started, or failed, don't judge "nothing profitable" off empty/stale data. One bounded attempt.
-    // refresh() swallows its own errors (never throws), so a bad key/YATA outage/network blip would otherwise
-    // resolve silently here and leave state.rows/cash exactly as empty as before - check _lastRefreshErr after so
-    // the log actually shows WHY, instead of just recording an empty stockSnapshot with no explanation.
+    // hasn't started, or failed, don't judge "nothing profitable" off empty/stale data. Up to 2 attempts (a brief
+    // pause between, not back-to-back hammering) before giving up - a single bounded attempt wasn't enough; a
+    // transient blip on try 1 (network hiccup, YATA momentarily slow) shouldn't cost the whole trip if try 2 would
+    // have worked. refresh() swallows its own errors (never throws), so a bad key/YATA outage/network blip would
+    // otherwise resolve silently here and leave state.rows/cash exactly as empty as before - check _lastRefreshErr
+    // after each attempt so the log actually shows WHY if both fail, instead of just an empty stockSnapshot.
     let dataRefreshErr = null;
-    if (!state.rows || !state.rows.length || state.cash == null) {
+    for (let attempt = 1; attempt <= 2 && (!state.rows || !state.rows.length || state.cash == null); attempt++) {
       state._lastRefreshErr = null;
       try { await refresh(true); } catch (e) { }
-      if (!state.rows || !state.rows.length || state.cash == null) dataRefreshErr = state._lastRefreshErr || "refresh completed but rows/cash still empty (no error thrown)";
+      const stillEmpty = !state.rows || !state.rows.length || state.cash == null;
+      dataRefreshErr = stillEmpty ? (state._lastRefreshErr || "refresh completed but rows/cash still empty (no error thrown)") : null;
+      if (stillEmpty && attempt < 2) { logFailsafe("↻ Data check " + attempt + " came back empty (" + dataRefreshErr + ") — retrying once more..."); await sleep(jitter(800, 400)); }
     }
     const rec = {
       type: "landing", t: Date.now(),
