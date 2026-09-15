@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.4
+// @version      1.99.5
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2616,6 +2616,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.5", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: now uses the exact flight time it already knows (the same figure behind the ✈ countdown and the 15s immunity banner) to schedule a precise, one-shot full data refresh timed to your arrival, instead of just waiting on the background poll. `armLandingRefresh()` already existed for this but was only ever wired into the panel-open refresh path - now the panel-closed background poller arms it too, the moment it learns you're flying. Board prices/stock + cash should now be genuinely fresh right as you touch down, not just eventually."] },
     { v: "1.99.4", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: added instant landing detection via the page's own DOM, on top of the existing 10s background poll. Turns out Torn doesn't actually reload the travel page when you land (checked - it re-renders itself in place), so there's no navigation event to hook, but watching for the \"Travel home\" link to appear (it only exists once you're actually standing in the shop) reacts the moment it shows up instead of waiting for the next poll tick. Shaves up to 10s off both landing detection and how soon the background data refresh (v1.99.3) starts."] },
     { v: "1.99.3", d: "Sep 15, 2026", c: ["🐛 Landing failsafe: fixed it flying you home with an EMPTY hand because it never actually had real board/price data to judge with. v1.99.2 fixed landing-detection with the panel closed, but the board (stock/price) data and your cash still only ever loaded when the panel was open - so a panel-closed test correctly detected landing, correctly waited, correctly checked the shop page, and correctly found nothing to buy... because it had zero stock data and null cash to work with, not because Canada was actually empty. Confirmed live: a real run logged an empty stockSnapshot + null cash + 'no_profitable_pick' + a successful auto-fly-home, all technically correct given what it knew, which was nothing. Now kicks off a full data refresh the moment it detects landing (well ahead of the 15-60s delay), plus a fallback wait-for-it check right at fire time in case that hasn't finished yet."] },
     { v: "1.99.2", d: "Sep 15, 2026", c: ["🐛 Fixed the landing failsafe never firing AT ALL when the panel wasn't opened during the flight (a live Mexico test sat for 8+ minutes with zero log entries). The fast background poll that's supposed to catch landing only checked Torn's API if it already believed you were mid-flight - but that belief is only ever set by a check that itself needs the panel open. With the panel closed the whole flight (exactly the AFK scenario this feature is for), it never got the chance to find out you were flying in the first place, so it kept skipping its own check forever. Removed that circular gate - it now always polls every 10s while the toggle is on, panel open or not."] },
@@ -4060,7 +4061,16 @@
     // MUST include "basic" (or detectTravel()'s j.status check fails) - travel-only was silently corrupting
     // state.travelWhere to "unknown" every 10s while this poller ran, breaking the flying/landed detection
     // used elsewhere (e.g. the immunity-countdown banner showed leftover flight time mislabeled as immunity).
-    try { applyTravelState(await gmGet("https://api.torn.com/user/?selections=travel,basic&key=" + encodeURIComponent(key))); } catch (e) { }
+    try {
+      applyTravelState(await gmGet("https://api.torn.com/user/?selections=travel,basic&key=" + encodeURIComponent(key)));
+      // The exact flight duration is already known here (state.flyEta, from Torn's own travel.timestamp) - use it
+      // instead of just blind-polling every 10s. armLandingRefresh() (existing, previously only ever called from
+      // the full refresh()) schedules a ONE-SHOT precise refresh for flyEta+2s from now: a real full data load
+      // (board prices/stock + cash - the exact thing v1.99.3 needed) timed to land right as you touch down,
+      // rather than waiting on the next poll tick to notice. Cheap/idempotent to call every 10s while flying -
+      // it just re-arms the same timer with the latest (very stable) ETA each time.
+      armLandingRefresh();
+    } catch (e) { }
   }
   setInterval(pollTravelForFailsafe, 10000);
   // Instant landing detection via DOM, on top of the 10s poll above. Torn doesn't actually reload this page when
