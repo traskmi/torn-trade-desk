@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.2
+// @version      1.99.3
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -204,6 +204,12 @@
         const t = { arrTs: arrTs, landedAt: Date.now(), delayMs: 15000 + Math.random() * 45000, cc: tw.cc, cashAtLanding: state.cash, firedFor: 0 };
         try { GM_setValue("failsafe_track", t); } catch (e) { }
         state._landedAt = t.landedAt; state._landedDelayMs = t.delayMs; state._failsafeTrack = t; state._failsafeFiredFor = 0;
+        // Kick off a full data refresh right now (board prices/stock + cash), not just at fire time - if the panel
+        // was never opened this session, state.rows/state.cash can otherwise still be empty/null when the failsafe
+        // fires (seen live: it correctly armed+fired+flew home with the panel closed, but with an empty stock
+        // snapshot and null cash, because nothing had ever loaded real data). Fire-and-forget; by the time the
+        // 15-60s delay elapses this should have long since landed.
+        if (state.autoFailsafe) { try { refresh(true); } catch (e) { } }
       } else if (!state._landedAt) {
         // Same stay abroad, but THIS script instance hasn't picked up the in-progress countdown yet (e.g. a page
         // reload happened mid-wait) - rehydrate from the persisted record instead of losing/restarting the timer.
@@ -753,7 +759,13 @@
     }
   }
   async function refresh(silent) {
-    if (state._refreshing) return; // don't overlap (manual click + auto-refresh)
+    if (state._refreshing) {
+      // Another refresh is already in flight (e.g. one the failsafe kicked off in the background right after
+      // landing) - wait for it instead of silently no-op'ing, so a caller that actually needs fresh data (like
+      // the failsafe's fire-time safety net) doesn't proceed on stale/empty state thinking it just refreshed.
+      for (let i = 0; i < 40 && state._refreshing; i++) await sleep(250);
+      return;
+    }
     const key = tornKey();
     if (!key) { if (!silent) setStatus("Need a Torn API key.", true); return; }
     state._refreshing = true; state._lastRefreshAt = Date.now();
@@ -2604,6 +2616,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.3", d: "Sep 15, 2026", c: ["🐛 Landing failsafe: fixed it flying you home with an EMPTY hand because it never actually had real board/price data to judge with. v1.99.2 fixed landing-detection with the panel closed, but the board (stock/price) data and your cash still only ever loaded when the panel was open - so a panel-closed test correctly detected landing, correctly waited, correctly checked the shop page, and correctly found nothing to buy... because it had zero stock data and null cash to work with, not because Canada was actually empty. Confirmed live: a real run logged an empty stockSnapshot + null cash + 'no_profitable_pick' + a successful auto-fly-home, all technically correct given what it knew, which was nothing. Now kicks off a full data refresh the moment it detects landing (well ahead of the 15-60s delay), plus a fallback wait-for-it check right at fire time in case that hasn't finished yet."] },
     { v: "1.99.2", d: "Sep 15, 2026", c: ["🐛 Fixed the landing failsafe never firing AT ALL when the panel wasn't opened during the flight (a live Mexico test sat for 8+ minutes with zero log entries). The fast background poll that's supposed to catch landing only checked Torn's API if it already believed you were mid-flight - but that belief is only ever set by a check that itself needs the panel open. With the panel closed the whole flight (exactly the AFK scenario this feature is for), it never got the chance to find out you were flying in the first place, so it kept skipping its own check forever. Removed that circular gate - it now always polls every 10s while the toggle is on, panel open or not."] },
     { v: "1.99.1", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: two fixes from a real live test. (1) It was firing multiple times for the same landing if you had Torn open in several tabs at once (common for this user) — each tab raced to arm/fire independently. Added a fresh re-check-then-claim right before any tab commits to acting, so only one tab ever actually buys/flies for a given landing. (2) If the tab wasn't on the abroad shop page when it fired, it used to just alert and give up — now it navigates that tab to the shop page itself and picks the sequence back up from there, instead of relying on you seeing and acting on the alert. Real trigger for both: user got mugged for $1.45M during a live test — the log showed it correctly picked Xanax ×28 three separate times but never bought, because none of the firing tabs were on the shop page and the alert went unseen while at work."] },
     { v: "1.99.0", d: "Sep 15, 2026", c: ["🛟 Reworked how the landing failsafe arms, per user feedback that v1.98.2's fix was still fragile: instead of needing to CATCH the exact flying→abroad transition (easy to miss across a page reload), it's now keyed off arrivalTs itself - a stable id for 'this stay abroad' that doesn't change until you board a new flight. The whole countdown (landed-at time, the random 15-60s delay, cash snapshot) is persisted to storage the instant it starts, so it survives ANY reload during the wait, not just the initial landing moment, and won't double-fire for the same stay abroad afterward either."] },
@@ -3939,6 +3952,9 @@
   async function failsafeExecute() {
     const track = state._failsafeTrack || {};
     const cc = state.loc;
+    // Safety net for the background refresh kicked off at arm-time (applyTravelState) - if it's still in flight,
+    // hasn't started, or failed, don't judge "nothing profitable" off empty/stale data. One bounded attempt.
+    if (!state.rows || !state.rows.length || state.cash == null) { try { await refresh(true); } catch (e) { } }
     const rec = {
       type: "landing", t: Date.now(),
       landedAt: track.landedAt || state._landedAt || null,
