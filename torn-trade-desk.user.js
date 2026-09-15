@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.0
+// @version      1.99.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2604,6 +2604,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.1", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: two fixes from a real live test. (1) It was firing multiple times for the same landing if you had Torn open in several tabs at once (common for this user) — each tab raced to arm/fire independently. Added a fresh re-check-then-claim right before any tab commits to acting, so only one tab ever actually buys/flies for a given landing. (2) If the tab wasn't on the abroad shop page when it fired, it used to just alert and give up — now it navigates that tab to the shop page itself and picks the sequence back up from there, instead of relying on you seeing and acting on the alert. Real trigger for both: user got mugged for $1.45M during a live test — the log showed it correctly picked Xanax ×28 three separate times but never bought, because none of the firing tabs were on the shop page and the alert went unseen while at work."] },
     { v: "1.99.0", d: "Sep 15, 2026", c: ["🛟 Reworked how the landing failsafe arms, per user feedback that v1.98.2's fix was still fragile: instead of needing to CATCH the exact flying→abroad transition (easy to miss across a page reload), it's now keyed off arrivalTs itself - a stable id for 'this stay abroad' that doesn't change until you board a new flight. The whole countdown (landed-at time, the random 15-60s delay, cash snapshot) is persisted to storage the instant it starts, so it survives ANY reload during the wait, not just the initial landing moment, and won't double-fire for the same stay abroad afterward either."] },
     { v: "1.98.2", d: "Sep 15, 2026", c: ["🐛 Fixed the landing failsafe never actually arming: it only recognized a flying→abroad transition by comparing to an in-memory 'previous state' that lived purely in JS variables - but Torn reloads/re-renders the travel page right when you land, which wipes a userscript's whole state. A fresh script instance never actually saw you WERE flying, so it only ever observed 'abroad' from a blank slate and the failsafe silently never fired, no matter how long you waited. Now persisted to GM storage so it survives the reload. Caught live testing (mouse untouched 60+ seconds, nothing happened)."] },
     { v: "1.98.1", d: "Sep 15, 2026", c: ["🐛 Fixed a bug from the v1.96.0 landing failsafe: its fast 10s travel-status poll only requested the 'travel' selection, missing 'basic' (which carries the status field flying/landed detection actually reads) — while armed and flying, it was silently corrupting your travel state to 'unknown' every 10s. Visible symptom: the 🛡️ Immunity banner showing your remaining FLIGHT time mislabeled as an immunity countdown (300+ seconds instead of the real ~15s window). Added 'basic' back to that poll; flying/landed detection is accurate again while the failsafe is on."] },
@@ -3028,7 +3029,7 @@
         '<div id="tdk-set-tdetect" class="ssub"></div>' +
         '<div class="sl" style="margin-top:16px">🛒 Item Market page <small>— extras injected directly onto torn.com\'s own Item Market</small></div>' +
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-imannot"' + (state.imAnnotate ? ' checked' : '') + '> Show the price banner &amp; crossed-market ⚡ tags on the Item Market page <small>(off by default — market value / cheapest bazaar / top bid info + a per-listing flip tag)</small></label></div>' +
-        '<div class="sl" style="margin-top:16px">🛟 Landing failsafe <small>— for when you land and get sidetracked. If you take no action for a bit after touchdown, this fires an alert (flashing banner · sound · notification · vibration) AND, if you\'re on the abroad shop page (Travel Agency), <b>auto-buys the best pick and flies you home</b> — same as clicking it yourself, just automated. Off the shop page it only alerts (can\'t safely buy from elsewhere). <b>This is real automated gameplay — a genuine Torn ban risk if flagged.</b> A captcha appearing anywhere force-disables it immediately.</small></div>' +
+        '<div class="sl" style="margin-top:16px">🛟 Landing failsafe <small>— for when you land and get sidetracked. If you take no action for a bit after touchdown, this fires an alert (flashing banner · sound · notification · vibration) and <b>auto-buys the best pick and flies you home</b> — same as clicking it yourself, just automated. If this browser tab isn\'t on the abroad shop page when it fires, it navigates the tab there itself first, then acts. <b>This is real automated gameplay — a genuine Torn ban risk if flagged.</b> A captcha appearing anywhere force-disables it immediately. Safe with multiple Torn tabs open — only one will ever act on a given landing.</small></div>' +
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-fsafe"' + (state.autoFailsafe ? ' checked' : '') + (state._captchaHalted ? ' disabled' : '') + '> Enable landing failsafe' + (state._captchaHalted ? ' <small style="color:#e2707a">— OFF: a captcha was detected last session, re-check the box to re-arm</small>' : '') + '</label></div>' +
         '<div class="srow ssub">Alerts after a random 15–60s of no activity on the page after landing <small>(varies each time on purpose, not a fixed timer)</small></div>' +
         '<div id="tdk-fs-log" class="ssub"></div>' +
@@ -3739,18 +3740,22 @@
     v.title = n > 0 ? n + " new/changed Torn module" + (n === 1 ? "" : "s") + " since you last looked — click for the build watcher" : "View changelog";
   }
 
-  /* ---------- Landing failsafe (v1.96.0-1.97.0) ----------
+  /* ---------- Landing failsafe (v1.96.0-1.99.1) ----------
    * Problem: land abroad with a big cash load, get sidetracked, sit there un-bought, and get mugged.
-   * Arms on a real flying→abroad transition, and if there's been NO page activity since landing for a random
-   * 15-60s (varies each landing - a fixed timer is an easy bot tell), fires an alert AND, if you're on the abroad
-   * shop page (torn.com/page.php?sid=travel), auto-buys the best affordable in-stock pick and flies you home -
-   * the exact same DOM clicks a human would make (fill qty → Buy → confirm Yes; Travel home → confirm Travel Back),
-   * verified live against the real page structure. THIS IS REAL AUTOMATED GAMEPLAY: submitting a purchase and a
-   * flight with no click from the user is the kind of unattended action Torn's rules treat as botting - a real
-   * ban risk if detected. The user was told this explicitly (twice, with an AskUserQuestion risk confirmation)
-   * and accepted it, asking specifically for an on/off toggle and a captcha kill-switch as guardrails - both are
-   * here. A captcha appearing anywhere on the page force-disables the feature immediately (persisted off),
-   * regardless of what triggered it - treat that as the sole safety net, not a guarantee. */
+   * Arms off arrivalTs (a stable id for "this stay abroad", survives page reloads via GM storage - see
+   * applyTravelState), and if there's been no page activity since landing for a random 15-60s (varies each
+   * landing - a fixed timer is an easy bot tell), fires an alert and auto-buys the best affordable in-stock
+   * PROFITABLE pick, then flies home - the exact same DOM clicks a human would make (fill qty → Buy → confirm
+   * Yes; Travel home → confirm Travel Back), verified live against the real page structure. If the tab isn't on
+   * the abroad shop page when it fires, it navigates there itself once, then the next timer tick picks the
+   * sequence back up (see the !rec.onShopPage branch in failsafeExecute). THIS IS REAL AUTOMATED GAMEPLAY:
+   * submitting a purchase and a flight with no click from the user is the kind of unattended action Torn's rules
+   * treat as botting - a real ban risk if detected. The user was told this explicitly (twice, with an
+   * AskUserQuestion risk confirmation) and accepted it, asking specifically for an on/off toggle and a captcha
+   * kill-switch as guardrails - both are here. A captcha appearing anywhere on the page force-disables the
+   * feature immediately (persisted off), regardless of what triggered it - treat that as the sole safety net,
+   * not a guarantee. claimFire() guards against multiple open Torn tabs (common for this user) all racing to act
+   * on the same landing - only the first to win a fresh read-then-write of the persisted record proceeds. */
   function logFailsafe(msg) {
     try { const log = GM_getValue("failsafe_log", []); log.unshift({ t: Date.now(), msg: msg }); GM_setValue("failsafe_log", log.slice(0, 50)); } catch (e) { }
   }
@@ -3914,6 +3919,22 @@
     confirmBtn.click();
     return { ok: true };
   }
+  const SHOP_URL = "https://www.torn.com/page.php?sid=travel";
+  // Re-checks the persisted record FRESH and claims this landing as "fired" right before committing to a terminal
+  // action (buy, fly-with-no-pick, give-up). GM storage has no true atomic test-and-set, but having every tab
+  // re-read immediately before acting - instead of trusting a flag it cached earlier - closes almost all of the
+  // window where two tabs open on Torn at once (common for this user) both think they're the one to act. Returns
+  // false if another tab already claimed this exact landing.
+  function claimFire() {
+    try {
+      const t = GM_getValue("failsafe_track", null);
+      if (!t || t.arrTs !== (state._failsafeTrack && state._failsafeTrack.arrTs)) return false;
+      if (t.firedFor === state._landedAt) return false;
+      t.firedFor = state._landedAt; GM_setValue("failsafe_track", t);
+      state._failsafeFiredFor = state._landedAt;
+      return true;
+    } catch (e) { return false; }
+  }
   async function failsafeExecute() {
     const track = state._failsafeTrack || {};
     const cc = state.loc;
@@ -3931,23 +3952,40 @@
     };
     const finish = function () { logFailsafeEvent(rec); state._failsafeTrack = null; };
     const pick = failsafeBestPick();
+    // Not on the shop page - navigate THIS tab there and let the next timer tick (after reload) pick the sequence
+    // back up naturally, instead of just alerting into the void. Doesn't claim/finish (not a terminal outcome) -
+    // only navigates once per landing (persisted "navigated" flag) so a repeated failure can't loop forever.
+    if (!rec.onShopPage) {
+      const already = track.navigated;
+      if (!already) {
+        rec.pick = pick ? { name: pick.item.name, id: pick.item.id, qty: pick.qty, cost: pick.cost, stock: pick.item.stock, ppi: pick.item.ppi } : null;
+        const msg = pick
+          ? ("⏱ Landing failsafe — best pick is " + pick.item.name + " ×" + pick.qty + " (~$" + pick.cost.toLocaleString() + "). Navigating to the shop page to act...")
+          : "⏱ Landing failsafe — nothing profitable to buy, navigating to the shop page to fly you home...";
+        logFailsafe(msg); showFailsafeAlert(msg, true);
+        try { const t = GM_getValue("failsafe_track", null); if (t && t.arrTs === track.arrTs) { t.navigated = true; GM_setValue("failsafe_track", t); } } catch (e) { }
+        if (state._failsafeTrack) state._failsafeTrack.navigated = true; // also update the local copy so a re-tick before the page actually unloads doesn't re-navigate
+        await sleep(jitter(400, 400));
+        if (state.autoFailsafe && !state._captchaHalted) location.href = SHOP_URL;
+        return; // no finish() - this isn't terminal, the reload picks it back up
+      }
+      // Already tried navigating once and we're STILL not on the shop page - give up cleanly rather than loop.
+      if (!claimFire()) return;
+      rec.decision = "not_on_shop_page";
+      const msg = "⚠️ Landing failsafe: tried navigating to the shop page but couldn't get there. Go buy/fly home manually.";
+      logFailsafe(msg); showFailsafeAlert(msg, true);
+      finish(); return;
+    }
+    if (!claimFire()) { logFailsafe("↩️ Stood down — another tab already handled this landing."); return; }
     if (!pick) {
       rec.decision = "no_profitable_pick";
-      const msg = "⏱ Landing failsafe — you've gone quiet since touchdown and nothing here is both in-stock/affordable AND actually profitable right now. Nothing to auto-buy (won't buy a loser just to buy something); fly home if you're AFK.";
+      const msg = "⏱ Landing failsafe — you've gone quiet since touchdown and nothing here is both in-stock/affordable AND actually profitable right now. Nothing to auto-buy (won't buy a loser just to buy something); flying you home.";
       logFailsafe(msg); showFailsafeAlert(msg, true);
-      if (rec.onShopPage) {
-        const r = await domFlyHome(); rec.flyResult = r; rec.leftAt = r.ok ? Date.now() : null;
-        logFailsafe(r.ok ? "✅ Auto-flew home (no pick)." : "⚠️ Auto-fly-home failed: " + r.reason);
-      }
+      const r = await domFlyHome(); rec.flyResult = r; rec.leftAt = r.ok ? Date.now() : null;
+      logFailsafe(r.ok ? "✅ Auto-flew home (no pick)." : "⚠️ Auto-fly-home failed: " + r.reason);
       finish(); return;
     }
     rec.pick = { name: pick.item.name, id: pick.item.id, qty: pick.qty, cost: pick.cost, stock: pick.item.stock, ppi: pick.item.ppi };
-    if (!rec.onShopPage) {
-      rec.decision = "not_on_shop_page";
-      const msg = "⏱ Landing failsafe — best pick was " + pick.item.name + " ×" + pick.qty + " (~$" + pick.cost.toLocaleString() + "), but you're not on the travel/shop page so I can't auto-buy from here. Go do it now!";
-      logFailsafe(msg); showFailsafeAlert(msg, true);
-      finish(); return;
-    }
     showFailsafeAlert("⏱ Landing failsafe firing — auto-buying " + pick.item.name + " ×" + pick.qty + " and flying home...", true);
     await sleep(jitter(300, 500)); // one more beat before the money-spending step, and a final chance to catch a toggle-off
     if (!state.autoFailsafe || state._captchaHalted) {
@@ -3978,15 +4016,15 @@
     try {
       if (!state.autoFailsafe || state._captchaHalted) return;
       if (state.travelWhere !== "abroad" || !state._landedAt) return;
-      if (state._failsafeFiredFor === state._landedAt) return; // already fired for this landing
+      if (state._failsafeRunning) return; // this tab is already mid-sequence for this landing
+      if (state._failsafeFiredFor === state._landedAt) return; // this tab already finished (terminal) for this landing
       const sinceLanding = Date.now() - state._landedAt;
       if (sinceLanding < (state._landedDelayMs || 30000)) return;
       if (state._lastActivityAt >= state._landedAt) return; // you've touched the page since landing — stand down
-      state._failsafeFiredFor = state._landedAt;
-      // Persist the "fired" flag onto the same record so a reload mid-execution (or right after) doesn't re-arm
-      // and fire a second time for this same stay abroad.
-      try { const t = GM_getValue("failsafe_track", null); if (t && t.arrTs === (state._failsafeTrack && state._failsafeTrack.arrTs)) { t.firedFor = state._landedAt; GM_setValue("failsafe_track", t); } } catch (e) { }
-      failsafeExecute().catch(function (e) { logFailsafe("⚠️ Failsafe execution error: " + (e && e.message || e)); });
+      state._failsafeRunning = true;
+      failsafeExecute()
+        .catch(function (e) { logFailsafe("⚠️ Failsafe execution error: " + (e && e.message || e)); })
+        .then(function () { state._failsafeRunning = false; }, function () { state._failsafeRunning = false; });
     } catch (e) { }
   }
   setInterval(checkFailsafeTimer, 3000);
