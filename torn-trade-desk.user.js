@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.1
+// @version      1.99.2
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2604,6 +2604,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.2", d: "Sep 15, 2026", c: ["🐛 Fixed the landing failsafe never firing AT ALL when the panel wasn't opened during the flight (a live Mexico test sat for 8+ minutes with zero log entries). The fast background poll that's supposed to catch landing only checked Torn's API if it already believed you were mid-flight - but that belief is only ever set by a check that itself needs the panel open. With the panel closed the whole flight (exactly the AFK scenario this feature is for), it never got the chance to find out you were flying in the first place, so it kept skipping its own check forever. Removed that circular gate - it now always polls every 10s while the toggle is on, panel open or not."] },
     { v: "1.99.1", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: two fixes from a real live test. (1) It was firing multiple times for the same landing if you had Torn open in several tabs at once (common for this user) — each tab raced to arm/fire independently. Added a fresh re-check-then-claim right before any tab commits to acting, so only one tab ever actually buys/flies for a given landing. (2) If the tab wasn't on the abroad shop page when it fired, it used to just alert and give up — now it navigates that tab to the shop page itself and picks the sequence back up from there, instead of relying on you seeing and acting on the alert. Real trigger for both: user got mugged for $1.45M during a live test — the log showed it correctly picked Xanax ×28 three separate times but never bought, because none of the firing tabs were on the shop page and the alert went unseen while at work."] },
     { v: "1.99.0", d: "Sep 15, 2026", c: ["🛟 Reworked how the landing failsafe arms, per user feedback that v1.98.2's fix was still fragile: instead of needing to CATCH the exact flying→abroad transition (easy to miss across a page reload), it's now keyed off arrivalTs itself - a stable id for 'this stay abroad' that doesn't change until you board a new flight. The whole countdown (landed-at time, the random 15-60s delay, cash snapshot) is persisted to storage the instant it starts, so it survives ANY reload during the wait, not just the initial landing moment, and won't double-fire for the same stay abroad afterward either."] },
     { v: "1.98.2", d: "Sep 15, 2026", c: ["🐛 Fixed the landing failsafe never actually arming: it only recognized a flying→abroad transition by comparing to an in-memory 'previous state' that lived purely in JS variables - but Torn reloads/re-renders the travel page right when you land, which wipes a userscript's whole state. A fresh script instance never actually saw you WERE flying, so it only ever observed 'abroad' from a blank slate and the failsafe silently never fired, no matter how long you waited. Now persisted to GM storage so it survives the reload. Caught live testing (mouse untouched 60+ seconds, nothing happened)."] },
@@ -4032,8 +4033,12 @@
   // touched down" is caught within ~10s instead of waiting on the normal ~2.5min board auto-refresh cadence.
   async function pollTravelForFailsafe() {
     if (!state.autoFailsafe) return;
-    const pendingFire = state.travelWhere === "abroad" && state._landedAt && state._failsafeFiredFor !== state._landedAt;
-    if (state.travelWhere !== "flying" && !pendingFire) return;
+    // No "only if already flying" gate - that was circular. state.travelWhere only gets set by a check like this
+    // one (or a normal refresh, which needs the panel open); if the panel was never opened during a flight,
+    // travelWhere stays at its default forever and a "only check when already flying" gate never lets this run
+    // even once, so landing is never discovered. Just always poll while the toggle is on (10s cadence, ~6
+    // calls/min - well inside Torn's rate limit) so this works with the panel closed the whole flight, which is
+    // the exact scenario the failsafe exists for.
     const key = GM_getValue("torn_key", ""); if (!key) return;
     // MUST include "basic" (or detectTravel()'s j.status check fails) - travel-only was silently corrupting
     // state.travelWhere to "unknown" every 10s while this poller ran, breaking the flying/landed detection
