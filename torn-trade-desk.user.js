@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.98.1
+// @version      1.98.2
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -59,7 +59,7 @@
 
   /* ---------- state ---------- */
   const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "landing"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt"), boardView: GM_getValue("boardView", null), itemBlock: GM_getValue("item_block", {}), awardBlock: GM_getValue("award_block", {}), awardTypeFilter: "all", imAnnotate: GM_getValue("im_annotate", false),
-    autoFailsafe: GM_getValue("auto_failsafe", false), _prevTravelWhere: null, _landedAt: 0, _landedDelayMs: 0, _lastActivityAt: Date.now(), _failsafeFiredFor: 0, _captchaHalted: false, _failsafeTrack: null };
+    autoFailsafe: GM_getValue("auto_failsafe", false), _prevTravelWhere: GM_getValue("travel_prev_where", null), _landedAt: 0, _landedDelayMs: 0, _lastActivityAt: Date.now(), _failsafeFiredFor: 0, _captchaHalted: false, _failsafeTrack: null };
   function isMobile() { return (window.innerWidth || document.documentElement.clientWidth || 0) <= 560; } // matches the CSS breakpoint
   // One-time: make Landing (what'll be in stock when you arrive) the default board sort for existing installs still on the old $/min default.
   try { if (!GM_getValue("landing_default_v1", false)) { if (state.sort === "ppm") { state.sort = "landing"; GM_setValue("sort", "landing"); } GM_setValue("landing_default_v1", true); } } catch (e) { }
@@ -201,6 +201,10 @@
     }
     if (tw.where !== "abroad") { state._landedAt = 0; }
     state._prevTravelWhere = tw.where;
+    // Persisted (not just in-memory) because Torn reloads/re-renders the travel page on landing, which resets a
+    // userscript's whole JS state - without this, a fresh script instance never actually SEES the flying→abroad
+    // transition (it only ever observes "abroad" from a blank slate), so the failsafe silently never arms.
+    try { GM_setValue("travel_prev_where", tw.where); } catch (e) { }
     state.travelWhere = tw.where;
     state.loc = tw.where === "abroad" ? tw.cc : null;
     state.flyTo = tw.where === "flying" ? (tw.cc || null) : null;
@@ -2593,6 +2597,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.98.2", d: "Sep 15, 2026", c: ["🐛 Fixed the landing failsafe never actually arming: it only recognized a flying→abroad transition by comparing to an in-memory 'previous state' that lived purely in JS variables - but Torn reloads/re-renders the travel page right when you land, which wipes a userscript's whole state. A fresh script instance never actually saw you WERE flying, so it only ever observed 'abroad' from a blank slate and the failsafe silently never fired, no matter how long you waited. Now persisted to GM storage so it survives the reload. Caught live testing (mouse untouched 60+ seconds, nothing happened)."] },
     { v: "1.98.1", d: "Sep 15, 2026", c: ["🐛 Fixed a bug from the v1.96.0 landing failsafe: its fast 10s travel-status poll only requested the 'travel' selection, missing 'basic' (which carries the status field flying/landed detection actually reads) — while armed and flying, it was silently corrupting your travel state to 'unknown' every 10s. Visible symptom: the 🛡️ Immunity banner showing your remaining FLIGHT time mislabeled as an immunity countdown (300+ seconds instead of the real ~15s window). Added 'basic' back to that poll; flying/landed detection is accurate again while the failsafe is on."] },
     { v: "1.98.0", d: "Sep 15, 2026", c: ["📒 New detailed failsafe action log (⚙ Settings, under the landing failsafe section): a separate, structured record of every time it fires — cash you had at landing, a snapshot of stock levels at your location, exactly what (if anything) it chose to buy and why, any captcha hits, and time landed → time it flew you home. Shows the last 15 inline, plus a 📋 Copy full log (JSON) button for the full 200-entry history and a Clear button. This is in addition to the short plain-text status log from before, not a replacement."] },
     { v: "1.97.1", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: fixed a gap where it would auto-buy the least-bad item even if EVERYTHING at your location was currently a loss (cost more than resale). Now only ever picks a genuinely profitable item; if nothing qualifies, it just flies you home without buying anything."] },
