@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.9
+// @version      1.99.10
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2621,6 +2621,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.10", d: "Sep 15, 2026", c: ["📒 Failsafe log now records the FULL priced item list for the country (not just the top 8) in each landing's stockSnapshot, so you can actually audit a decision - e.g. confirm whether Insulin was genuinely out of stock or just didn't make an old truncated cut. Only visible in the 📋 Copy full log (JSON) export, not the compact inline view. Note: this still only covers items the board has real resale-price data for - anything with no priced/profitable read won't appear at all, that's a gap in the underlying data, not the log."] },
     { v: "1.99.9", d: "Sep 15, 2026", c: ["🎉 First confirmed live end-to-end success: landed, waited, auto-bought a full 28/28 load, flew home. 🐛 Small logging fix from that run: the failsafe log showed \"cash ?\" even though the buy itself worked fine - cashAtLanding is snapshotted at arm time by the lightweight poller, which doesn't fetch money, so it's usually still null. Now falls back to the known-good cash figure from fire time instead of showing a bare \"?\"."] },
     { v: "1.99.8", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: the fire-time board/cash data check now retries once (with a short pause between) if the first attempt comes back empty, instead of giving up after a single try. A transient blip - a slow YATA response, a momentary network hiccup - shouldn't cost the whole trip if a second attempt seconds later would have worked. Only kicks in when data actually looks stale/missing; skips straight through when the arm-time background refresh already did its job."] },
     { v: "1.99.7", d: "Sep 15, 2026", c: ["🐛 Landing failsafe: still seeing empty stock data + null cash + 'nothing profitable' on some live landings even after v1.99.3-1.99.5's fixes. Root cause: refresh() swallows its own errors internally (bad key, YATA outage, network blip) and never throws — so the failsafe's safety-net await refresh() was resolving as if it succeeded even when it silently failed, leaving no trace of why. Now refresh() stashes its last error, and the failsafe log records it directly (⚠️ board/cash data failed to load: ...) when data still comes back empty after trying — so if this happens again, the log itself will finally say why instead of just showing blank data with no explanation."] },
@@ -3789,10 +3790,15 @@
   function logFailsafeEvent(rec) {
     try { const log = GM_getValue("failsafe_events", []); log.unshift(rec); GM_setValue("failsafe_events", log.slice(0, 200)); } catch (e) { }
   }
+  // Full list (not just the top few) of every item the board currently has priced for this country, so the log
+  // can actually be used to audit a decision ("did it correctly skip Insulin because it was out of stock, or
+  // because something else ruled it out?") instead of just trusting a truncated top-N that might hide the
+  // relevant item entirely. Note: state.rows itself already excludes anything with no resale price data or a
+  // non-positive margin (refresh() drops those before a row is even created) - so an item's total absence here
+  // means "we have no profitable read on it right now," not necessarily "Torn doesn't sell it."
   function failsafeStockSnapshot(cc) {
     return (state.rows || []).filter(function (r) { return r.cc === cc; })
       .sort(function (a, b) { return b.ppi - a.ppi; })
-      .slice(0, 8)
       .map(function (r) { return { name: r.name, stock: r.stock, buy: r.buy, sell: r.sell, ppi: r.ppi }; });
   }
   function renderFailsafeLog() {
