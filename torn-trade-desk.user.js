@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.95.0
+// @version      1.96.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -58,7 +58,8 @@
   }
 
   /* ---------- state ---------- */
-  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "landing"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt"), boardView: GM_getValue("boardView", null), itemBlock: GM_getValue("item_block", {}), awardBlock: GM_getValue("award_block", {}), awardTypeFilter: "all", imAnnotate: GM_getValue("im_annotate", false) };
+  const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "landing"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt"), boardView: GM_getValue("boardView", null), itemBlock: GM_getValue("item_block", {}), awardBlock: GM_getValue("award_block", {}), awardTypeFilter: "all", imAnnotate: GM_getValue("im_annotate", false),
+    autoFailsafe: GM_getValue("auto_failsafe", false), failsafeDelay: GM_getValue("failsafe_delay", 30), _prevTravelWhere: null, _landedAt: 0, _lastActivityAt: Date.now(), _failsafeFiredFor: 0, _captchaHalted: false };
   function isMobile() { return (window.innerWidth || document.documentElement.clientWidth || 0) <= 560; } // matches the CSS breakpoint
   // One-time: make Landing (what'll be in stock when you arrive) the default board sort for existing installs still on the old $/min default.
   try { if (!GM_getValue("landing_default_v1", false)) { if (state.sort === "ppm") { state.sort = "landing"; GM_setValue("sort", "landing"); } GM_setValue("landing_default_v1", true); } } catch (e) { }
@@ -184,18 +185,28 @@
     return prices;
   }
 
+  // Applies a /user travel payload to state.travel* fields. Shared by the normal refresh cycle AND the fast
+  // failsafe poller below, so "just landed" is detected identically (and only once) from either path.
+  function applyTravelState(j) {
+    const tw = detectTravel(j);
+    // Landing failsafe: only arm off a REAL flying→abroad transition (not e.g. panel just loaded already-abroad),
+    // so it can't fire immediately on open/refresh — only after you actually touch down.
+    if (state._prevTravelWhere === "flying" && tw.where === "abroad") { state._landedAt = Date.now(); }
+    if (tw.where !== "abroad") { state._landedAt = 0; }
+    state._prevTravelWhere = tw.where;
+    state.travelWhere = tw.where;
+    state.loc = tw.where === "abroad" ? tw.cc : null;
+    state.flyTo = tw.where === "flying" ? (tw.cc || null) : null;
+    state.flyEta = tw.where === "flying" ? (tw.arriveIn || 0) : null;
+    state.arrivalTs = (j && j.travel && j.travel.timestamp) || 0;
+  }
   async function loadCash(key) {
     try {
       const j = await gmGet("https://api.torn.com/user/?selections=money,networth,basic,travel&key=" + encodeURIComponent(key));
       if (j && typeof j.money_onhand === "number") state.cash = j.money_onhand;
       if (j && j.networth && typeof j.networth.stockmarket === "number") state.stocks = j.networth.stockmarket;
       if (j && typeof j.level === "number") state.myLevel = j.level;
-      const tw = detectTravel(j);
-      state.travelWhere = tw.where;
-      state.loc = tw.where === "abroad" ? tw.cc : null;
-      state.flyTo = tw.where === "flying" ? (tw.cc || null) : null;
-      state.flyEta = tw.where === "flying" ? (tw.arriveIn || 0) : null;
-      state.arrivalTs = (j && j.travel && j.travel.timestamp) || 0;
+      applyTravelState(j);
     } catch (e) { /* non-fatal */ }
   }
   function focusCC() { return state.loc || (state.travelWhere === "flying" ? state.flyTo : null) || null; }
@@ -864,6 +875,11 @@
     .tdk-ntteaser{border:1px solid #4a90d9;background:#152230;color:#cfe3f7;border-radius:10px;padding:8px 11px;margin-bottom:9px;font-size:12.5px;cursor:pointer}
     .tdk-ntteaser:hover{background:#1a2a3d}
     .tdk-ntteaser b{color:#eaf3ff}.tdk-ntteaser .hv{color:#7fa8cf}
+    #tdk-fs-alert{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:999999;background:#4a1010;
+      border:2px solid #e04b4b;color:#ffd9d9;padding:12px 18px;border-radius:10px;font-size:14px;font-weight:700;
+      max-width:90vw;box-shadow:0 4px 24px rgba(0,0,0,.5);display:none;animation:tdkfsblink 1s step-start infinite;
+      cursor:pointer}
+    @keyframes tdkfsblink{50%{box-shadow:0 4px 24px rgba(224,75,75,.95)}}
     table.tdk{width:100%;border-collapse:collapse}
     table.tdk th{position:sticky;top:0;text-align:right;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#928b78;
       font-weight:700;padding:9px 14px;border-bottom:1px solid #3a3729;background:#201e17;white-space:nowrap}
@@ -2570,6 +2586,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.96.0", d: "Sep 15, 2026", c: ["🛟 New landing failsafe (⚙ Settings): built after a real $1.5M mugging from getting sidetracked right after landing abroad with a big cash load. Enable it and if you go quiet for 30-60s (your choice) after touchdown, you get a loud, hard-to-miss alert — flashing banner, tone, OS notification, vibration — with the best affordable in-stock pick already worked out, so you can act in one glance. <b>Auto-buying and auto-flying themselves aren't wired up yet</b> — that needs real Item-Market/Travel-agency button selectors captured from a live logged-in session, coming as a follow-up. A captcha appearing anywhere on the page force-disables the failsafe immediately, in case Torn's anti-bot systems ever flag anything this triggers."] },
     { v: "1.95.0", d: "Sep 7, 2026", c: ["🛒 The Item Market price banner (market value · cheapest bazaar · top bid · crossed-market ⚡ tags) is now <b>off by default</b> — it wasn't clear what it was doing there and it was more clutter than help for most. Turn it back on in ⚙ Settings → Item Market page if you want it; takes effect immediately, no refresh needed."] },
     { v: "1.94.0", d: "Sep 6, 2026", c: ["🖱️ The floating 💰 launcher is now drag-to-reposition instead of pinned to a corner. Bottom-right used to sit over the chat window's send icon; moving it to bottom-left (v1.86.0) then put it on top of Torn's own left-hand navigation menu on pages like the Item Market. Rather than keep guessing at a magic spot that works on every Torn page, just grab the button and drop it wherever's actually clear on your setup — it remembers where you put it. First run defaults to the old bottom-left spot; if you haven't moved it yet, drag it now."] },
     { v: "1.93.0", d: "Sep 2, 2026", c: ["🎯 Merits: hide/restore for Easy wins — a small 🚫 next to any easy-win row dismisses it (heuristic isn't perfect; use this for false positives or ones you're just not chasing), with a \"restore all\" link once anything's hidden. 🗂️ Also added a Type filter (Casino, Drugs, Combat, etc., pulled live from the catalog with counts) that narrows all three sections — Easy wins, Still to earn, Earned — at once, purely client-side so switching types is instant."] },
@@ -2986,6 +3003,12 @@
         '<div id="tdk-set-tdetect" class="ssub"></div>' +
         '<div class="sl" style="margin-top:16px">🛒 Item Market page <small>— extras injected directly onto torn.com\'s own Item Market</small></div>' +
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-imannot"' + (state.imAnnotate ? ' checked' : '') + '> Show the price banner &amp; crossed-market ⚡ tags on the Item Market page <small>(off by default — market value / cheapest bazaar / top bid info + a per-listing flip tag)</small></label></div>' +
+        '<div class="sl" style="margin-top:16px">🛟 Landing failsafe <small>— for when you land and get sidetracked. If you take no action for a bit after touchdown, this fires an escalating alert (flashing banner · sound · notification · vibration) with the best pick already worked out. <b>Auto-buying &amp; auto-flying themselves aren\'t built yet</b> (needs real Item-Market/Travel-agency selectors to do safely) — this alerts you loud enough to act in time instead.</small></div>' +
+        '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-fsafe"' + (state.autoFailsafe ? ' checked' : '') + (state._captchaHalted ? ' disabled' : '') + '> Enable landing failsafe' + (state._captchaHalted ? ' <small style="color:#e2707a">— OFF: a captcha was detected last session, re-check the box to re-arm</small>' : '') + '</label></div>' +
+        '<div class="srow">Alert after <select id="tdk-set-fsdelay">' +
+          [30, 45, 60].map(function (s) { return '<option value="' + s + '"' + (state.failsafeDelay === s ? ' selected' : '') + '>' + s + 's</option>'; }).join("") +
+        '</select> of no activity on the page after landing</div>' +
+        '<div id="tdk-fs-log" class="ssub"></div>' +
         '<div class="sl" style="margin-top:16px">🚫 Hidden items <small>— excluded from the board (best pick, best trip &amp; every view) until you turn them back on</small></div>' +
         '<div id="tdk-set-hidden"></div>' +
         '<div class="sl" style="margin-top:14px">Need a key? <a class="prof" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Torn → Settings → API Keys</a>. Note: the 📦 Bag needs Torn’s inventory API, which is temporarily disabled during Torn’s inventory migration — no key fixes that until Torn restores it.</div>' +
@@ -3007,6 +3030,14 @@
     if (bChk) bChk.addEventListener("change", function () { state.travelBook = this.checked; applyTravelChange(true); });
     const imChk = host.querySelector("#tdk-set-imannot");
     if (imChk) imChk.addEventListener("change", function () { state.imAnnotate = this.checked; GM_setValue("im_annotate", state.imAnnotate); if (state._imRun) state._imRun(); });
+    const fsChk = host.querySelector("#tdk-set-fsafe");
+    if (fsChk) fsChk.addEventListener("change", function () {
+      state.autoFailsafe = this.checked; GM_setValue("auto_failsafe", state.autoFailsafe);
+      if (state.autoFailsafe) state._captchaHalted = false; // re-enabling clears a prior captcha halt
+    });
+    const fsSel = host.querySelector("#tdk-set-fsdelay");
+    if (fsSel) fsSel.addEventListener("change", function () { state.failsafeDelay = +this.value; GM_setValue("failsafe_delay", state.failsafeDelay); });
+    renderFailsafeLog();
     updateTravelEff();
     detectTravelProp();
     host.querySelector("#tdk-set-test").addEventListener("click", function () {
@@ -3676,6 +3707,133 @@
     v.setAttribute("data-new", n > 0 ? String(n) : "");
     v.title = n > 0 ? n + " new/changed Torn module" + (n === 1 ? "" : "s") + " since you last looked — click for the build watcher" : "View changelog";
   }
+
+  /* ---------- Landing failsafe (v1.96.0) ----------
+   * Problem: land abroad with a big cash load, get sidetracked, sit there un-mugged... er, un-bought, and get mugged.
+   * Part 1 (this): arm on a real flying→abroad transition, and if there's been NO page activity since landing for
+   * `failsafeDelay` seconds, fire an escalating alert (flashing banner + tone + OS notification + vibration) with
+   * the best affordable in-stock pick already worked out, so you can act in one glance instead of hunting for it.
+   * Auto-buy/auto-fly themselves are a deliberate follow-up, not built here — they'd need verified Item-Market/
+   * Travel-agency DOM selectors to click safely, which this session didn't have a logged-in page to inspect.
+   * A captcha appearing anywhere on the page is treated as "Torn thinks something here looks automated" and
+   * force-disables the feature immediately (persisted off), regardless of what triggered it. */
+  function logFailsafe(msg) {
+    try { const log = GM_getValue("failsafe_log", []); log.unshift({ t: Date.now(), msg: msg }); GM_setValue("failsafe_log", log.slice(0, 50)); } catch (e) { }
+  }
+  function renderFailsafeLog() {
+    const el = host && host.querySelector("#tdk-fs-log"); if (!el) return;
+    const log = GM_getValue("failsafe_log", []);
+    el.innerHTML = log.length
+      ? "Recent: " + log.slice(0, 5).map(function (x) { return ago(Math.floor((Date.now() - x.t) / 1000)) + " ago — " + x.msg; }).join("<br>")
+      : "No failsafe events yet.";
+  }
+  function showFailsafeAlert(msg, sticky) {
+    try {
+      let b = document.getElementById("tdk-fs-alert");
+      if (!b) { b = document.createElement("div"); b.id = "tdk-fs-alert"; b.title = "Click to dismiss"; b.addEventListener("click", function () { b.style.display = "none"; }); document.body.appendChild(b); }
+      b.textContent = msg; b.style.display = "block";
+      if (!sticky) setTimeout(function () { if (b) b.style.display = "none"; }, 25000);
+      try { navigator.vibrate && navigator.vibrate([200, 100, 200, 100, 200]); } catch (e) { }
+      try {
+        if (window.Notification) {
+          if (Notification.permission === "granted") new Notification("Torn Trade Desk", { body: msg });
+          else if (Notification.permission !== "denied") Notification.requestPermission();
+        }
+      } catch (e) { }
+      try {
+        const ctx = state._actx || (state._actx = new (window.AudioContext || window.webkitAudioContext)());
+        for (let i = 0; i < 3; i++) {
+          const o = ctx.createOscillator(), g = ctx.createGain();
+          o.type = "square"; o.frequency.value = 880;
+          o.connect(g); g.connect(ctx.destination);
+          const start = ctx.currentTime + i * 0.35;
+          g.gain.setValueAtTime(0.15, start);
+          o.start(start); o.stop(start + 0.25);
+        }
+      } catch (e) { }
+    } catch (e) { }
+  }
+  function looksLikeCaptcha(el) {
+    try {
+      if (!el || el.nodeType !== 1) return false;
+      const src = (el.tagName === "IFRAME" && el.src) || "";
+      if (/captcha|hcaptcha|recaptcha|challenges\.cloudflare/i.test(src)) return true;
+      const idcls = (el.id || "") + " " + (typeof el.className === "string" ? el.className : "");
+      if (/captcha|bot-?check|verify-?human/i.test(idcls)) return true;
+      return false;
+    } catch (e) { return false; }
+  }
+  function haltFailsafeForCaptcha() {
+    if (state._captchaHalted) return;
+    state._captchaHalted = true; state.autoFailsafe = false; GM_setValue("auto_failsafe", false);
+    const msg = "🛑 Captcha detected — landing failsafe switched OFF. Solve it, then re-enable in ⚙ Settings.";
+    logFailsafe(msg); showFailsafeAlert(msg, true);
+  }
+  const _captchaObs = new MutationObserver(function (muts) {
+    for (const m of muts) {
+      for (const n of m.addedNodes) {
+        if (looksLikeCaptcha(n)) { haltFailsafeForCaptcha(); return; }
+        if (n.querySelectorAll) {
+          try {
+            const f = n.querySelectorAll('iframe,[class*="captcha" i],[id*="captcha" i]');
+            for (let i = 0; i < f.length; i++) if (looksLikeCaptcha(f[i])) { haltFailsafeForCaptcha(); return; }
+          } catch (e) { }
+        }
+      }
+    }
+  });
+  try { _captchaObs.observe(document.documentElement, { childList: true, subtree: true }); } catch (e) { }
+  ["click", "keydown", "touchstart", "mousemove", "wheel"].forEach(function (evt) {
+    document.addEventListener(evt, function () { state._lastActivityAt = Date.now(); }, { passive: true, capture: true });
+  });
+  // Best affordable, currently-loadable pick for the country you're standing in right now (not a future arrival).
+  function failsafeBestPick() {
+    const cc = state.loc; if (!cc) return null;
+    const cap = state.cap, cash = state.cash || 0;
+    const items = (state.rows || []).filter(function (r) { return r.cc === cc; }).sort(function (a, b) { return b.ppi - a.ppi; });
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i], avail = loadAvail(it);
+      if (avail <= 0) continue;
+      let take = Math.min(cap, avail);
+      if (it.buy > 0) take = Math.min(take, Math.floor(cash / it.buy));
+      if (take <= 0) continue;
+      return { item: it, qty: take, cost: it.buy * take };
+    }
+    return null;
+  }
+  function failsafeExecute() {
+    const pick = failsafeBestPick();
+    const msg = pick
+      ? ("⏱ Landing failsafe — you've gone quiet since touchdown. Best pick: " + pick.item.name + " ×" + pick.qty + " (~$" + pick.cost.toLocaleString() + "). Auto-buy/fly isn't wired up yet — go do it now!")
+      : "⏱ Landing failsafe — you've gone quiet since touchdown and no affordable in-stock pick was found. Fly home if you're AFK!";
+    logFailsafe(msg);
+    showFailsafeAlert(msg, true);
+    // Part 2 (pending real DOM selectors from the user's own logged-in session): replace this alert with actually
+    // clicking Buy for pick.item/pick.qty on the Item Market, then boarding the flight home on the travel agency page.
+  }
+  function checkFailsafeTimer() {
+    try {
+      if (!state.autoFailsafe || state._captchaHalted) return;
+      if (state.travelWhere !== "abroad" || !state._landedAt) return;
+      if (state._failsafeFiredFor === state._landedAt) return; // already fired for this landing
+      const sinceLanding = Date.now() - state._landedAt;
+      if (sinceLanding < (state.failsafeDelay || 30) * 1000) return;
+      if (state._lastActivityAt >= state._landedAt) return; // you've touched the page since landing — stand down
+      state._failsafeFiredFor = state._landedAt;
+      failsafeExecute();
+    } catch (e) { }
+  }
+  setInterval(checkFailsafeTimer, 3000);
+  // Fast travel-state poll (only while the failsafe is armed AND you're airborne or freshly landed) so "just
+  // touched down" is caught within ~10s instead of waiting on the normal ~2.5min board auto-refresh cadence.
+  async function pollTravelForFailsafe() {
+    if (!state.autoFailsafe) return;
+    const pendingFire = state.travelWhere === "abroad" && state._landedAt && state._failsafeFiredFor !== state._landedAt;
+    if (state.travelWhere !== "flying" && !pendingFire) return;
+    const key = GM_getValue("torn_key", ""); if (!key) return;
+    try { applyTravelState(await gmGet("https://api.torn.com/user/?selections=travel&key=" + encodeURIComponent(key))); } catch (e) { }
+  }
+  setInterval(pollTravelForFailsafe, 10000);
 
   build();
   annotateItemsPage();
