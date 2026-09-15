@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.8
+// @version      1.99.9
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2621,6 +2621,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.9", d: "Sep 15, 2026", c: ["🎉 First confirmed live end-to-end success: landed, waited, auto-bought a full 28/28 load, flew home. 🐛 Small logging fix from that run: the failsafe log showed \"cash ?\" even though the buy itself worked fine - cashAtLanding is snapshotted at arm time by the lightweight poller, which doesn't fetch money, so it's usually still null. Now falls back to the known-good cash figure from fire time instead of showing a bare \"?\"."] },
     { v: "1.99.8", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: the fire-time board/cash data check now retries once (with a short pause between) if the first attempt comes back empty, instead of giving up after a single try. A transient blip - a slow YATA response, a momentary network hiccup - shouldn't cost the whole trip if a second attempt seconds later would have worked. Only kicks in when data actually looks stale/missing; skips straight through when the arm-time background refresh already did its job."] },
     { v: "1.99.7", d: "Sep 15, 2026", c: ["🐛 Landing failsafe: still seeing empty stock data + null cash + 'nothing profitable' on some live landings even after v1.99.3-1.99.5's fixes. Root cause: refresh() swallows its own errors internally (bad key, YATA outage, network blip) and never throws — so the failsafe's safety-net await refresh() was resolving as if it succeeded even when it silently failed, leaving no trace of why. Now refresh() stashes its last error, and the failsafe log records it directly (⚠️ board/cash data failed to load: ...) when data still comes back empty after trying — so if this happens again, the log itself will finally say why instead of just showing blank data with no explanation."] },
     { v: "1.99.6", d: "Sep 15, 2026", c: ["🛟 Landing failsafe now buys a full profitable LOAD instead of just one item. Previously if the single best-profit item couldn't use your whole capacity or cash (e.g. cash only covers 1 Xanax), the rest of your slots and money just sat unused. Now it fills the remainder with the next-best affordable item(s), same greedy fill the board's own \"Best trip\" feature already uses. The action log now records the full list of items bought, total cost, and total profit instead of just one."] },
@@ -3997,7 +3998,11 @@
       landedAt: track.landedAt || state._landedAt || null,
       firedAt: Date.now(), delayMs: state._landedDelayMs || null,
       cc: cc, country: (FLY[cc] && FLY[cc].name) || cc || null,
-      cashAtLanding: (track.cashAtLanding != null) ? track.cashAtLanding : null,
+      // cashAtLanding is snapshotted at ARM time (applyTravelState), from the lightweight travel-only poller -
+      // it doesn't fetch money, so this is usually still null unless a full refresh happened to complete first.
+      // Fall back to cashAtFire (known-good by this point, after the data checks above) as the best available
+      // stand-in, rather than showing a bare "?" in the log even though a real cash figure was known by fire time.
+      cashAtLanding: (track.cashAtLanding != null) ? track.cashAtLanding : (state.cash != null ? state.cash : null),
       cashAtFire: state.cash != null ? state.cash : null,
       stockSnapshot: failsafeStockSnapshot(cc),
       onShopPage: TRAVEL_PAGE.test(location.href),
