@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.98.0
+// @version      1.98.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2593,6 +2593,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.98.1", d: "Sep 15, 2026", c: ["🐛 Fixed a bug from the v1.96.0 landing failsafe: its fast 10s travel-status poll only requested the 'travel' selection, missing 'basic' (which carries the status field flying/landed detection actually reads) — while armed and flying, it was silently corrupting your travel state to 'unknown' every 10s. Visible symptom: the 🛡️ Immunity banner showing your remaining FLIGHT time mislabeled as an immunity countdown (300+ seconds instead of the real ~15s window). Added 'basic' back to that poll; flying/landed detection is accurate again while the failsafe is on."] },
     { v: "1.98.0", d: "Sep 15, 2026", c: ["📒 New detailed failsafe action log (⚙ Settings, under the landing failsafe section): a separate, structured record of every time it fires — cash you had at landing, a snapshot of stock levels at your location, exactly what (if anything) it chose to buy and why, any captcha hits, and time landed → time it flew you home. Shows the last 15 inline, plus a 📋 Copy full log (JSON) button for the full 200-entry history and a Clear button. This is in addition to the short plain-text status log from before, not a replacement."] },
     { v: "1.97.1", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: fixed a gap where it would auto-buy the least-bad item even if EVERYTHING at your location was currently a loss (cost more than resale). Now only ever picks a genuinely profitable item; if nothing qualifies, it just flies you home without buying anything."] },
     { v: "1.97.0", d: "Sep 15, 2026", c: ["🛟 Landing failsafe Part 2: it now actually auto-buys the best pick and flies you home (not just an alert) when it fires AND you're on the abroad shop page (Travel Agency). Same clicks a human makes — fill quantity, Buy, confirm Yes, Travel home, confirm Travel Back — verified against the live page. <b>This is real automated gameplay and a genuine Torn ban risk if flagged</b> — off the shop page, or with the toggle off, it only alerts. The captcha kill-switch from v1.96.0 still force-disables everything the instant anything captcha-shaped appears."] },
@@ -3980,7 +3981,10 @@
     const pendingFire = state.travelWhere === "abroad" && state._landedAt && state._failsafeFiredFor !== state._landedAt;
     if (state.travelWhere !== "flying" && !pendingFire) return;
     const key = GM_getValue("torn_key", ""); if (!key) return;
-    try { applyTravelState(await gmGet("https://api.torn.com/user/?selections=travel&key=" + encodeURIComponent(key))); } catch (e) { }
+    // MUST include "basic" (or detectTravel()'s j.status check fails) - travel-only was silently corrupting
+    // state.travelWhere to "unknown" every 10s while this poller ran, breaking the flying/landed detection
+    // used elsewhere (e.g. the immunity-countdown banner showed leftover flight time mislabeled as immunity).
+    try { applyTravelState(await gmGet("https://api.torn.com/user/?selections=travel,basic&key=" + encodeURIComponent(key))); } catch (e) { }
   }
   setInterval(pollTravelForFailsafe, 10000);
 
