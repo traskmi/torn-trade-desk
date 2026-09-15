@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.96.1
+// @version      1.97.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2588,6 +2588,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.97.0", d: "Sep 15, 2026", c: ["🛟 Landing failsafe Part 2: it now actually auto-buys the best pick and flies you home (not just an alert) when it fires AND you're on the abroad shop page (Travel Agency). Same clicks a human makes — fill quantity, Buy, confirm Yes, Travel home, confirm Travel Back — verified against the live page. <b>This is real automated gameplay and a genuine Torn ban risk if flagged</b> — off the shop page, or with the toggle off, it only alerts. The captcha kill-switch from v1.96.0 still force-disables everything the instant anything captcha-shaped appears."] },
     { v: "1.96.1", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: the alert delay is now a random 15-60s each landing instead of a fixed 30/45/60s pick — a perfectly consistent timer is an easy pattern to flag, so this varies it like natural human reaction time would."] },
     { v: "1.96.0", d: "Sep 15, 2026", c: ["🛟 New landing failsafe (⚙ Settings): built after a real $1.5M mugging from getting sidetracked right after landing abroad with a big cash load. Enable it and if you go quiet for 30-60s (your choice) after touchdown, you get a loud, hard-to-miss alert — flashing banner, tone, OS notification, vibration — with the best affordable in-stock pick already worked out, so you can act in one glance. <b>Auto-buying and auto-flying themselves aren't wired up yet</b> — that needs real Item-Market/Travel-agency button selectors captured from a live logged-in session, coming as a follow-up. A captcha appearing anywhere on the page force-disables the failsafe immediately, in case Torn's anti-bot systems ever flag anything this triggers."] },
     { v: "1.95.0", d: "Sep 7, 2026", c: ["🛒 The Item Market price banner (market value · cheapest bazaar · top bid · crossed-market ⚡ tags) is now <b>off by default</b> — it wasn't clear what it was doing there and it was more clutter than help for most. Turn it back on in ⚙ Settings → Item Market page if you want it; takes effect immediately, no refresh needed."] },
@@ -3006,7 +3007,7 @@
         '<div id="tdk-set-tdetect" class="ssub"></div>' +
         '<div class="sl" style="margin-top:16px">🛒 Item Market page <small>— extras injected directly onto torn.com\'s own Item Market</small></div>' +
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-imannot"' + (state.imAnnotate ? ' checked' : '') + '> Show the price banner &amp; crossed-market ⚡ tags on the Item Market page <small>(off by default — market value / cheapest bazaar / top bid info + a per-listing flip tag)</small></label></div>' +
-        '<div class="sl" style="margin-top:16px">🛟 Landing failsafe <small>— for when you land and get sidetracked. If you take no action for a bit after touchdown, this fires an escalating alert (flashing banner · sound · notification · vibration) with the best pick already worked out. <b>Auto-buying &amp; auto-flying themselves aren\'t built yet</b> (needs real Item-Market/Travel-agency selectors to do safely) — this alerts you loud enough to act in time instead.</small></div>' +
+        '<div class="sl" style="margin-top:16px">🛟 Landing failsafe <small>— for when you land and get sidetracked. If you take no action for a bit after touchdown, this fires an alert (flashing banner · sound · notification · vibration) AND, if you\'re on the abroad shop page (Travel Agency), <b>auto-buys the best pick and flies you home</b> — same as clicking it yourself, just automated. Off the shop page it only alerts (can\'t safely buy from elsewhere). <b>This is real automated gameplay — a genuine Torn ban risk if flagged.</b> A captcha appearing anywhere force-disables it immediately.</small></div>' +
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-fsafe"' + (state.autoFailsafe ? ' checked' : '') + (state._captchaHalted ? ' disabled' : '') + '> Enable landing failsafe' + (state._captchaHalted ? ' <small style="color:#e2707a">— OFF: a captcha was detected last session, re-check the box to re-arm</small>' : '') + '</label></div>' +
         '<div class="srow ssub">Alerts after a random 15–60s of no activity on the page after landing <small>(varies each time on purpose, not a fixed timer)</small></div>' +
         '<div id="tdk-fs-log" class="ssub"></div>' +
@@ -3707,15 +3708,18 @@
     v.title = n > 0 ? n + " new/changed Torn module" + (n === 1 ? "" : "s") + " since you last looked — click for the build watcher" : "View changelog";
   }
 
-  /* ---------- Landing failsafe (v1.96.0) ----------
-   * Problem: land abroad with a big cash load, get sidetracked, sit there un-mugged... er, un-bought, and get mugged.
-   * Part 1 (this): arm on a real flying→abroad transition, and if there's been NO page activity since landing for
-   * a random 15-60s (varies each landing - a fixed timer is an easy bot tell), fire an escalating alert with
-   * the best affordable in-stock pick already worked out, so you can act in one glance instead of hunting for it.
-   * Auto-buy/auto-fly themselves are a deliberate follow-up, not built here — they'd need verified Item-Market/
-   * Travel-agency DOM selectors to click safely, which this session didn't have a logged-in page to inspect.
-   * A captcha appearing anywhere on the page is treated as "Torn thinks something here looks automated" and
-   * force-disables the feature immediately (persisted off), regardless of what triggered it. */
+  /* ---------- Landing failsafe (v1.96.0-1.97.0) ----------
+   * Problem: land abroad with a big cash load, get sidetracked, sit there un-bought, and get mugged.
+   * Arms on a real flying→abroad transition, and if there's been NO page activity since landing for a random
+   * 15-60s (varies each landing - a fixed timer is an easy bot tell), fires an alert AND, if you're on the abroad
+   * shop page (torn.com/page.php?sid=travel), auto-buys the best affordable in-stock pick and flies you home -
+   * the exact same DOM clicks a human would make (fill qty → Buy → confirm Yes; Travel home → confirm Travel Back),
+   * verified live against the real page structure. THIS IS REAL AUTOMATED GAMEPLAY: submitting a purchase and a
+   * flight with no click from the user is the kind of unattended action Torn's rules treat as botting - a real
+   * ban risk if detected. The user was told this explicitly (twice, with an AskUserQuestion risk confirmation)
+   * and accepted it, asking specifically for an on/off toggle and a captcha kill-switch as guardrails - both are
+   * here. A captcha appearing anywhere on the page force-disables the feature immediately (persisted off),
+   * regardless of what triggered it - treat that as the sole safety net, not a guarantee. */
   function logFailsafe(msg) {
     try { const log = GM_getValue("failsafe_log", []); log.unshift({ t: Date.now(), msg: msg }); GM_setValue("failsafe_log", log.slice(0, 50)); } catch (e) { }
   }
@@ -3800,15 +3804,77 @@
     }
     return null;
   }
-  function failsafeExecute() {
+  const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+  const jitter = function (baseMs, spreadMs) { return baseMs + Math.random() * spreadMs; }; // human-ish gaps between steps, not instant/robotic
+  const TRAVEL_PAGE = /sid=travel/i;
+  function reactSetValue(input, val) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(input, String(val));
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  // Buys `qty` of item `id` on the abroad shop (torn.com/page.php?sid=travel while abroad) — fills the qty field,
+  // clicks Buy (opens Torn's own "Buy Nx {item} for $Y?" confirm panel), then clicks Yes. Two-step, matching how
+  // Torn's own UI requires a real click to actually spend money - not a raw form-submit shortcut.
+  async function domBuyItem(id, qty) {
+    const form = document.getElementById("item-" + id + "-form");
+    if (!form) return { ok: false, reason: "form not found (not on the abroad shop page, or item not listed)" };
+    const input = form.querySelector('input.input-money:not([type="hidden"])');
+    if (!input) return { ok: false, reason: "qty input not found" };
+    reactSetValue(input, qty);
+    await sleep(jitter(350, 450));
+    const buyBtn = document.querySelector('button[type="submit"][form="item-' + id + '-form"]');
+    if (!buyBtn || buyBtn.disabled) return { ok: false, reason: "Buy button missing or disabled (out of stock / can't afford)" };
+    buyBtn.click();
+    await sleep(jitter(400, 500));
+    const panel = document.getElementById("item-" + id + "-buyPanel");
+    const yesBtn = panel && Array.from(panel.querySelectorAll("button")).find(function (b) { return /^yes$/i.test((b.textContent || "").trim()); });
+    if (!yesBtn) return { ok: false, reason: "buy confirm panel didn't appear" };
+    yesBtn.click();
+    return { ok: true };
+  }
+  // Boards the flight home - clicks the "Travel home" header link (expands a confirm panel, same pattern as Buy),
+  // then clicks the "Travel Back" confirm inside it.
+  async function domFlyHome() {
+    const link = Array.from(document.querySelectorAll('a[role="button"],button')).find(function (el) { return /travel home/i.test((el.textContent || "").trim()); });
+    if (!link) return { ok: false, reason: "'Travel home' link not found (not on the abroad travel page?)" };
+    link.click();
+    await sleep(jitter(400, 500));
+    const panel = document.getElementById("travel-home-panel");
+    const confirmBtn = panel && Array.from(panel.querySelectorAll("button")).find(function (b) { const t = (b.textContent || "").trim(); return /travel back/i.test(t) && !/cancel/i.test(t); });
+    if (!confirmBtn) return { ok: false, reason: "travel-home confirm panel didn't appear" };
+    confirmBtn.click();
+    return { ok: true };
+  }
+  async function failsafeExecute() {
     const pick = failsafeBestPick();
-    const msg = pick
-      ? ("⏱ Landing failsafe — you've gone quiet since touchdown. Best pick: " + pick.item.name + " ×" + pick.qty + " (~$" + pick.cost.toLocaleString() + "). Auto-buy/fly isn't wired up yet — go do it now!")
-      : "⏱ Landing failsafe — you've gone quiet since touchdown and no affordable in-stock pick was found. Fly home if you're AFK!";
-    logFailsafe(msg);
-    showFailsafeAlert(msg, true);
-    // Part 2 (pending real DOM selectors from the user's own logged-in session): replace this alert with actually
-    // clicking Buy for pick.item/pick.qty on the Item Market, then boarding the flight home on the travel agency page.
+    if (!pick) {
+      const msg = "⏱ Landing failsafe — you've gone quiet since touchdown and no affordable in-stock pick was found. Nothing to auto-buy; fly home if you're AFK.";
+      logFailsafe(msg); showFailsafeAlert(msg, true);
+      if (TRAVEL_PAGE.test(location.href)) { const r = await domFlyHome(); logFailsafe(r.ok ? "✅ Auto-flew home (no pick)." : "⚠️ Auto-fly-home failed: " + r.reason); }
+      return;
+    }
+    if (!TRAVEL_PAGE.test(location.href)) {
+      const msg = "⏱ Landing failsafe — best pick was " + pick.item.name + " ×" + pick.qty + " (~$" + pick.cost.toLocaleString() + "), but you're not on the travel/shop page so I can't auto-buy from here. Go do it now!";
+      logFailsafe(msg); showFailsafeAlert(msg, true);
+      return;
+    }
+    showFailsafeAlert("⏱ Landing failsafe firing — auto-buying " + pick.item.name + " ×" + pick.qty + " and flying home...", true);
+    await sleep(jitter(300, 500)); // one more beat before the money-spending step, and a final chance to catch a toggle-off
+    if (!state.autoFailsafe || state._captchaHalted) { logFailsafe("🛑 Aborted before buying (toggled off / captcha)."); return; }
+    const buyRes = await domBuyItem(pick.item.id, pick.qty);
+    if (!buyRes.ok) {
+      const msg = "⚠️ Landing failsafe: auto-buy of " + pick.item.name + " ×" + pick.qty + " failed (" + buyRes.reason + "). Check the page — go buy/fly home manually.";
+      logFailsafe(msg); showFailsafeAlert(msg, true);
+      return;
+    }
+    logFailsafe("✅ Auto-bought " + pick.item.name + " ×" + pick.qty + " (~$" + pick.cost.toLocaleString() + ").");
+    await sleep(jitter(600, 600));
+    const flyRes = await domFlyHome();
+    const msg = flyRes.ok
+      ? ("✅ Landing failsafe: bought " + pick.item.name + " ×" + pick.qty + " and flew home.")
+      : ("⚠️ Bought " + pick.item.name + " ×" + pick.qty + ", but auto-fly-home failed (" + flyRes.reason + ") — fly home manually.");
+    logFailsafe(msg); showFailsafeAlert(msg, true);
   }
   function checkFailsafeTimer() {
     try {
@@ -3819,7 +3885,7 @@
       if (sinceLanding < (state._landedDelayMs || 30000)) return;
       if (state._lastActivityAt >= state._landedAt) return; // you've touched the page since landing — stand down
       state._failsafeFiredFor = state._landedAt;
-      failsafeExecute();
+      failsafeExecute().catch(function (e) { logFailsafe("⚠️ Failsafe execution error: " + (e && e.message || e)); });
     } catch (e) { }
   }
   setInterval(checkFailsafeTimer, 3000);
