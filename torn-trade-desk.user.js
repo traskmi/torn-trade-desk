@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.97.0
+// @version      1.97.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2588,6 +2588,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.97.1", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: fixed a gap where it would auto-buy the least-bad item even if EVERYTHING at your location was currently a loss (cost more than resale). Now only ever picks a genuinely profitable item; if nothing qualifies, it just flies you home without buying anything."] },
     { v: "1.97.0", d: "Sep 15, 2026", c: ["🛟 Landing failsafe Part 2: it now actually auto-buys the best pick and flies you home (not just an alert) when it fires AND you're on the abroad shop page (Travel Agency). Same clicks a human makes — fill quantity, Buy, confirm Yes, Travel home, confirm Travel Back — verified against the live page. <b>This is real automated gameplay and a genuine Torn ban risk if flagged</b> — off the shop page, or with the toggle off, it only alerts. The captcha kill-switch from v1.96.0 still force-disables everything the instant anything captcha-shaped appears."] },
     { v: "1.96.1", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: the alert delay is now a random 15-60s each landing instead of a fixed 30/45/60s pick — a perfectly consistent timer is an easy pattern to flag, so this varies it like natural human reaction time would."] },
     { v: "1.96.0", d: "Sep 15, 2026", c: ["🛟 New landing failsafe (⚙ Settings): built after a real $1.5M mugging from getting sidetracked right after landing abroad with a big cash load. Enable it and if you go quiet for 30-60s (your choice) after touchdown, you get a loud, hard-to-miss alert — flashing banner, tone, OS notification, vibration — with the best affordable in-stock pick already worked out, so you can act in one glance. <b>Auto-buying and auto-flying themselves aren't wired up yet</b> — that needs real Item-Market/Travel-agency button selectors captured from a live logged-in session, coming as a follow-up. A captcha appearing anywhere on the page force-disables the failsafe immediately, in case Torn's anti-bot systems ever flag anything this triggers."] },
@@ -3789,11 +3790,12 @@
   ["click", "keydown", "touchstart", "mousemove", "wheel"].forEach(function (evt) {
     document.addEventListener(evt, function () { state._lastActivityAt = Date.now(); }, { passive: true, capture: true });
   });
-  // Best affordable, currently-loadable pick for the country you're standing in right now (not a future arrival).
+  // Best affordable, currently-loadable, PROFITABLE pick for the country you're standing in right now (not a
+  // future arrival). Never auto-buys a loser just because it's the least-bad option in stock.
   function failsafeBestPick() {
     const cc = state.loc; if (!cc) return null;
     const cap = state.cap, cash = state.cash || 0;
-    const items = (state.rows || []).filter(function (r) { return r.cc === cc; }).sort(function (a, b) { return b.ppi - a.ppi; });
+    const items = (state.rows || []).filter(function (r) { return r.cc === cc && r.ppi > 0; }).sort(function (a, b) { return b.ppi - a.ppi; });
     for (let i = 0; i < items.length; i++) {
       const it = items[i], avail = loadAvail(it);
       if (avail <= 0) continue;
@@ -3849,7 +3851,7 @@
   async function failsafeExecute() {
     const pick = failsafeBestPick();
     if (!pick) {
-      const msg = "⏱ Landing failsafe — you've gone quiet since touchdown and no affordable in-stock pick was found. Nothing to auto-buy; fly home if you're AFK.";
+      const msg = "⏱ Landing failsafe — you've gone quiet since touchdown and nothing here is both in-stock/affordable AND actually profitable right now. Nothing to auto-buy (won't buy a loser just to buy something); fly home if you're AFK.";
       logFailsafe(msg); showFailsafeAlert(msg, true);
       if (TRAVEL_PAGE.test(location.href)) { const r = await domFlyHome(); logFailsafe(r.ok ? "✅ Auto-flew home (no pick)." : "⚠️ Auto-fly-home failed: " + r.reason); }
       return;
