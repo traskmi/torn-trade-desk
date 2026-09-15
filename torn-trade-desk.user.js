@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.98.2
+// @version      1.99.0
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -59,7 +59,7 @@
 
   /* ---------- state ---------- */
   const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "landing"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt"), boardView: GM_getValue("boardView", null), itemBlock: GM_getValue("item_block", {}), awardBlock: GM_getValue("award_block", {}), awardTypeFilter: "all", imAnnotate: GM_getValue("im_annotate", false),
-    autoFailsafe: GM_getValue("auto_failsafe", false), _prevTravelWhere: GM_getValue("travel_prev_where", null), _landedAt: 0, _landedDelayMs: 0, _lastActivityAt: Date.now(), _failsafeFiredFor: 0, _captchaHalted: false, _failsafeTrack: null };
+    autoFailsafe: GM_getValue("auto_failsafe", false), _landedAt: 0, _landedDelayMs: 0, _lastActivityAt: Date.now(), _failsafeFiredFor: 0, _captchaHalted: false, _failsafeTrack: null };
   function isMobile() { return (window.innerWidth || document.documentElement.clientWidth || 0) <= 560; } // matches the CSS breakpoint
   // One-time: make Landing (what'll be in stock when you arrive) the default board sort for existing installs still on the old $/min default.
   try { if (!GM_getValue("landing_default_v1", false)) { if (state.sort === "ppm") { state.sort = "landing"; GM_setValue("sort", "landing"); } GM_setValue("landing_default_v1", true); } } catch (e) { }
@@ -189,27 +189,34 @@
   // failsafe poller below, so "just landed" is detected identically (and only once) from either path.
   function applyTravelState(j) {
     const tw = detectTravel(j);
-    // Landing failsafe: only arm off a REAL flying→abroad transition (not e.g. panel just loaded already-abroad),
-    // so it can't fire immediately on open/refresh — only after you actually touch down.
-    // Random 15-60s reaction delay each landing (not a fixed constant) - a bot-detector's easiest tell is a
-    // perfectly consistent timer, so this mimics natural human variance in how fast someone notices they've landed.
-    if (state._prevTravelWhere === "flying" && tw.where === "abroad") {
-      state._landedAt = Date.now(); state._landedDelayMs = (15 + Math.random() * 45) * 1000;
-      // Snapshot cash right at touchdown for the failsafe log ("how much $ I had") - best-effort: the fast
-      // travel-only poller doesn't fetch money, so this is whatever state.cash held from the last full refresh.
-      state._failsafeTrack = { landedAt: state._landedAt, cc: tw.cc, cashAtLanding: state.cash };
+    const arrTs = (j && j.travel && j.travel.timestamp) || 0;
+    // Landing failsafe: keyed off arrivalTs, not a flying→abroad transition - Torn reloads/re-renders the travel
+    // page right when you land, which resets a userscript's WHOLE JS state, so a transition-based check can miss
+    // the moment entirely (a fresh script instance only ever sees "abroad" from a blank slate, never "was flying").
+    // arrivalTs stays constant for the whole time you're abroad (it only changes when you board a new flight), so
+    // it's a stable id for "this stay abroad" that survives reloads via GM storage - the source of truth here is
+    // the persisted record, not any in-memory flag. Random 15-60s delay (not fixed) each landing on purpose too -
+    // a perfectly consistent timer is an easy bot-detector tell.
+    if (tw.where === "abroad" && arrTs) {
+      const saved = GM_getValue("failsafe_track", null);
+      if (!saved || saved.arrTs !== arrTs) {
+        // First time ANY script instance has seen this stay abroad - start the countdown now.
+        const t = { arrTs: arrTs, landedAt: Date.now(), delayMs: 15000 + Math.random() * 45000, cc: tw.cc, cashAtLanding: state.cash, firedFor: 0 };
+        try { GM_setValue("failsafe_track", t); } catch (e) { }
+        state._landedAt = t.landedAt; state._landedDelayMs = t.delayMs; state._failsafeTrack = t; state._failsafeFiredFor = 0;
+      } else if (!state._landedAt) {
+        // Same stay abroad, but THIS script instance hasn't picked up the in-progress countdown yet (e.g. a page
+        // reload happened mid-wait) - rehydrate from the persisted record instead of losing/restarting the timer.
+        state._landedAt = saved.landedAt; state._landedDelayMs = saved.delayMs; state._failsafeTrack = saved; state._failsafeFiredFor = saved.firedFor || 0;
+      }
+    } else {
+      state._landedAt = 0;
     }
-    if (tw.where !== "abroad") { state._landedAt = 0; }
-    state._prevTravelWhere = tw.where;
-    // Persisted (not just in-memory) because Torn reloads/re-renders the travel page on landing, which resets a
-    // userscript's whole JS state - without this, a fresh script instance never actually SEES the flying→abroad
-    // transition (it only ever observes "abroad" from a blank slate), so the failsafe silently never arms.
-    try { GM_setValue("travel_prev_where", tw.where); } catch (e) { }
     state.travelWhere = tw.where;
     state.loc = tw.where === "abroad" ? tw.cc : null;
     state.flyTo = tw.where === "flying" ? (tw.cc || null) : null;
     state.flyEta = tw.where === "flying" ? (tw.arriveIn || 0) : null;
-    state.arrivalTs = (j && j.travel && j.travel.timestamp) || 0;
+    state.arrivalTs = arrTs;
   }
   async function loadCash(key) {
     try {
@@ -2597,6 +2604,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.0", d: "Sep 15, 2026", c: ["🛟 Reworked how the landing failsafe arms, per user feedback that v1.98.2's fix was still fragile: instead of needing to CATCH the exact flying→abroad transition (easy to miss across a page reload), it's now keyed off arrivalTs itself - a stable id for 'this stay abroad' that doesn't change until you board a new flight. The whole countdown (landed-at time, the random 15-60s delay, cash snapshot) is persisted to storage the instant it starts, so it survives ANY reload during the wait, not just the initial landing moment, and won't double-fire for the same stay abroad afterward either."] },
     { v: "1.98.2", d: "Sep 15, 2026", c: ["🐛 Fixed the landing failsafe never actually arming: it only recognized a flying→abroad transition by comparing to an in-memory 'previous state' that lived purely in JS variables - but Torn reloads/re-renders the travel page right when you land, which wipes a userscript's whole state. A fresh script instance never actually saw you WERE flying, so it only ever observed 'abroad' from a blank slate and the failsafe silently never fired, no matter how long you waited. Now persisted to GM storage so it survives the reload. Caught live testing (mouse untouched 60+ seconds, nothing happened)."] },
     { v: "1.98.1", d: "Sep 15, 2026", c: ["🐛 Fixed a bug from the v1.96.0 landing failsafe: its fast 10s travel-status poll only requested the 'travel' selection, missing 'basic' (which carries the status field flying/landed detection actually reads) — while armed and flying, it was silently corrupting your travel state to 'unknown' every 10s. Visible symptom: the 🛡️ Immunity banner showing your remaining FLIGHT time mislabeled as an immunity countdown (300+ seconds instead of the real ~15s window). Added 'basic' back to that poll; flying/landed detection is accurate again while the failsafe is on."] },
     { v: "1.98.0", d: "Sep 15, 2026", c: ["📒 New detailed failsafe action log (⚙ Settings, under the landing failsafe section): a separate, structured record of every time it fires — cash you had at landing, a snapshot of stock levels at your location, exactly what (if anything) it chose to buy and why, any captcha hits, and time landed → time it flew you home. Shows the last 15 inline, plus a 📋 Copy full log (JSON) button for the full 200-entry history and a Clear button. This is in addition to the short plain-text status log from before, not a replacement."] },
@@ -3975,6 +3983,9 @@
       if (sinceLanding < (state._landedDelayMs || 30000)) return;
       if (state._lastActivityAt >= state._landedAt) return; // you've touched the page since landing — stand down
       state._failsafeFiredFor = state._landedAt;
+      // Persist the "fired" flag onto the same record so a reload mid-execution (or right after) doesn't re-arm
+      // and fire a second time for this same stay abroad.
+      try { const t = GM_getValue("failsafe_track", null); if (t && t.arrTs === (state._failsafeTrack && state._failsafeTrack.arrTs)) { t.firedFor = state._landedAt; GM_setValue("failsafe_track", t); } } catch (e) { }
       failsafeExecute().catch(function (e) { logFailsafe("⚠️ Failsafe execution error: " + (e && e.message || e)); });
     } catch (e) { }
   }
