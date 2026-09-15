@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.96.0
+// @version      1.96.1
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -59,7 +59,7 @@
 
   /* ---------- state ---------- */
   const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "landing"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt"), boardView: GM_getValue("boardView", null), itemBlock: GM_getValue("item_block", {}), awardBlock: GM_getValue("award_block", {}), awardTypeFilter: "all", imAnnotate: GM_getValue("im_annotate", false),
-    autoFailsafe: GM_getValue("auto_failsafe", false), failsafeDelay: GM_getValue("failsafe_delay", 30), _prevTravelWhere: null, _landedAt: 0, _lastActivityAt: Date.now(), _failsafeFiredFor: 0, _captchaHalted: false };
+    autoFailsafe: GM_getValue("auto_failsafe", false), _prevTravelWhere: null, _landedAt: 0, _landedDelayMs: 0, _lastActivityAt: Date.now(), _failsafeFiredFor: 0, _captchaHalted: false };
   function isMobile() { return (window.innerWidth || document.documentElement.clientWidth || 0) <= 560; } // matches the CSS breakpoint
   // One-time: make Landing (what'll be in stock when you arrive) the default board sort for existing installs still on the old $/min default.
   try { if (!GM_getValue("landing_default_v1", false)) { if (state.sort === "ppm") { state.sort = "landing"; GM_setValue("sort", "landing"); } GM_setValue("landing_default_v1", true); } } catch (e) { }
@@ -191,7 +191,9 @@
     const tw = detectTravel(j);
     // Landing failsafe: only arm off a REAL flying→abroad transition (not e.g. panel just loaded already-abroad),
     // so it can't fire immediately on open/refresh — only after you actually touch down.
-    if (state._prevTravelWhere === "flying" && tw.where === "abroad") { state._landedAt = Date.now(); }
+    // Random 15-60s reaction delay each landing (not a fixed constant) - a bot-detector's easiest tell is a
+    // perfectly consistent timer, so this mimics natural human variance in how fast someone notices they've landed.
+    if (state._prevTravelWhere === "flying" && tw.where === "abroad") { state._landedAt = Date.now(); state._landedDelayMs = (15 + Math.random() * 45) * 1000; }
     if (tw.where !== "abroad") { state._landedAt = 0; }
     state._prevTravelWhere = tw.where;
     state.travelWhere = tw.where;
@@ -2586,6 +2588,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.96.1", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: the alert delay is now a random 15-60s each landing instead of a fixed 30/45/60s pick — a perfectly consistent timer is an easy pattern to flag, so this varies it like natural human reaction time would."] },
     { v: "1.96.0", d: "Sep 15, 2026", c: ["🛟 New landing failsafe (⚙ Settings): built after a real $1.5M mugging from getting sidetracked right after landing abroad with a big cash load. Enable it and if you go quiet for 30-60s (your choice) after touchdown, you get a loud, hard-to-miss alert — flashing banner, tone, OS notification, vibration — with the best affordable in-stock pick already worked out, so you can act in one glance. <b>Auto-buying and auto-flying themselves aren't wired up yet</b> — that needs real Item-Market/Travel-agency button selectors captured from a live logged-in session, coming as a follow-up. A captcha appearing anywhere on the page force-disables the failsafe immediately, in case Torn's anti-bot systems ever flag anything this triggers."] },
     { v: "1.95.0", d: "Sep 7, 2026", c: ["🛒 The Item Market price banner (market value · cheapest bazaar · top bid · crossed-market ⚡ tags) is now <b>off by default</b> — it wasn't clear what it was doing there and it was more clutter than help for most. Turn it back on in ⚙ Settings → Item Market page if you want it; takes effect immediately, no refresh needed."] },
     { v: "1.94.0", d: "Sep 6, 2026", c: ["🖱️ The floating 💰 launcher is now drag-to-reposition instead of pinned to a corner. Bottom-right used to sit over the chat window's send icon; moving it to bottom-left (v1.86.0) then put it on top of Torn's own left-hand navigation menu on pages like the Item Market. Rather than keep guessing at a magic spot that works on every Torn page, just grab the button and drop it wherever's actually clear on your setup — it remembers where you put it. First run defaults to the old bottom-left spot; if you haven't moved it yet, drag it now."] },
@@ -3005,9 +3008,7 @@
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-imannot"' + (state.imAnnotate ? ' checked' : '') + '> Show the price banner &amp; crossed-market ⚡ tags on the Item Market page <small>(off by default — market value / cheapest bazaar / top bid info + a per-listing flip tag)</small></label></div>' +
         '<div class="sl" style="margin-top:16px">🛟 Landing failsafe <small>— for when you land and get sidetracked. If you take no action for a bit after touchdown, this fires an escalating alert (flashing banner · sound · notification · vibration) with the best pick already worked out. <b>Auto-buying &amp; auto-flying themselves aren\'t built yet</b> (needs real Item-Market/Travel-agency selectors to do safely) — this alerts you loud enough to act in time instead.</small></div>' +
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-fsafe"' + (state.autoFailsafe ? ' checked' : '') + (state._captchaHalted ? ' disabled' : '') + '> Enable landing failsafe' + (state._captchaHalted ? ' <small style="color:#e2707a">— OFF: a captcha was detected last session, re-check the box to re-arm</small>' : '') + '</label></div>' +
-        '<div class="srow">Alert after <select id="tdk-set-fsdelay">' +
-          [30, 45, 60].map(function (s) { return '<option value="' + s + '"' + (state.failsafeDelay === s ? ' selected' : '') + '>' + s + 's</option>'; }).join("") +
-        '</select> of no activity on the page after landing</div>' +
+        '<div class="srow ssub">Alerts after a random 15–60s of no activity on the page after landing <small>(varies each time on purpose, not a fixed timer)</small></div>' +
         '<div id="tdk-fs-log" class="ssub"></div>' +
         '<div class="sl" style="margin-top:16px">🚫 Hidden items <small>— excluded from the board (best pick, best trip &amp; every view) until you turn them back on</small></div>' +
         '<div id="tdk-set-hidden"></div>' +
@@ -3035,8 +3036,6 @@
       state.autoFailsafe = this.checked; GM_setValue("auto_failsafe", state.autoFailsafe);
       if (state.autoFailsafe) state._captchaHalted = false; // re-enabling clears a prior captcha halt
     });
-    const fsSel = host.querySelector("#tdk-set-fsdelay");
-    if (fsSel) fsSel.addEventListener("change", function () { state.failsafeDelay = +this.value; GM_setValue("failsafe_delay", state.failsafeDelay); });
     renderFailsafeLog();
     updateTravelEff();
     detectTravelProp();
@@ -3711,7 +3710,7 @@
   /* ---------- Landing failsafe (v1.96.0) ----------
    * Problem: land abroad with a big cash load, get sidetracked, sit there un-mugged... er, un-bought, and get mugged.
    * Part 1 (this): arm on a real flying→abroad transition, and if there's been NO page activity since landing for
-   * `failsafeDelay` seconds, fire an escalating alert (flashing banner + tone + OS notification + vibration) with
+   * a random 15-60s (varies each landing - a fixed timer is an easy bot tell), fire an escalating alert with
    * the best affordable in-stock pick already worked out, so you can act in one glance instead of hunting for it.
    * Auto-buy/auto-fly themselves are a deliberate follow-up, not built here — they'd need verified Item-Market/
    * Travel-agency DOM selectors to click safely, which this session didn't have a logged-in page to inspect.
@@ -3817,7 +3816,7 @@
       if (state.travelWhere !== "abroad" || !state._landedAt) return;
       if (state._failsafeFiredFor === state._landedAt) return; // already fired for this landing
       const sinceLanding = Date.now() - state._landedAt;
-      if (sinceLanding < (state.failsafeDelay || 30) * 1000) return;
+      if (sinceLanding < (state._landedDelayMs || 30000)) return;
       if (state._lastActivityAt >= state._landedAt) return; // you've touched the page since landing — stand down
       state._failsafeFiredFor = state._landedAt;
       failsafeExecute();
