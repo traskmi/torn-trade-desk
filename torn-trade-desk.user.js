@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.3
+// @version      1.99.4
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2616,6 +2616,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.4", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: added instant landing detection via the page's own DOM, on top of the existing 10s background poll. Turns out Torn doesn't actually reload the travel page when you land (checked - it re-renders itself in place), so there's no navigation event to hook, but watching for the \"Travel home\" link to appear (it only exists once you're actually standing in the shop) reacts the moment it shows up instead of waiting for the next poll tick. Shaves up to 10s off both landing detection and how soon the background data refresh (v1.99.3) starts."] },
     { v: "1.99.3", d: "Sep 15, 2026", c: ["🐛 Landing failsafe: fixed it flying you home with an EMPTY hand because it never actually had real board/price data to judge with. v1.99.2 fixed landing-detection with the panel closed, but the board (stock/price) data and your cash still only ever loaded when the panel was open - so a panel-closed test correctly detected landing, correctly waited, correctly checked the shop page, and correctly found nothing to buy... because it had zero stock data and null cash to work with, not because Canada was actually empty. Confirmed live: a real run logged an empty stockSnapshot + null cash + 'no_profitable_pick' + a successful auto-fly-home, all technically correct given what it knew, which was nothing. Now kicks off a full data refresh the moment it detects landing (well ahead of the 15-60s delay), plus a fallback wait-for-it check right at fire time in case that hasn't finished yet."] },
     { v: "1.99.2", d: "Sep 15, 2026", c: ["🐛 Fixed the landing failsafe never firing AT ALL when the panel wasn't opened during the flight (a live Mexico test sat for 8+ minutes with zero log entries). The fast background poll that's supposed to catch landing only checked Torn's API if it already believed you were mid-flight - but that belief is only ever set by a check that itself needs the panel open. With the panel closed the whole flight (exactly the AFK scenario this feature is for), it never got the chance to find out you were flying in the first place, so it kept skipping its own check forever. Removed that circular gate - it now always polls every 10s while the toggle is on, panel open or not."] },
     { v: "1.99.1", d: "Sep 15, 2026", c: ["🛟 Landing failsafe: two fixes from a real live test. (1) It was firing multiple times for the same landing if you had Torn open in several tabs at once (common for this user) — each tab raced to arm/fire independently. Added a fresh re-check-then-claim right before any tab commits to acting, so only one tab ever actually buys/flies for a given landing. (2) If the tab wasn't on the abroad shop page when it fired, it used to just alert and give up — now it navigates that tab to the shop page itself and picks the sequence back up from there, instead of relying on you seeing and acting on the alert. Real trigger for both: user got mugged for $1.45M during a live test — the log showed it correctly picked Xanax ×28 three separate times but never bought, because none of the firing tabs were on the shop page and the alert went unseen while at work."] },
@@ -4062,6 +4063,20 @@
     try { applyTravelState(await gmGet("https://api.torn.com/user/?selections=travel,basic&key=" + encodeURIComponent(key))); } catch (e) { }
   }
   setInterval(pollTravelForFailsafe, 10000);
+  // Instant landing detection via DOM, on top of the 10s poll above. Torn doesn't actually reload this page when
+  // you land (verified live - it re-renders client-side, in place) so there's no navigation/load event to hook.
+  // Instead, watch for the "Travel home" link to appear - it only exists once you're standing in the abroad shop,
+  // never while still "Traveling" - and react the moment it does, instead of waiting up to 10s for the next poll.
+  if (state.autoFailsafe && TRAVEL_PAGE.test(location.href)) {
+    let _hadShopDom = false;
+    const _checkShopDom = function () {
+      const hasShop = !!Array.from(document.querySelectorAll('a[role="button"]')).find(function (el) { return /travel home/i.test((el.textContent || "").trim()); });
+      if (hasShop && !_hadShopDom) pollTravelForFailsafe(); // just appeared (landed just now, or page already showed it on script load) - check right now instead of waiting for the interval
+      _hadShopDom = hasShop;
+    };
+    _checkShopDom();
+    try { new MutationObserver(_checkShopDom).observe(document.body, { childList: true, subtree: true }); } catch (e) { }
+  }
 
   build();
   annotateItemsPage();
