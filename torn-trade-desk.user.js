@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.12
+// @version      1.99.13
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2621,6 +2621,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.13", d: "Sep 16, 2026", c: ["🐛 Fixed the actual cause of the \"buy confirm panel didn't appear\" failure on Cannabis: confirmed live (DevTools inspection of the real page, both with and without TornTools) that the confirm dialog's structure is exactly right - it just hadn't finished mounting yet when the script checked, one step later than where v1.99.11 already added a retry. Both the post-Buy-click confirm step and the Travel-home confirm step now retry for ~2s too, matching the same pattern already used for the earlier form/link lookups."] },
     { v: "1.99.12", d: "Sep 15, 2026", c: ["🛟 Jittered the v1.99.11 DOM-lookup retry timing instead of a fixed 400ms metronome — same \"no suspiciously uniform timing\" habit applied everywhere else in this feature. Worth noting: this particular loop is pure local DOM polling with zero network footprint (checking if a page element has rendered yet, no server call involved), so it was never actually visible to Torn either way — but consistency matters more than relitigating which specific timers technically needed it."] },
     { v: "1.99.11", d: "Sep 15, 2026", c: ["🐛 Fixed a real live near-miss: the failsafe correctly picked Xanax ×28 (~$23M, cash confirmed on hand) but the buy failed with \"form not found\" even though the item was clearly listed on the page (user caught it and bought manually just in time). Most likely cause: the buy attempt ran on the very first check right after auto-navigating to the shop page, before Torn's own page had fully finished rendering every row. Both the buy-form lookup and the \"Travel home\" link lookup now retry for up to ~2s before giving up, instead of failing on the very first check."] },
     { v: "1.99.10", d: "Sep 15, 2026", c: ["📒 Failsafe log now records the FULL priced item list for the country (not just the top 8) in each landing's stockSnapshot, so you can actually audit a decision - e.g. confirm whether Insulin was genuinely out of stock or just didn't make an old truncated cut. Only visible in the 📋 Copy full log (JSON) export, not the compact inline view. Note: this still only covers items the board has real resale-price data for - anything with no priced/profitable read won't appear at all, that's a gap in the underlying data, not the log."] },
@@ -3953,9 +3954,15 @@
     if (!buyBtn || buyBtn.disabled) return { ok: false, reason: "Buy button missing or disabled (out of stock / can't afford)" };
     buyBtn.click();
     await sleep(jitter(400, 500));
-    const panel = document.getElementById("item-" + id + "-buyPanel");
-    const yesBtn = panel && Array.from(panel.querySelectorAll("button")).find(function (b) { return /^yes$/i.test((b.textContent || "").trim()); });
-    if (!yesBtn) return { ok: false, reason: "buy confirm panel didn't appear" };
+    // Same mount-timing race as the form lookup above, just one step later - confirmed live (real DevTools
+    // inspection, both a vanilla Playwright test and the user's own TornTools browser) that the panel/button
+    // structure itself is exactly right (#item-{id}-buyPanel, "Yes"/"No") when it HAS mounted; a real failure
+    // showed "buy confirm panel didn't appear" for an item that was clearly buyable, so retry here too instead
+    // of giving up on the first check.
+    const findYes = function () { const p = document.getElementById("item-" + id + "-buyPanel"); return p && Array.from(p.querySelectorAll("button")).find(function (b) { return /^yes$/i.test((b.textContent || "").trim()); }); };
+    let yesBtn = findYes();
+    for (let i = 0; i < 5 && !yesBtn; i++) { await sleep(jitter(300, 300)); yesBtn = findYes(); }
+    if (!yesBtn) return { ok: false, reason: "buy confirm panel didn't appear after retrying ~2s" };
     yesBtn.click();
     return { ok: true };
   }
@@ -3968,9 +3975,10 @@
     if (!link) return { ok: false, reason: "'Travel home' link not found after retrying ~2s (not on the abroad travel page?)" };
     link.click();
     await sleep(jitter(400, 500));
-    const panel = document.getElementById("travel-home-panel");
-    const confirmBtn = panel && Array.from(panel.querySelectorAll("button")).find(function (b) { const t = (b.textContent || "").trim(); return /travel back/i.test(t) && !/cancel/i.test(t); });
-    if (!confirmBtn) return { ok: false, reason: "travel-home confirm panel didn't appear" };
+    const findConfirm = function () { const p = document.getElementById("travel-home-panel"); return p && Array.from(p.querySelectorAll("button")).find(function (b) { const t = (b.textContent || "").trim(); return /travel back/i.test(t) && !/cancel/i.test(t); }); };
+    let confirmBtn = findConfirm();
+    for (let i = 0; i < 5 && !confirmBtn; i++) { await sleep(jitter(300, 300)); confirmBtn = findConfirm(); } // same mount-timing retry as domBuyItem's confirm step
+    if (!confirmBtn) return { ok: false, reason: "travel-home confirm panel didn't appear after retrying ~2s" };
     confirmBtn.click();
     return { ok: true };
   }
