@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.14
+// @version      1.99.15
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2621,6 +2621,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.15", d: "Sep 17, 2026", c: ["🛟 Landing failsafe: two related fixes from a real live run (bought Trout ×28, but only 17 actually showed up in the bag). (1) It now VERIFIES the actual delivered quantity after each buy by reading the page's own \"purchased N/28\" counter, instead of assuming a successful click means the full requested amount arrived - live stock running out mid-purchase can silently short you. (2) If a buy comes up short, it now tops up the freed capacity/cash with the next-best available item(s) instead of flying home with unused slots - up to 2 extra rounds. The action log now shows the real delivered quantity (\"×17 (of 28 requested)\") and any top-up purchases alongside the original pick."] },
     { v: "1.99.14", d: "Sep 17, 2026", c: ["🎯 Found the ACTUAL cause of every \"buy confirm panel didn't appear\" failure so far, via a live DevTools inspection of a failed Xanax buy: Torn's buy-confirm panel has two different layouts depending on the item. Non-drug items (Wolverine Plushie, tested clean) show a \"Yes\"/\"No\" confirm. Drug items (Xanax, Cannabis - both real failures) show a completely different layout instead: an editable quantity box with a single \"Buy\" submit button, no \"Yes\" anywhere on it. The failsafe was only ever searching for \"Yes\", so it could never find a drug item's real confirm button, no matter how long it retried. Now matches either \"Yes\" or \"Buy\", scoped to that item's own confirm panel so it can't be confused with any other row's button."] },
     { v: "1.99.13", d: "Sep 16, 2026", c: ["🐛 Fixed the actual cause of the \"buy confirm panel didn't appear\" failure on Cannabis: confirmed live (DevTools inspection of the real page, both with and without TornTools) that the confirm dialog's structure is exactly right - it just hadn't finished mounting yet when the script checked, one step later than where v1.99.11 already added a retry. Both the post-Buy-click confirm step and the Travel-home confirm step now retry for ~2s too, matching the same pattern already used for the earlier form/link lookups."] },
     { v: "1.99.12", d: "Sep 15, 2026", c: ["🛟 Jittered the v1.99.11 DOM-lookup retry timing instead of a fixed 400ms metronome — same \"no suspiciously uniform timing\" habit applied everywhere else in this feature. Worth noting: this particular loop is pure local DOM polling with zero network footprint (checking if a page element has rendered yet, no server call involved), so it was never actually visible to Torn either way — but consistency matters more than relitigating which specific timers technically needed it."] },
@@ -3828,11 +3829,14 @@
       const dur = (e.landedAt && e.leftAt) ? dur2(Math.round((e.leftAt - e.landedAt) / 1000)) : (e.landedAt ? "(still abroad / not flown by script)" : "?");
       const inTxt = e.landedAt ? new Date(e.landedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "?";
       const outTxt = e.leftAt ? new Date(e.leftAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
-      // picks[] (v1.99.6+) is a full multi-item load; pick (singular, older entries) was one item only - support both.
-      const picks = e.picks || (e.pick ? [e.pick] : []);
+      // buyResults[] (v1.99.15+) is what actually got bought, incl. any top-up rounds and verified delivered qty -
+      // prefer it when present; fall back to picks[] (v1.99.6+, the plan) or pick (older, one item) for entries
+      // that never reached a buy attempt, or predate this field.
+      const bought2 = (e.buyResults || []).filter(function (b) { return b.ok; });
+      const picks = bought2.length ? bought2.map(function (b) { return { name: b.name, qty: b.actualQty != null ? b.actualQty : b.qty, actualQty: b.actualQty, reqQty: b.qty }; }) : (e.picks || (e.pick ? [e.pick] : []));
       const totalCost = e.totalCost != null ? e.totalCost : picks.reduce(function (s, p) { return s + (p.cost || 0); }, 0);
       const cashTxt = "cash " + (e.cashAtLanding != null ? "$" + e.cashAtLanding.toLocaleString() : "?") + (picks.length ? " → ~$" + Math.max(0, (e.cashAtLanding || 0) - totalCost).toLocaleString() + " est." : "");
-      const pickTxt = picks.length ? (picks.map(function (p) { return p.name + " ×" + p.qty; }).join(", ") + " (~$" + totalCost.toLocaleString() + (e.filled != null ? ", " + e.filled + "/" + state.cap + " slots" : "") + ")") : "—";
+      const pickTxt = picks.length ? (picks.map(function (p) { return p.name + " ×" + (p.actualQty != null && p.actualQty !== p.reqQty ? (p.actualQty + " (of " + p.reqQty + ")") : p.qty); }).join(", ") + " (~$" + totalCost.toLocaleString() + (e.filled != null ? ", " + e.filled + "/" + state.cap + " slots" : "") + ")") : "—";
       const flyTxt = e.flyResult ? (e.flyResult.ok ? "✅ flew home" : "⚠️ fly failed: " + e.flyResult.reason) : "";
       const errTxt = e.dataRefreshErr ? ("<br><span style='color:#e2707a'>⚠️ board/cash data failed to load: " + esc2(e.dataRefreshErr) + "</span>") : "";
       return "<div style='margin-bottom:5px'>" + when + " · " + (e.country || e.cc || "?") + " · in " + inTxt + " → out " + outTxt + " (" + dur + ")" +
@@ -3909,10 +3913,12 @@
   // ever buying one item and leaving both money and load slots unused when that item alone can't fill either.
   // e.g. 1 Xanax (can't afford a 2nd) still leaves 27 slots and most of your cash - those go to the next-best
   // affordable item instead of sitting idle.
-  function failsafeBestLoad() {
-    const cc = state.loc; if (!cc) return null;
-    const cap = state.cap; let cash = state.cash || 0, remaining = cap;
-    const items = (state.rows || []).filter(function (r) { return r.cc === cc && r.ppi > 0; }).sort(function (a, b) { return b.ppi - a.ppi; });
+  // capBudget/cashBudget/excludeIds let this same greedy pass be reused for a top-up round (whatever slots/cash
+  // are ACTUALLY left after a short delivery - see failsafeExecute()'s buy loop) instead of only ever running
+  // once against the full trip capacity.
+  function buildGreedyLoad(cc, capBudget, cashBudget, excludeIds) {
+    let cash = cashBudget, remaining = capBudget;
+    const items = (state.rows || []).filter(function (r) { return r.cc === cc && r.ppi > 0 && !(excludeIds && excludeIds.has(r.id)); }).sort(function (a, b) { return b.ppi - a.ppi; });
     const picks = []; let totalCost = 0, totalProfit = 0;
     for (let i = 0; i < items.length && remaining > 0 && cash > 0; i++) {
       const it = items[i], avail = loadAvail(it);
@@ -3925,7 +3931,11 @@
       totalCost += cost; totalProfit += it.ppi * take; remaining -= take; cash -= cost;
     }
     if (!picks.length) return null;
-    return { picks: picks, totalCost: totalCost, totalProfit: totalProfit, filled: cap - remaining };
+    return { picks: picks, totalCost: totalCost, totalProfit: totalProfit, filled: capBudget - remaining };
+  }
+  function failsafeBestLoad() {
+    const cc = state.loc; if (!cc) return null;
+    return buildGreedyLoad(cc, state.cap, state.cash || 0, null);
   }
   const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
   const jitter = function (baseMs, spreadMs) { return baseMs + Math.random() * spreadMs; }; // human-ish gaps between steps, not instant/robotic
@@ -3936,9 +3946,18 @@
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
   }
+  // Reads "You have purchased N / 28 items so far" off the abroad shop page - the running total for this whole
+  // trip, not per-item. Used to verify actual delivered quantity, since a real live case showed the script
+  // logging "bought Trout x28" while only 17 actually landed in the bag - Torn can silently fill fewer than
+  // requested if stock ran out between the pick and the click, and clicking Yes/Buy still "succeeds" either way.
+  function getPurchasedCount() {
+    const m = (document.body.innerText || "").match(/purchased\s+([\d,]+)\s*\/\s*\d+\s*items/i);
+    return m ? parseInt(m[1].replace(/,/g, ""), 10) : null;
+  }
   // Buys `qty` of item `id` on the abroad shop (torn.com/page.php?sid=travel while abroad) — fills the qty field,
   // clicks Buy (opens Torn's own "Buy Nx {item} for $Y?" confirm panel), then clicks Yes. Two-step, matching how
-  // Torn's own UI requires a real click to actually spend money - not a raw form-submit shortcut.
+  // Torn's own UI requires a real click to actually spend money - not a raw form-submit shortcut. Verifies the
+  // actual delivered quantity afterward via getPurchasedCount() rather than assuming success == full qty.
   async function domBuyItem(id, qty) {
     // Retry the form lookup for a couple seconds before giving up - a real live failure showed "form not found"
     // for an item that WAS clearly on the page (user screenshot confirmed it), most likely because the buy
@@ -3969,8 +3988,14 @@
     let confirmBtn = findConfirm();
     for (let i = 0; i < 5 && !confirmBtn; i++) { await sleep(jitter(300, 300)); confirmBtn = findConfirm(); }
     if (!confirmBtn) return { ok: false, reason: "buy confirm panel didn't appear after retrying ~2s" };
+    const before = getPurchasedCount();
     confirmBtn.click();
-    return { ok: true };
+    // Give the purchased-count text a moment to actually update, retrying briefly rather than reading it once
+    // immediately after the click (same mount/update-timing caution as everywhere else in this sequence).
+    let after = getPurchasedCount();
+    for (let i = 0; i < 4 && before != null && after === before; i++) { await sleep(jitter(300, 300)); after = getPurchasedCount(); }
+    const actualQty = (before != null && after != null) ? Math.max(0, after - before) : null;
+    return { ok: true, actualQty: actualQty, requestedQty: qty };
   }
   // Boards the flight home - clicks the "Travel home" header link (expands a confirm panel, same pattern as Buy),
   // then clicks the "Travel Back" confirm inside it.
@@ -4085,15 +4110,41 @@
       finish(); return;
     }
     // Buy each item in the load one at a time (jittered pauses between, not instant/robotic) - stop attempting
-    // further items the moment one fails, since a failure likely means something about the page/flow broke and
-    // the rest would probably fail identically.
-    const buyResults = [];
-    for (let i = 0; i < load.picks.length; i++) {
-      const p = load.picks[i];
-      const r = await domBuyItem(p.item.id, p.qty);
-      buyResults.push({ id: p.item.id, name: p.item.name, qty: p.qty, ok: r.ok, reason: r.reason });
-      if (!r.ok) break;
-      if (i < load.picks.length - 1) await sleep(jitter(500, 500));
+    // further items IN THIS ROUND the moment one fails, since a failure likely means something about the page/
+    // flow broke and the rest would probably fail identically.
+    const attemptedIds = new Set();
+    const attemptBuys = async function (picks) {
+      const results = [];
+      for (let i = 0; i < picks.length; i++) {
+        const p = picks[i];
+        attemptedIds.add(p.item.id);
+        const r = await domBuyItem(p.item.id, p.qty);
+        results.push({ id: p.item.id, name: p.item.name, qty: p.qty, buy: p.item.buy, ok: r.ok, reason: r.reason, actualQty: r.actualQty });
+        if (!r.ok) break;
+        if (i < picks.length - 1) await sleep(jitter(500, 500));
+      }
+      return results;
+    };
+    let buyResults = await attemptBuys(load.picks);
+    let slotsUsed = 0, spent = 0;
+    buyResults.forEach(function (b) { if (b.ok) { const q = b.actualQty != null ? b.actualQty : b.qty; slotsUsed += q; spent += q * b.buy; } });
+    // Top-up rounds: a "successful" click can still deliver less than requested if live stock ran out between the
+    // pick and the click (getPurchasedCount() in domBuyItem() catches this - real case: logged "bought Trout x28",
+    // only 17 actually landed). Rather than flying home with the other 11 slots and most of the cash just sitting
+    // unused, recompute a fresh load against whatever's ACTUALLY left (excluding items already attempted this
+    // landing, so a still-depleted item isn't retried into the same shortfall) and keep buying. Bounded to 2 extra
+    // rounds so a persistently thin market can't loop forever.
+    for (let round = 0; round < 2 && buyResults.some(function (b) { return b.ok; }); round++) {
+      const remainingCap = state.cap - slotsUsed, remainingCash = Math.max(0, (state.cash || 0) - spent);
+      if (remainingCap <= 0 || remainingCash <= 0) break;
+      const topUp = buildGreedyLoad(cc, remainingCap, remainingCash, attemptedIds);
+      if (!topUp) break;
+      logFailsafe("↻ Topping up " + remainingCap + " unused slot" + (remainingCap === 1 ? "" : "s") + " with " + fmtPicks(topUp.picks) + "...");
+      const topResults = await attemptBuys(topUp.picks);
+      buyResults = buyResults.concat(topResults);
+      const anyTopOk = topResults.some(function (b) { return b.ok; });
+      topResults.forEach(function (b) { if (b.ok) { const q = b.actualQty != null ? b.actualQty : b.qty; slotsUsed += q; spent += q * b.buy; } });
+      if (!anyTopOk) break;
     }
     rec.buyResults = buyResults;
     const bought = buyResults.filter(function (b) { return b.ok; });
@@ -4103,9 +4154,16 @@
       logFailsafe(msg); showFailsafeAlert(msg, true);
       finish(); return;
     }
-    rec.decision = bought.length === load.picks.length ? "bought" : "bought_partial";
-    const boughtTxt = bought.map(function (b) { return b.name + " ×" + b.qty; }).join(", ");
-    logFailsafe("✅ Auto-bought " + boughtTxt + " (~$" + load.totalCost.toLocaleString() + " planned).");
+    const shortDelivery = bought.some(function (b) { return b.actualQty != null && b.actualQty < b.qty; });
+    const unfilled = state.cap - slotsUsed;
+    rec.decision = (!shortDelivery && unfilled <= 0) ? "bought" : "bought_partial";
+    const boughtTxt = bought.map(function (b) {
+      return b.name + " ×" + (b.actualQty != null && b.actualQty !== b.qty ? (b.actualQty + " (of " + b.qty + " requested)") : b.qty);
+    }).join(", ");
+    logFailsafe("✅ Auto-bought " + boughtTxt + " (~$" + spent.toLocaleString() + ")." + (unfilled > 0 ? " " + unfilled + " slot" + (unfilled === 1 ? "" : "s") + " left unfilled (nothing more profitable available)." : ""));
+    // Overwrite the initial-plan totals from before buying with the FINAL actuals (top-up rounds included), so
+    // the log's summary numbers match what really happened, not just what was originally intended.
+    rec.totalCost = spent; rec.filled = slotsUsed;
     await sleep(jitter(600, 600));
     const flyRes = await domFlyHome();
     rec.flyResult = flyRes; rec.leftAt = flyRes.ok ? Date.now() : null;
