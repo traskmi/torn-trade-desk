@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.13
+// @version      1.99.14
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2621,6 +2621,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.14", d: "Sep 17, 2026", c: ["🎯 Found the ACTUAL cause of every \"buy confirm panel didn't appear\" failure so far, via a live DevTools inspection of a failed Xanax buy: Torn's buy-confirm panel has two different layouts depending on the item. Non-drug items (Wolverine Plushie, tested clean) show a \"Yes\"/\"No\" confirm. Drug items (Xanax, Cannabis - both real failures) show a completely different layout instead: an editable quantity box with a single \"Buy\" submit button, no \"Yes\" anywhere on it. The failsafe was only ever searching for \"Yes\", so it could never find a drug item's real confirm button, no matter how long it retried. Now matches either \"Yes\" or \"Buy\", scoped to that item's own confirm panel so it can't be confused with any other row's button."] },
     { v: "1.99.13", d: "Sep 16, 2026", c: ["🐛 Fixed the actual cause of the \"buy confirm panel didn't appear\" failure on Cannabis: confirmed live (DevTools inspection of the real page, both with and without TornTools) that the confirm dialog's structure is exactly right - it just hadn't finished mounting yet when the script checked, one step later than where v1.99.11 already added a retry. Both the post-Buy-click confirm step and the Travel-home confirm step now retry for ~2s too, matching the same pattern already used for the earlier form/link lookups."] },
     { v: "1.99.12", d: "Sep 15, 2026", c: ["🛟 Jittered the v1.99.11 DOM-lookup retry timing instead of a fixed 400ms metronome — same \"no suspiciously uniform timing\" habit applied everywhere else in this feature. Worth noting: this particular loop is pure local DOM polling with zero network footprint (checking if a page element has rendered yet, no server call involved), so it was never actually visible to Torn either way — but consistency matters more than relitigating which specific timers technically needed it."] },
     { v: "1.99.11", d: "Sep 15, 2026", c: ["🐛 Fixed a real live near-miss: the failsafe correctly picked Xanax ×28 (~$23M, cash confirmed on hand) but the buy failed with \"form not found\" even though the item was clearly listed on the page (user caught it and bought manually just in time). Most likely cause: the buy attempt ran on the very first check right after auto-navigating to the shop page, before Torn's own page had fully finished rendering every row. Both the buy-form lookup and the \"Travel home\" link lookup now retry for up to ~2s before giving up, instead of failing on the very first check."] },
@@ -3954,16 +3955,21 @@
     if (!buyBtn || buyBtn.disabled) return { ok: false, reason: "Buy button missing or disabled (out of stock / can't afford)" };
     buyBtn.click();
     await sleep(jitter(400, 500));
-    // Same mount-timing race as the form lookup above, just one step later - confirmed live (real DevTools
-    // inspection, both a vanilla Playwright test and the user's own TornTools browser) that the panel/button
-    // structure itself is exactly right (#item-{id}-buyPanel, "Yes"/"No") when it HAS mounted; a real failure
-    // showed "buy confirm panel didn't appear" for an item that was clearly buyable, so retry here too instead
-    // of giving up on the first check.
-    const findYes = function () { const p = document.getElementById("item-" + id + "-buyPanel"); return p && Array.from(p.querySelectorAll("button")).find(function (b) { return /^yes$/i.test((b.textContent || "").trim()); }); };
-    let yesBtn = findYes();
-    for (let i = 0; i < 5 && !yesBtn; i++) { await sleep(jitter(300, 300)); yesBtn = findYes(); }
-    if (!yesBtn) return { ok: false, reason: "buy confirm panel didn't appear after retrying ~2s" };
-    yesBtn.click();
+    // Torn's #item-{id}-buyPanel has (at least) TWO different confirm layouts, confirmed live via DevTools:
+    // non-drug items (e.g. Wolverine Plushie) show a "Yes"/"No" confirmPanel like originally tested; Drug items
+    // (Xanax, Cannabis both failed live with "buy confirm panel didn't appear") instead show an amountPanel with
+    // an editable qty + a single <button type="submit">Buy</button>, no "Yes" text anywhere - the search only
+    // ever looked for "Yes", so it could never find a drug item's confirm button at all, retries or not. Scoped
+    // to THIS item's own panel specifically (not page-wide) so matching "Buy" here can't hit some other row's
+    // unrelated Buy button.
+    const findConfirm = function () {
+      const p = document.getElementById("item-" + id + "-buyPanel");
+      return p && Array.from(p.querySelectorAll("button")).find(function (b) { return /^(yes|buy)$/i.test((b.textContent || "").trim()); });
+    };
+    let confirmBtn = findConfirm();
+    for (let i = 0; i < 5 && !confirmBtn; i++) { await sleep(jitter(300, 300)); confirmBtn = findConfirm(); }
+    if (!confirmBtn) return { ok: false, reason: "buy confirm panel didn't appear after retrying ~2s" };
+    confirmBtn.click();
     return { ok: true };
   }
   // Boards the flight home - clicks the "Travel home" header link (expands a confirm panel, same pattern as Buy),
