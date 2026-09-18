@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.15
+// @version      1.99.16
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -59,7 +59,13 @@
 
   /* ---------- state ---------- */
   const state = { resale: null, itemMeta: null, resaleAt: 0, cash: null, stocks: null, cap: GM_getValue("cap", 23), rows: [], updates: {}, filter: "all", fund: GM_getValue("fund", false), scale: GM_getValue("scale", 1), view: "board", inv: null, invAt: 0, travel: null, invReady: null, sort: GM_getValue("sort", "landing"), maxTrip: GM_getValue("maxTrip", 0), ov: GM_getValue("ov", {}), loc: null, lastLoc: undefined, travelWhere: null, flyTo: null, flyEta: null, stkMkt: null, stkMine: null, stkAt: 0, _stkHist: null, oc: null, arrivalTs: 0, myLevel: null, travelMethod: GM_getValue("travelMethod", "std"), travelBook: GM_getValue("travelBook", false), priceBasis: GM_getValue("priceBasis", "mkt"), boardView: GM_getValue("boardView", null), itemBlock: GM_getValue("item_block", {}), awardBlock: GM_getValue("award_block", {}), awardTypeFilter: "all", imAnnotate: GM_getValue("im_annotate", false),
-    autoFailsafe: GM_getValue("auto_failsafe", false), _landedAt: 0, _landedDelayMs: 0, _lastActivityAt: Date.now(), _failsafeFiredFor: 0, _captchaHalted: false, _failsafeTrack: null };
+    // _lastActivityAt starts at 0 (NOT Date.now()) - a fresh script load must never count as "user activity" on
+    // its own, or the failsafe's own auto-navigate-to-shop-page reload would permanently stand itself down right
+    // after firing once (a real live bug: navigated, reloaded, the new instance's "just loaded" timestamp was
+    // already >= landedAt, so the AFK check read that as "you touched the page" and never fired again - two
+    // tabs both hit this and both went silent with nothing bought). Only the real click/keydown/touch/mousemove/
+    // wheel listeners further down should ever advance this.
+    autoFailsafe: GM_getValue("auto_failsafe", false), _landedAt: 0, _landedDelayMs: 0, _lastActivityAt: 0, _failsafeFiredFor: 0, _captchaHalted: false, _failsafeTrack: null };
   function isMobile() { return (window.innerWidth || document.documentElement.clientWidth || 0) <= 560; } // matches the CSS breakpoint
   // One-time: make Landing (what'll be in stock when you arrive) the default board sort for existing installs still on the old $/min default.
   try { if (!GM_getValue("landing_default_v1", false)) { if (state.sort === "ppm") { state.sort = "landing"; GM_setValue("sort", "landing"); } GM_setValue("landing_default_v1", true); } } catch (e) { }
@@ -2621,6 +2627,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.16", d: "Sep 18, 2026", c: ["🐛 Fixed a real dead-end: after the failsafe navigates to the shop page (when it fires from elsewhere on Torn), that page reload was permanently standing the failsafe DOWN for the rest of that landing - a fresh script load's \"you've been active\" timestamp defaulted to right now, which is always later than when you landed, so the very next check misread its own reload as \"user touched the page\" and gave up silently, forever, with no error logged. Live symptom: two \"navigating to the shop page\" log lines, then total silence - nothing ever got bought. Fixed by only counting REAL clicks/taps/scrolls as activity, never a page just finishing loading."] },
     { v: "1.99.15", d: "Sep 17, 2026", c: ["🛟 Landing failsafe: two related fixes from a real live run (bought Trout ×28, but only 17 actually showed up in the bag). (1) It now VERIFIES the actual delivered quantity after each buy by reading the page's own \"purchased N/28\" counter, instead of assuming a successful click means the full requested amount arrived - live stock running out mid-purchase can silently short you. (2) If a buy comes up short, it now tops up the freed capacity/cash with the next-best available item(s) instead of flying home with unused slots - up to 2 extra rounds. The action log now shows the real delivered quantity (\"×17 (of 28 requested)\") and any top-up purchases alongside the original pick."] },
     { v: "1.99.14", d: "Sep 17, 2026", c: ["🎯 Found the ACTUAL cause of every \"buy confirm panel didn't appear\" failure so far, via a live DevTools inspection of a failed Xanax buy: Torn's buy-confirm panel has two different layouts depending on the item. Non-drug items (Wolverine Plushie, tested clean) show a \"Yes\"/\"No\" confirm. Drug items (Xanax, Cannabis - both real failures) show a completely different layout instead: an editable quantity box with a single \"Buy\" submit button, no \"Yes\" anywhere on it. The failsafe was only ever searching for \"Yes\", so it could never find a drug item's real confirm button, no matter how long it retried. Now matches either \"Yes\" or \"Buy\", scoped to that item's own confirm panel so it can't be confused with any other row's button."] },
     { v: "1.99.13", d: "Sep 16, 2026", c: ["🐛 Fixed the actual cause of the \"buy confirm panel didn't appear\" failure on Cannabis: confirmed live (DevTools inspection of the real page, both with and without TornTools) that the confirm dialog's structure is exactly right - it just hadn't finished mounting yet when the script checked, one step later than where v1.99.11 already added a retry. Both the post-Buy-click confirm step and the Travel-home confirm step now retry for ~2s too, matching the same pattern already used for the earlier form/link lookups."] },
