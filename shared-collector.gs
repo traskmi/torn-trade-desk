@@ -109,6 +109,29 @@ function burnStats_(rec, now) {
   var depletion = (burn != null && lastRs > 0 && (rec.q || 0) > 0) ? (lastRs + burn) : null;
   return { burn: burn, depletion_est: depletion };
 }
+// Per-hour-of-week burn estimate (EaglesXeye, Sep 2026: refine burn for peak vs off-peak Torn hours so their
+// touchdown-stock prediction gets closer to precise). burn (above) is one flat median over ALL history - doesn't
+// distinguish a Tuesday-2am restock from a Saturday-6pm one, even though sell velocity clearly isn't uniform
+// (that's the whole reason the seasonal buckets exist for the client's own Landing-probability model). Reuses
+// data already collected, no new pipeline: median batch size from rs[][1] (the restock amounts - also directly
+// answers their separate "dynamic batch size" ask) divided by each bucket's own sell rate (soldQty/seconds from
+// the existing seasonal aggregate) = predicted seconds to burn a full batch AT THAT hour's pace. Buckets under 3
+// samples are skipped as too noisy to trust yet, same spirit as the outlier-dropping elsewhere in this file.
+function burnByHour_(rec, seasonalRec) {
+  if (!seasonalRec) return null;
+  var batches = (rec.rs || []).map(function (e) { return e[1]; }).filter(function (v) { return v > 0; });
+  var batch = med_(batches);
+  if (batch == null) return null;
+  var out = {};
+  Object.keys(seasonalRec).forEach(function (b) {
+    var cell = seasonalRec[b]; // [soldQty, seconds, samples]
+    if (!cell || cell[2] < 3 || cell[1] <= 0) return;
+    var rate = cell[0] / cell[1]; // units/sec at this hour-of-week
+    if (rate <= 0) return;
+    out[b] = Math.round(batch / rate);
+  });
+  return Object.keys(out).length ? out : null;
+}
 
 /** Time-triggered: fetch YATA, diff each item against the last sample, accumulate events + seasonal. */
 function poll() {
@@ -207,14 +230,15 @@ function doGet(e) {
   Object.keys(src).forEach(function (k) {
     var r = src[k];
     var bs = (r.burn !== undefined && r.depletion_est !== undefined) ? { burn: r.burn, depletion_est: r.depletion_est } : burnStats_(r, now);
-    events[k] = { rs: r.rs || [], so: r.so || [], q: r.q, max: r.max, burn: bs.burn, depletion_est: bs.depletion_est };
+    var bbh = burnByHour_(r, d.seasonal[k]);
+    events[k] = { rs: r.rs || [], so: r.so || [], q: r.q, max: r.max, burn: bs.burn, depletion_est: bs.depletion_est, burn_by_hour: bbh };
   });
   var out = {
     kind: 'tdk-restock-export',
     source: 'shared-collector',
     at: d.updated || now,
     poll_interval_sec: 300,
-    fields: 'events[cc:id]={rs:[[t,amt]],so:[t],q,max,burn,depletion_est}; q is a POLLED sample (every poll_interval_sec, not a real-time push) — its age is "at" minus this record\'s q-sample time, which isn\'t tracked per-item, so treat q as accurate to within one poll interval. burn = median seconds from a restock to the next sellout (unweighted median over full kept history — see burnStats_ in source for the exact method, and note the client-side restockPredict() in torn-trade-desk.user.js additionally windows to recent gaps + drops outliers, so it can differ slightly). depletion_est = predicted unix ts the CURRENT stock cycle hits 0 (lastRs+burn), only set when q>0 and mid-cycle; null otherwise. seasonal[cc:id]={bucket->[soldQty,seconds,samples]}, bucket=UTCday(0=Sun..6)*24+UTChour(0..23)',
+    fields: 'events[cc:id]={rs:[[t,amt]],so:[t],q,max,burn,depletion_est,burn_by_hour}; q is a POLLED sample (every poll_interval_sec, not a real-time push) — its age is "at" minus this record\'s q-sample time, which isn\'t tracked per-item, so treat q as accurate to within one poll interval. burn = median seconds from a restock to the next sellout (unweighted median over full kept history — see burnStats_ in source for the exact method, and note the client-side restockPredict() in torn-trade-desk.user.js additionally windows to recent gaps + drops outliers, so it can differ slightly). depletion_est = predicted unix ts the CURRENT stock cycle hits 0 (lastRs+burn), only set when q>0 and mid-cycle; null otherwise. burn_by_hour={bucket->seconds}, same bucket key as seasonal below (UTCday*24+UTChour) - predicted seconds to burn a full restock batch AT THAT hour-of-week\'s sell pace (median batch size ÷ that bucket\'s soldQty/seconds rate), buckets with <3 samples omitted as unreliable; null if there isn\'t enough data yet. seasonal[cc:id]={bucket->[soldQty,seconds,samples]}, bucket=UTCday(0=Sun..6)*24+UTChour(0..23)',
     events: events,
     seasonal: d.seasonal || {}
   };
