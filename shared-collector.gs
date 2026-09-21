@@ -23,6 +23,23 @@
  *   - It runs itself on the 5-min trigger. Check View → Executions for errors.
  *   - Reset all data: delete the "tdk_shared_data.json" file in your Drive, then Run `setup` again.
  *   - Stop collecting: Triggers (clock icon) → delete the `poll` trigger.
+ *
+ * CHANGELOG (this file has no @version like the userscript does — dated entries, newest first)
+ *   Sep 21, 2026 — Added burn_by_hour (per hour-of-week predicted burn seconds, from median batch size ÷ that
+ *                  hour's seasonal sell rate) to the export, for EaglesXeye's peak/off-peak refinement ask.
+ *   Sep 3-4, 2026 — Added burn (median restock→sellout seconds) + depletion_est (predicted sellout timestamp)
+ *                  + poll_interval_sec to the export (EaglesXeye's short-flight burn-timing ask). Fixed
+ *                  depletion_est going null despite q>0 — dropped an overly-strict lastRs>lastSo guard, trust
+ *                  q>0 directly instead.
+ *   Sep 2, 2026 — CONTRABAND_IDS get longer event age/count headroom (EV_AGE_RARE/EV_MAX_RARE) so genuinely
+ *                  rare items (Meteorite Fragment, Bearer Bond, …) don't get pruned before a 2nd restock ever
+ *                  lands, and fast-cycling ones (Shark Fin, Turtle Shell, …) don't cap out too early either.
+ *   Aug 18-20, 2026 — Dropped the unused up[] (raw increases) array from the export (~30% smaller feed — no
+ *                  client actually used it). Added SAMPLE_MAX so a stale (>30min) YATA gap can't get logged
+ *                  as one misleading restock/sellout event.
+ *   Aug 5, 2026 — Initial build: polls YATA every 5 min, accumulates restock/sellout events + seasonal
+ *                  day×hour sell-rate buckets, serves both via doGet(). Seeded from the userscript's own
+ *                  already-collected local data via seedFromBlob().
  */
 
 var YATA_URL = 'https://yata.yt/api/v1/travel/export/';
