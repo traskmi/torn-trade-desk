@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.18
+// @version      1.99.19
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2664,6 +2664,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.19", d: "Sep 21, 2026", c: ["📒 The failsafe log's local file export now writes to a SINGLE file in place (true overwrite, no more numbered duplicates piling up) instead of a fresh download each time. New ⚙ Settings button \"📁 Choose log file…\" — one click to pick where it saves (Chrome/Edge only, browser security requires a real click for real disk write access), then every future event writes straight there automatically with no further prompts. Also added a byte-size cap (4MB) on top of the existing 200-entry limit, pruning oldest entries first so the file can't grow unbounded. Browsers without this API still fall back to the old numbered-download behavior."] },
     { v: "1.99.18", d: "Sep 21, 2026", c: ["🐛 Fixed a real captcha-detector false positive, confirmed live via DevTools: Torn's own preferences.php page permanently embeds a real Google reCAPTCHA widget in the DOM for account-security actions (changing your password, etc.) - present whether or not it's ever actually shown, sitting there marked hidden. The detector previously only checked whether anything captcha-shaped existed anywhere in the page, so it force-disabled the failsafe every single time the page was visited, real challenge or not. Now also requires the matched element to actually be visible (not hidden via the hidden attribute/class, display:none, or visibility:hidden) before treating it as a real captcha - doesn't weaken protection against an actual challenge, since a real one is shown, not dormant."] },
     { v: "1.99.17", d: "Sep 21, 2026", c: [
       "🐛 Landing failsafe: still seeing \"form not found\" for items confirmed present with real stock (Insulin, Xanax, Stingray Plushie across several live landings). Extended the retry window and added a NAME-based fallback - if the item id we have doesn't match a form, it searches by the item's visible name instead and reads the real id off whatever row it finds, using that corrected id for every step after (qty, Buy, confirm). Covers both a lingering render-timing race and a genuine id mismatch.",
@@ -3120,7 +3121,8 @@
         '<div id="tdk-fs-log" class="ssub"></div>' +
         '<div class="sl" style="margin-top:10px">📒 Failsafe action log <small>— cash held, stock seen, what (if anything) it bought, captcha hits, time landed → time it flew you home</small></div>' +
         '<div id="tdk-fs-events" class="ssub" style="max-height:220px;overflow-y:auto;font-family:ui-monospace,monospace;font-size:10.5px;line-height:1.6"></div>' +
-        '<div class="srow"><button class="tdk-btn2 tdk-sm" id="tdk-fs-copy">📋 Copy full log (JSON)</button><button class="tdk-btn2 tdk-sm" id="tdk-fs-clear">Clear log</button></div>' +
+        '<div class="srow"><button class="tdk-btn2 tdk-sm" id="tdk-fs-copy">📋 Copy full log (JSON)</button><button class="tdk-btn2 tdk-sm" id="tdk-fs-clear">Clear log</button><button class="tdk-btn2 tdk-sm" id="tdk-fs-choosefile">📁 Choose log file…</button></div>' +
+        '<div id="tdk-fs-filemsg" class="ssub"></div>' +
         '<div class="sl" style="margin-top:16px">🚫 Hidden items <small>— excluded from the board (best pick, best trip &amp; every view) until you turn them back on</small></div>' +
         '<div id="tdk-set-hidden"></div>' +
         '<div class="sl" style="margin-top:14px">Need a key? <a class="prof" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Torn → Settings → API Keys</a>. Note: the 📦 Bag needs Torn’s inventory API, which is temporarily disabled during Torn’s inventory migration — no key fixes that until Torn restores it.</div>' +
@@ -3164,6 +3166,15 @@
     });
     const fsClear = host.querySelector("#tdk-fs-clear");
     if (fsClear) fsClear.addEventListener("click", function () { GM_setValue("failsafe_events", []); renderFailsafeEvents(); });
+    renderFailsafeFileStatus();
+    const fsChooseFile = host.querySelector("#tdk-fs-choosefile");
+    if (fsChooseFile) fsChooseFile.addEventListener("click", function () {
+      const msg = host.querySelector("#tdk-fs-filemsg");
+      chooseFailsafeLogFile().then(function (r) {
+        if (msg) msg.textContent = r.ok ? " Saved to that file ✓ - every future event overwrites it in place, no more clicks needed." : (" " + r.reason);
+        renderFailsafeFileStatus();
+      }).catch(function (e) { if (msg) msg.textContent = " Cancelled or failed: " + (e && e.message || e); });
+    });
     updateTravelEff();
     detectTravelProp();
     host.querySelector("#tdk-set-test").addEventListener("click", function () {
@@ -3864,9 +3875,85 @@
   // auto-number repeat downloads of the same filename (tdk-failsafe-log.json, (1), (2)...) rather than silently
   // overwriting - read the most-recently-modified tdk-failsafe-log* file in the Downloads folder to always get
   // the latest, rather than assuming a single fixed path.
-  function exportFailsafeLogFile() {
+  // Caps the log by BYTE SIZE (on top of the existing 200-entry count cap in logFailsafeEvent) by dropping the
+  // OLDEST entries first (the array is newest-first/unshift order, so oldest = the tail) until it fits. 4MB is
+  // generous for a JSON text log but keeps the single on-disk file from growing unbounded over a long history.
+  const FAILSAFE_LOG_MAX_BYTES = 4 * 1024 * 1024;
+  function pruneLogForSize(log) {
+    let arr = log;
+    while (arr.length > 1 && JSON.stringify(arr).length > FAILSAFE_LOG_MAX_BYTES) arr = arr.slice(0, arr.length - 1);
+    return arr;
+  }
+  // Small IndexedDB wrapper (plain browser API, no GM wrapper needed - a userscript runs in the page's own
+  // origin) just to persist the one FileSystemFileHandle across page loads/sessions, so the user only has to
+  // grant it once via the Settings button below, not every time the script reloads.
+  function idbGet(key) {
+    return new Promise(function (resolve) {
+      try {
+        const req = indexedDB.open("tdk-filehandles", 1);
+        req.onupgradeneeded = function () { req.result.createObjectStore("h"); };
+        req.onsuccess = function () {
+          try {
+            const tx = req.result.transaction("h", "readonly").objectStore("h").get(key);
+            tx.onsuccess = function () { resolve(tx.result || null); };
+            tx.onerror = function () { resolve(null); };
+          } catch (e) { resolve(null); }
+        };
+        req.onerror = function () { resolve(null); };
+      } catch (e) { resolve(null); }
+    });
+  }
+  function idbSet(key, val) {
+    return new Promise(function (resolve) {
+      try {
+        const req = indexedDB.open("tdk-filehandles", 1);
+        req.onupgradeneeded = function () { req.result.createObjectStore("h"); };
+        req.onsuccess = function () {
+          try {
+            const tx = req.result.transaction("h", "readwrite").objectStore("h").put(val, key);
+            tx.onsuccess = function () { resolve(true); };
+            tx.onerror = function () { resolve(false); };
+          } catch (e) { resolve(false); }
+        };
+        req.onerror = function () { resolve(false); };
+      } catch (e) { resolve(false); }
+    });
+  }
+  let _failsafeFileHandle; // cached in memory after the first idbGet/grant, so every event write doesn't hit IndexedDB
+  // User-gesture-only: browsers refuse to hand out real disk write access without a genuine click, so this can
+  // only ever run from the Settings button below, never from the automatic per-event save path.
+  async function chooseFailsafeLogFile() {
+    if (typeof window.showSaveFilePicker !== "function") return { ok: false, reason: "This browser doesn't support the File System Access API (Chrome/Edge only) - falling back to numbered downloads instead." };
+    const handle = await window.showSaveFilePicker({ suggestedName: "tdk-failsafe-log.json", types: [{ description: "JSON", accept: { "application/json": [".json"] } }] });
+    await idbSet("failsafe_log", handle);
+    _failsafeFileHandle = handle;
+    await writeFailsafeLogToHandle(handle);
+    return { ok: true };
+  }
+  async function writeFailsafeLogToHandle(handle) {
+    const log = pruneLogForSize(GM_getValue("failsafe_events", []));
+    const writable = await handle.createWritable();
+    await writable.write(JSON.stringify(log, null, 2));
+    await writable.close();
+  }
+  // Auto-saves the full structured log to a local file on every event (terminal landings + captcha hits) so it
+  // can be read directly off disk instead of needing to paste "Copy full log (JSON)" by hand each time. If a
+  // File System Access handle has been granted (⚙ Settings → "Choose log file"), writes IN PLACE to that single
+  // file - true overwrite, no duplicates. Otherwise falls back to a plain download, which browsers auto-number
+  // on repeat saves of the same filename (tdk-failsafe-log.json, (1), (2)...) rather than overwriting - read the
+  // most-recently-modified tdk-failsafe-log* file in Downloads to always get the latest in that fallback case.
+  async function exportFailsafeLogFile() {
     try {
-      const data = JSON.stringify(GM_getValue("failsafe_events", []), null, 2);
+      if (_failsafeFileHandle === undefined) _failsafeFileHandle = await idbGet("failsafe_log");
+      if (_failsafeFileHandle) {
+        try {
+          const perm = await _failsafeFileHandle.queryPermission({ mode: "readwrite" });
+          if (perm === "granted") { await writeFailsafeLogToHandle(_failsafeFileHandle); return; }
+          // 'prompt' or 'denied' - can't re-prompt from this automatic background path (no user gesture here),
+          // silently fall through to the download fallback below rather than blocking the failsafe on it.
+        } catch (e) { }
+      }
+      const data = JSON.stringify(pruneLogForSize(GM_getValue("failsafe_events", [])), null, 2);
       const blob = new Blob([data], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       if (typeof GM_download === "function") {
@@ -3897,6 +3984,13 @@
       ? "Recent: " + log.slice(0, 5).map(function (x) { return ago(Math.floor((Date.now() - x.t) / 1000)) + " ago — " + x.msg; }).join("<br>")
       : "No failsafe events yet.";
     renderFailsafeEvents();
+  }
+  function renderFailsafeFileStatus() {
+    const el = host && host.querySelector("#tdk-fs-filemsg"); if (!el) return;
+    if (typeof window.showSaveFilePicker !== "function") { el.textContent = "This browser doesn't support writing straight to a chosen file (Chrome/Edge only) — saves as a numbered download instead."; return; }
+    idbGet("failsafe_log").then(function (h) {
+      el.textContent = h ? ("Writing in place to \"" + (h.name || "your chosen file") + "\" on every event — no further clicks needed.") : "Not set up yet — click \"Choose log file…\" once to pick where it saves; every event after that writes straight there automatically.";
+    });
   }
   const FS_DECISION_LABEL = {
     bought: "🛒 bought", bought_partial: "🛒 partially bought", no_profitable_pick: "🚫 nothing profitable", not_on_shop_page: "📵 not on shop page",
