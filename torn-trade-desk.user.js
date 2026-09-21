@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.17
+// @version      1.99.18
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -2664,6 +2664,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.18", d: "Sep 21, 2026", c: ["🐛 Fixed a real captcha-detector false positive, confirmed live via DevTools: Torn's own preferences.php page permanently embeds a real Google reCAPTCHA widget in the DOM for account-security actions (changing your password, etc.) - present whether or not it's ever actually shown, sitting there marked hidden. The detector previously only checked whether anything captcha-shaped existed anywhere in the page, so it force-disabled the failsafe every single time the page was visited, real challenge or not. Now also requires the matched element to actually be visible (not hidden via the hidden attribute/class, display:none, or visibility:hidden) before treating it as a real captcha - doesn't weaken protection against an actual challenge, since a real one is shown, not dormant."] },
     { v: "1.99.17", d: "Sep 21, 2026", c: [
       "🐛 Landing failsafe: still seeing \"form not found\" for items confirmed present with real stock (Insulin, Xanax, Stingray Plushie across several live landings). Extended the retry window and added a NAME-based fallback - if the item id we have doesn't match a form, it searches by the item's visible name instead and reads the real id off whatever row it finds, using that corrected id for every step after (qty, Buy, confirm). Covers both a lingering render-timing race and a genuine id mismatch.",
       "⚠️ One live landing showed 3 different items all click through as \"successful\" but deliver 0 units and spend $0 - extended the delivery-verification window in case it's a timing issue, but flagging honestly: this pattern (multiple silent no-op purchases right before a captcha fired) could also be an early sign of Torn's anti-automation systems responding, not just a bug. Worth treating cautiously, not just patching around.",
@@ -3953,13 +3954,32 @@
       } catch (e) { }
     } catch (e) { }
   }
+  // Confirmed live (real false trigger, Sep 2026): Torn's own preferences.php permanently ships a real Google
+  // reCAPTCHA widget in the DOM (<div class="security-captcha hidden">...<iframe title="reCAPTCHA">...) for
+  // account-security actions like changing your password - present whether or not it's ever actually shown, so
+  // a plain "does anything captcha-shaped exist" check false-fires on every visit to that page. A REAL challenge
+  // is visible; this dormant one deliberately isn't - so require visibility too, not just DOM presence.
+  function isElementHidden(el) {
+    try {
+      let n = el, depth = 0;
+      while (n && n.nodeType === 1 && depth < 6) {
+        if (n.hidden) return true;
+        if (n.classList && n.classList.contains("hidden")) return true;
+        const cs = window.getComputedStyle ? getComputedStyle(n) : null;
+        if (cs && (cs.display === "none" || cs.visibility === "hidden")) return true;
+        n = n.parentElement; depth++;
+      }
+      if (el.offsetParent === null && document.body.contains(el)) return true; // catches most other display:none cases a few ancestors up wouldn't
+      return false;
+    } catch (e) { return false; }
+  }
   function looksLikeCaptcha(el) {
     try {
       if (!el || el.nodeType !== 1) return false;
       const src = (el.tagName === "IFRAME" && el.src) || "";
-      if (/captcha|hcaptcha|recaptcha|challenges\.cloudflare/i.test(src)) return true;
+      if (/captcha|hcaptcha|recaptcha|challenges\.cloudflare/i.test(src)) return !isElementHidden(el);
       const idcls = (el.id || "") + " " + (typeof el.className === "string" ? el.className : "");
-      if (/captcha|bot-?check|verify-?human/i.test(idcls)) return true;
+      if (/captcha|bot-?check|verify-?human/i.test(idcls)) return !isElementHidden(el);
       return false;
     } catch (e) { return false; }
   }
