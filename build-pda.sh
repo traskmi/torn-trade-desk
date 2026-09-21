@@ -33,6 +33,7 @@ cat > "$OUT" <<HDR
 // @grant        GM_getValue
 // @grant        GM_addStyle
 // @grant        GM_setClipboard
+// @grant        GM_download
 // @run-at       document-end
 // ==/UserScript==
 HDR

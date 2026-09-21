@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.16
+// @version      1.99.17
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -19,6 +19,7 @@
 // @grant        GM_getValue
 // @grant        GM_addStyle
 // @grant        GM_setClipboard
+// @grant        GM_download
 // @run-at       document-end
 // ==/UserScript==
 
@@ -441,17 +442,53 @@
   // Central shared dataset (the always-on Google Apps Script collector) — baked in so every user reads it with no
   // setup; the client just prefers it per-item over its own thinner local record. Silent: no UI, auto-synced on load.
   const SHARED_URL = "https://script.google.com/macros/s/AKfycbz0xnXTzToEVuLkEEQ6z0mYVHGNREqqvOc1ihTEBUMSsxydu_IgYxLdrlYOgADJciuH/exec";
+  // Tracks sync outcome (not just success) so a silent, days-long outage can actually be surfaced in Settings
+  // instead of the tool just quietly degrading to local-only restock history with zero indication anything's
+  // wrong - shared_synced_at (success-only) previously froze at whatever the LAST successful sync was, so a
+  // dead feed could sit unnoticed indefinitely; a real live outage (transient, since resolved) went undetected
+  // this way until stumbled into via an unrelated bug report.
   function syncShared(manual, cb) {
     const url = GM_getValue("shared_url", "") || SHARED_URL; // GM override optional (no UI), else the baked-in feed
     if (!url) { if (cb) cb({ err: "No shared feed URL." }); return; }
+    try { GM_setValue("shared_sync_last_attempt", Date.now()); } catch (e) { }
     gmGet(url, 30000).then(function (j) {
-      if (!j || j.kind !== "tdk-restock-export") { if (cb) cb({ err: "That URL didn’t return Trade Desk data." }); return; }
-      try { GM_setValue("shared_data", { at: j.at, events: j.events || {}, seasonal: j.seasonal || {} }); GM_setValue("shared_synced_at", Date.now()); } catch (e) { }
+      if (!j || j.kind !== "tdk-restock-export") {
+        try { GM_setValue("shared_sync_last_err", "Bad response shape (not a Trade Desk export)"); } catch (e) { }
+        if (cb) cb({ err: "That URL didn’t return Trade Desk data." }); return;
+      }
+      try {
+        GM_setValue("shared_data", { at: j.at, events: j.events || {}, seasonal: j.seasonal || {} });
+        GM_setValue("shared_synced_at", Date.now());
+        GM_setValue("shared_sync_last_err", null);
+      } catch (e) { }
       _sharedCache = undefined;
       let items = Object.keys(j.events || {}).length, buckets = 0; const s = j.seasonal || {}; Object.keys(s).forEach(function (k) { buckets += Object.keys(s[k]).length; });
       if (state.rows && state.rows.length) render();
       if (cb) cb({ items: items, buckets: buckets, at: j.at });
-    }).catch(function (e) { if (cb) cb({ err: (e.message || e) }); });
+    }).catch(function (e) {
+      try { GM_setValue("shared_sync_last_err", (e && (e.message || e.kind)) || "unknown error"); } catch (e2) { }
+      if (cb) cb({ err: (e.message || e) });
+    });
+  }
+  // Status for the Settings warning: stale = past the same 4-day threshold sharedFresh() uses to stop trusting
+  // the cached data at all (matches evRecord()'s own fallback point, so the warning fires exactly when the tool
+  // actually starts behaving differently, not on an arbitrary earlier schedule).
+  function sharedFeedStatus() {
+    let synced = 0, lastErr = null; try { synced = GM_getValue("shared_synced_at", 0) || 0; lastErr = GM_getValue("shared_sync_last_err", null); } catch (e) { }
+    const ageMs = synced ? Date.now() - synced : Infinity;
+    return { synced: synced, lastErr: lastErr, stale: ageMs > 4 * 86400 * 1000, ageMs: ageMs };
+  }
+  function renderSharedFeedStatus() {
+    const el = host && host.querySelector("#tdk-set-sharedfeed"); if (!el) return;
+    const s = sharedFeedStatus();
+    const ageTxt = s.synced ? ago(Math.floor(s.ageMs / 1000)) + " ago" : "never";
+    let html = "Last synced: <b>" + ageTxt + "</b>";
+    if (s.stale) {
+      html += "<br><span style='color:#e2707a'>⚠️ Hasn't synced successfully in over 4 days — restock history/predictions (including what the landing failsafe judges availability on) are running on local-only data, which is a lot thinner. " + (s.lastErr ? "Last error: " + esc2(s.lastErr) : "No specific error recorded — try Sync now.") + "</span>";
+    } else if (s.lastErr) {
+      html += " <span style='color:#c9a227'>(most recent attempt failed: " + esc2(s.lastErr) + ", but a prior sync is still within the 4-day trust window)</span>";
+    }
+    el.innerHTML = html;
   }
 
   function restockPredict(cc, id) {
@@ -2627,6 +2664,12 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.17", d: "Sep 21, 2026", c: [
+      "🐛 Landing failsafe: still seeing \"form not found\" for items confirmed present with real stock (Insulin, Xanax, Stingray Plushie across several live landings). Extended the retry window and added a NAME-based fallback - if the item id we have doesn't match a form, it searches by the item's visible name instead and reads the real id off whatever row it finds, using that corrected id for every step after (qty, Buy, confirm). Covers both a lingering render-timing race and a genuine id mismatch.",
+      "⚠️ One live landing showed 3 different items all click through as \"successful\" but deliver 0 units and spend $0 - extended the delivery-verification window in case it's a timing issue, but flagging honestly: this pattern (multiple silent no-op purchases right before a captcha fired) could also be an early sign of Torn's anti-automation systems responding, not just a bug. Worth treating cautiously, not just patching around.",
+      "📡 The shared prediction feed (restock history/predictions, separate from the live board) can silently go stale for days with zero indication - added a visible warning + manual \"Sync now\" button in ⚙ Settings for when that happens again.",
+      "📒 The failsafe log now auto-saves to a local tdk-failsafe-log.json file on every event, so the full history is available without needing to copy/paste it by hand."
+    ] },
     { v: "1.99.16", d: "Sep 18, 2026", c: ["🐛 Fixed a real dead-end: after the failsafe navigates to the shop page (when it fires from elsewhere on Torn), that page reload was permanently standing the failsafe DOWN for the rest of that landing - a fresh script load's \"you've been active\" timestamp defaulted to right now, which is always later than when you landed, so the very next check misread its own reload as \"user touched the page\" and gave up silently, forever, with no error logged. Live symptom: two \"navigating to the shop page\" log lines, then total silence - nothing ever got bought. Fixed by only counting REAL clicks/taps/scrolls as activity, never a page just finishing loading."] },
     { v: "1.99.15", d: "Sep 17, 2026", c: ["🛟 Landing failsafe: two related fixes from a real live run (bought Trout ×28, but only 17 actually showed up in the bag). (1) It now VERIFIES the actual delivered quantity after each buy by reading the page's own \"purchased N/28\" counter, instead of assuming a successful click means the full requested amount arrived - live stock running out mid-purchase can silently short you. (2) If a buy comes up short, it now tops up the freed capacity/cash with the next-best available item(s) instead of flying home with unused slots - up to 2 extra rounds. The action log now shows the real delivered quantity (\"×17 (of 28 requested)\") and any top-up purchases alongside the original pick."] },
     { v: "1.99.14", d: "Sep 17, 2026", c: ["🎯 Found the ACTUAL cause of every \"buy confirm panel didn't appear\" failure so far, via a live DevTools inspection of a failed Xanax buy: Torn's buy-confirm panel has two different layouts depending on the item. Non-drug items (Wolverine Plushie, tested clean) show a \"Yes\"/\"No\" confirm. Drug items (Xanax, Cannabis - both real failures) show a completely different layout instead: an editable quantity box with a single \"Buy\" submit button, no \"Yes\" anywhere on it. The failsafe was only ever searching for \"Yes\", so it could never find a drug item's real confirm button, no matter how long it retried. Now matches either \"Yes\" or \"Buy\", scoped to that item's own confirm panel so it can't be confused with any other row's button."] },
@@ -3067,6 +3110,9 @@
         '<div id="tdk-set-tdetect" class="ssub"></div>' +
         '<div class="sl" style="margin-top:16px">🛒 Item Market page <small>— extras injected directly onto torn.com\'s own Item Market</small></div>' +
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-imannot"' + (state.imAnnotate ? ' checked' : '') + '> Show the price banner &amp; crossed-market ⚡ tags on the Item Market page <small>(off by default — market value / cheapest bazaar / top bid info + a per-listing flip tag)</small></label></div>' +
+        '<div class="sl" style="margin-top:16px">📡 Shared prediction feed <small>— restock history + burn/depletion predictions, polled globally every 5 min server-side (separate from the live board, which always comes straight from YATA regardless of this feed\'s health)</small></div>' +
+        '<div id="tdk-set-sharedfeed" class="ssub"></div>' +
+        '<div class="srow"><button class="tdk-btn2 tdk-sm" id="tdk-set-syncnow">🔄 Sync now</button><span id="tdk-set-syncmsg" class="ssub"></span></div>' +
         '<div class="sl" style="margin-top:16px">🛟 Landing failsafe <small>— for when you land and get sidetracked. If you take no action for a bit after touchdown, this fires an alert (flashing banner · sound · notification · vibration) and <b>auto-buys a full profitable load (not just one item) and flies you home</b> — fills remaining slots/cash with the next-best item(s) when the top pick can\'t use it all, same as clicking it yourself, just automated. If this browser tab isn\'t on the abroad shop page when it fires, it navigates the tab there itself first, then acts. <b>This is real automated gameplay — a genuine Torn ban risk if flagged.</b> A captcha appearing anywhere force-disables it immediately. Safe with multiple Torn tabs open — only one will ever act on a given landing.</small></div>' +
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-fsafe"' + (state.autoFailsafe ? ' checked' : '') + (state._captchaHalted ? ' disabled' : '') + '> Enable landing failsafe' + (state._captchaHalted ? ' <small style="color:#e2707a">— OFF: a captcha was detected last session, re-check the box to re-arm</small>' : '') + '</label></div>' +
         '<div class="srow ssub">Alerts after a random 15–60s of no activity on the page after landing <small>(varies each time on purpose, not a fixed timer)</small></div>' +
@@ -3099,6 +3145,15 @@
     if (fsChk) fsChk.addEventListener("change", function () {
       state.autoFailsafe = this.checked; GM_setValue("auto_failsafe", state.autoFailsafe);
       if (state.autoFailsafe) state._captchaHalted = false; // re-enabling clears a prior captcha halt
+    });
+    renderSharedFeedStatus();
+    const syncNowBtn = host.querySelector("#tdk-set-syncnow");
+    if (syncNowBtn) syncNowBtn.addEventListener("click", function () {
+      const msg = host.querySelector("#tdk-set-syncmsg"); if (msg) msg.textContent = " Syncing…";
+      syncShared(true, function (r) {
+        if (msg) msg.textContent = r.err ? (" Failed: " + r.err) : (" Synced ✓ " + r.items + " items, " + r.buckets + " buckets");
+        renderSharedFeedStatus();
+      });
     });
     renderFailsafeLog();
     const fsCopy = host.querySelector("#tdk-fs-copy");
@@ -3801,6 +3856,27 @@
   // looked like, what (if anything) it chose to buy, captcha hits, and time landed → time it flew you home.
   function logFailsafeEvent(rec) {
     try { const log = GM_getValue("failsafe_events", []); log.unshift(rec); GM_setValue("failsafe_events", log.slice(0, 200)); } catch (e) { }
+    exportFailsafeLogFile();
+  }
+  // Auto-saves the full structured log to a local file on every event (terminal landings + captcha hits) so it
+  // can be read directly off disk instead of needing to paste "Copy full log (JSON)" by hand each time. Browsers
+  // auto-number repeat downloads of the same filename (tdk-failsafe-log.json, (1), (2)...) rather than silently
+  // overwriting - read the most-recently-modified tdk-failsafe-log* file in the Downloads folder to always get
+  // the latest, rather than assuming a single fixed path.
+  function exportFailsafeLogFile() {
+    try {
+      const data = JSON.stringify(GM_getValue("failsafe_events", []), null, 2);
+      const blob = new Blob([data], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      if (typeof GM_download === "function") {
+        GM_download({ url: url, name: "tdk-failsafe-log.json", saveAs: false });
+      } else {
+        const a = document.createElement("a");
+        a.href = url; a.download = "tdk-failsafe-log.json";
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      }
+      setTimeout(function () { try { URL.revokeObjectURL(url); } catch (e) { } }, 5000);
+    } catch (e) { }
   }
   // Full list (not just the top few) of every item the board currently has priced for this country, so the log
   // can actually be used to audit a decision ("did it correctly skip Insulin because it was out of stock, or
@@ -3965,19 +4041,32 @@
   // clicks Buy (opens Torn's own "Buy Nx {item} for $Y?" confirm panel), then clicks Yes. Two-step, matching how
   // Torn's own UI requires a real click to actually spend money - not a raw form-submit shortcut. Verifies the
   // actual delivered quantity afterward via getPurchasedCount() rather than assuming success == full qty.
-  async function domBuyItem(id, qty) {
-    // Retry the form lookup for a couple seconds before giving up - a real live failure showed "form not found"
-    // for an item that WAS clearly on the page (user screenshot confirmed it), most likely because the buy
-    // attempt ran on the very first checkFailsafeTimer tick after a fresh page load (auto-navigate case), before
-    // Torn's own React app had fully finished mounting every row.
-    let form = document.getElementById("item-" + id + "-form");
-    for (let i = 0; i < 5 && !form; i++) { await sleep(jitter(300, 300)); form = document.getElementById("item-" + id + "-form"); } // jittered, not a metronome - this is pure local DOM polling with zero network footprint (no server call, nothing Torn could ever see), but keeping the "no suspiciously uniform timing" habit anyway
-    if (!form) return { ok: false, reason: "form not found after retrying ~2s (not on the abroad shop page, or item not listed)" };
+  async function domBuyItem(id, qty, name) {
+    // Real live failures kept showing "form not found" for items confirmed present with real stock (user
+    // screenshots + the failsafe's own stockSnapshot both showing it there) - a plain id-based retry (v1.99.11)
+    // wasn't enough. Two changes: (1) a longer, more generous retry window (was ~2s / 5 tries, now ~4-5s / 8
+    // tries) in case the render race is sometimes slower than originally assumed; (2) a NAME-based fallback -
+    // if the id we were given (sourced from YATA/board data, not Torn's own DOM) doesn't match any form, search
+    // for a row whose visible item name matches instead, and read the REAL id off of whatever form that row
+    // actually has. Covers both a lingering render-timing race AND a genuine id mapping mismatch, and the
+    // resolved real id is used for every lookup after this point (qty input, Buy button, confirm panel) so a
+    // caught mismatch doesn't just fail again one step later.
+    const findForm = function () {
+      let f = document.getElementById("item-" + id + "-form");
+      if (f || !name) return f;
+      const btn = Array.from(document.querySelectorAll("button")).find(function (b) { return (b.textContent || "").trim() === name; });
+      const row = btn && btn.closest("li");
+      return row ? row.querySelector('form[id^="item-"][id$="-form"]') : null;
+    };
+    let form = findForm();
+    for (let i = 0; i < 8 && !form; i++) { await sleep(jitter(400, 300)); form = findForm(); } // jittered, not a metronome - this is pure local DOM polling with zero network footprint (no server call, nothing Torn could ever see), but keeping the "no suspiciously uniform timing" habit anyway
+    if (!form) return { ok: false, reason: "form not found after retrying (not on the abroad shop page, item not listed, or an id/name mismatch)" };
+    const realId = form.id.replace(/^item-/, "").replace(/-form$/, ""); // may differ from the passed-in id if the name-fallback caught a mismatch - use this from here on
     const input = form.querySelector('input.input-money:not([type="hidden"])');
     if (!input) return { ok: false, reason: "qty input not found" };
     reactSetValue(input, qty);
     await sleep(jitter(350, 450));
-    const buyBtn = document.querySelector('button[type="submit"][form="item-' + id + '-form"]');
+    const buyBtn = document.querySelector('button[type="submit"][form="item-' + realId + '-form"]');
     if (!buyBtn || buyBtn.disabled) return { ok: false, reason: "Buy button missing or disabled (out of stock / can't afford)" };
     buyBtn.click();
     await sleep(jitter(400, 500));
@@ -3989,7 +4078,7 @@
     // to THIS item's own panel specifically (not page-wide) so matching "Buy" here can't hit some other row's
     // unrelated Buy button.
     const findConfirm = function () {
-      const p = document.getElementById("item-" + id + "-buyPanel");
+      const p = document.getElementById("item-" + realId + "-buyPanel");
       return p && Array.from(p.querySelectorAll("button")).find(function (b) { return /^(yes|buy)$/i.test((b.textContent || "").trim()); });
     };
     let confirmBtn = findConfirm();
@@ -4000,7 +4089,12 @@
     // Give the purchased-count text a moment to actually update, retrying briefly rather than reading it once
     // immediately after the click (same mount/update-timing caution as everywhere else in this sequence).
     let after = getPurchasedCount();
-    for (let i = 0; i < 4 && before != null && after === before; i++) { await sleep(jitter(300, 300)); after = getPurchasedCount(); }
+    // Extended from 4 tries (~1.2s) to 8 (~2.4s) - a real live case showed THREE separate items in one landing
+    // all report ok:true with actualQty:0 (zero delivered, zero spent), which is consistent with either a
+    // slower-than-expected counter update or something actually blocking the purchases server-side (worth
+    // treating as a possible early sign of anti-automation pushback, not just a timing bug - see captcha
+    // discussion in the changelog for this version).
+    for (let i = 0; i < 8 && before != null && after === before; i++) { await sleep(jitter(300, 300)); after = getPurchasedCount(); }
     const actualQty = (before != null && after != null) ? Math.max(0, after - before) : null;
     return { ok: true, actualQty: actualQty, requestedQty: qty };
   }
@@ -4125,7 +4219,7 @@
       for (let i = 0; i < picks.length; i++) {
         const p = picks[i];
         attemptedIds.add(p.item.id);
-        const r = await domBuyItem(p.item.id, p.qty);
+        const r = await domBuyItem(p.item.id, p.qty, p.item.name);
         results.push({ id: p.item.id, name: p.item.name, qty: p.qty, buy: p.item.buy, ok: r.ok, reason: r.reason, actualQty: r.actualQty });
         if (!r.ok) break;
         if (i < picks.length - 1) await sleep(jitter(500, 500));
