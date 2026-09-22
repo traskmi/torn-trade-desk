@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Desk
 // @namespace    tekim.tradedesk
-// @version      1.99.19
+// @version      1.99.20
 // @updateURL    https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @downloadURL  https://raw.githubusercontent.com/traskmi/torn-trade-desk/main/torn-trade-desk.user.js
 // @description  Live travel-profit board — YATA foreign stock × Torn-API resale, ranked by $/minute. Refresh button, affordability + best-pick, mug calculator.
@@ -233,10 +233,11 @@
   }
   async function loadCash(key) {
     try {
-      const j = await gmGet("https://api.torn.com/user/?selections=money,networth,basic,travel&key=" + encodeURIComponent(key));
+      const j = await gmGet("https://api.torn.com/user/?selections=money,networth,basic,travel,bars&key=" + encodeURIComponent(key));
       if (j && typeof j.money_onhand === "number") state.cash = j.money_onhand;
       if (j && j.networth && typeof j.networth.stockmarket === "number") state.stocks = j.networth.stockmarket;
       if (j && typeof j.level === "number") state.myLevel = j.level;
+      if (j && j.happy) state.happy = { current: j.happy.current, maximum: j.happy.maximum }; // used by the failsafe's Switzerland-rehab-trip check below
       applyTravelState(j);
     } catch (e) { /* non-fatal */ }
   }
@@ -2664,6 +2665,7 @@
   }
 
   const CHANGELOG = [
+    { v: "1.99.20", d: "Sep 22, 2026", c: ["🛟 Landing failsafe: won't auto-fly you home from Switzerland if your happy is well below max (user's own observation — that combination usually means a rehab trip, not a pure trading run, since Switzerland has the Rehab facility). It still auto-buys the best load normally either way; it just leaves the actual flight home to you so an automated trip doesn't cut your rehab visit short before it happens."] },
     { v: "1.99.19", d: "Sep 21, 2026", c: ["📒 The failsafe log's local file export now writes to a SINGLE file in place (true overwrite, no more numbered duplicates piling up) instead of a fresh download each time. New ⚙ Settings button \"📁 Choose log file…\" — one click to pick where it saves (Chrome/Edge only, browser security requires a real click for real disk write access), then every future event writes straight there automatically with no further prompts. Also added a byte-size cap (4MB) on top of the existing 200-entry limit, pruning oldest entries first so the file can't grow unbounded. Browsers without this API still fall back to the old numbered-download behavior."] },
     { v: "1.99.18", d: "Sep 21, 2026", c: ["🐛 Fixed a real captcha-detector false positive, confirmed live via DevTools: Torn's own preferences.php page permanently embeds a real Google reCAPTCHA widget in the DOM for account-security actions (changing your password, etc.) - present whether or not it's ever actually shown, sitting there marked hidden. The detector previously only checked whether anything captcha-shaped existed anywhere in the page, so it force-disabled the failsafe every single time the page was visited, real challenge or not. Now also requires the matched element to actually be visible (not hidden via the hidden attribute/class, display:none, or visibility:hidden) before treating it as a real captcha - doesn't weaken protection against an actual challenge, since a real one is shown, not dormant."] },
     { v: "1.99.17", d: "Sep 21, 2026", c: [
@@ -3115,7 +3117,7 @@
         '<div class="sl" style="margin-top:16px">📡 Shared prediction feed <small>— restock history + burn/depletion predictions, polled globally every 5 min server-side (separate from the live board, which always comes straight from YATA regardless of this feed\'s health)</small></div>' +
         '<div id="tdk-set-sharedfeed" class="ssub"></div>' +
         '<div class="srow"><button class="tdk-btn2 tdk-sm" id="tdk-set-syncnow">🔄 Sync now</button><span id="tdk-set-syncmsg" class="ssub"></span></div>' +
-        '<div class="sl" style="margin-top:16px">🛟 Landing failsafe <small>— for when you land and get sidetracked. If you take no action for a bit after touchdown, this fires an alert (flashing banner · sound · notification · vibration) and <b>auto-buys a full profitable load (not just one item) and flies you home</b> — fills remaining slots/cash with the next-best item(s) when the top pick can\'t use it all, same as clicking it yourself, just automated. If this browser tab isn\'t on the abroad shop page when it fires, it navigates the tab there itself first, then acts. <b>This is real automated gameplay — a genuine Torn ban risk if flagged.</b> A captcha appearing anywhere force-disables it immediately. Safe with multiple Torn tabs open — only one will ever act on a given landing.</small></div>' +
+        '<div class="sl" style="margin-top:16px">🛟 Landing failsafe <small>— for when you land and get sidetracked. If you take no action for a bit after touchdown, this fires an alert (flashing banner · sound · notification · vibration) and <b>auto-buys a full profitable load (not just one item) and flies you home</b> — fills remaining slots/cash with the next-best item(s) when the top pick can\'t use it all, same as clicking it yourself, just automated. If this browser tab isn\'t on the abroad shop page when it fires, it navigates the tab there itself first, then acts. <b>This is real automated gameplay — a genuine Torn ban risk if flagged.</b> A captcha appearing anywhere force-disables it immediately. Safe with multiple Torn tabs open — only one will ever act on a given landing. Won\'t fly you home from Switzerland if your happy is well below max — that usually means a rehab trip, so it still buys but leaves the flight home to you.</small></div>' +
         '<div class="srow"><label class="scheck"><input type="checkbox" id="tdk-set-fsafe"' + (state.autoFailsafe ? ' checked' : '') + (state._captchaHalted ? ' disabled' : '') + '> Enable landing failsafe' + (state._captchaHalted ? ' <small style="color:#e2707a">— OFF: a captcha was detected last session, re-check the box to re-arm</small>' : '') + '</label></div>' +
         '<div class="srow ssub">Alerts after a random 15–60s of no activity on the page after landing <small>(varies each time on purpose, not a fixed timer)</small></div>' +
         '<div id="tdk-fs-log" class="ssub"></div>' +
@@ -4212,6 +4214,13 @@
     const actualQty = (before != null && after != null) ? Math.max(0, after - before) : null;
     return { ok: true, actualQty: actualQty, requestedQty: qty };
   }
+  // Switzerland has the Rehab facility (removes drug addiction) - user's own observation: if happy is well below
+  // max when flying there, it's likely a rehab trip (fill up happy first, THEN shop, THEN fly home on your own
+  // schedule), not a pure trading run. Auto-flying home right after the buy would cut that short before rehab
+  // ever happened. Only skips the FLY-HOME step - the auto-buy itself still fires normally either way.
+  function isLikelyRehabTrip(cc) {
+    return cc === "swi" && state.happy && state.happy.maximum > 0 && (state.happy.current / state.happy.maximum) < 0.95;
+  }
   // Boards the flight home - clicks the "Travel home" header link (expands a confirm panel, same pattern as Buy),
   // then clicks the "Travel Back" confirm inside it.
   async function domFlyHome() {
@@ -4309,6 +4318,11 @@
     if (!claimFire()) { logFailsafe("↩️ Stood down — another tab already handled this landing."); return; }
     if (!load) {
       rec.decision = "no_profitable_pick";
+      if (isLikelyRehabTrip(cc)) {
+        const msg = "⏱ Landing failsafe — nothing profitable to buy. Happy's well below max and you're in Switzerland, so this looks like a rehab trip — not flying you home, staying put so you can actually rehab.";
+        logFailsafe(msg); showFailsafeAlert(msg, true);
+        finish(); return;
+      }
       const msg = "⏱ Landing failsafe — you've gone quiet since touchdown and nothing here is both in-stock/affordable AND actually profitable right now. Nothing to auto-buy (won't buy a loser just to buy something); flying you home.";
       logFailsafe(msg); showFailsafeAlert(msg, true);
       const r = await domFlyHome(); rec.flyResult = r; rec.leftAt = r.ok ? Date.now() : null;
@@ -4379,6 +4393,11 @@
     // Overwrite the initial-plan totals from before buying with the FINAL actuals (top-up rounds included), so
     // the log's summary numbers match what really happened, not just what was originally intended.
     rec.totalCost = spent; rec.filled = slotsUsed;
+    if (isLikelyRehabTrip(cc)) {
+      const msg = "✅ Landing failsafe: bought " + boughtTxt + ". Happy's well below max and you're in Switzerland, so this looks like a rehab trip — not flying you home, staying put so you can actually rehab.";
+      logFailsafe(msg); showFailsafeAlert(msg, true);
+      finish(); return;
+    }
     await sleep(jitter(600, 600));
     const flyRes = await domFlyHome();
     rec.flyResult = flyRes; rec.leftAt = flyRes.ok ? Date.now() : null;
